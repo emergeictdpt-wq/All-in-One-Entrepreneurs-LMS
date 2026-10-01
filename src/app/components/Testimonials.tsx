@@ -71,21 +71,31 @@ export function Testimonials() {
   const t = testimonials[current];
 
   return (
-    <section className="py-20 relative" id="testimonials" style={{ background: "linear-gradient(155deg, #2a3054 0%, #3B4167 45%, #456f78 80%, #4C808A 100%)" }}>
-      <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ opacity: 0.05 }} viewBox="0 0 400 800" preserveAspectRatio="xMidYMid slice">
-      </svg>
+    <section className="relative overflow-hidden py-24 bg-[#2a3054]" id="testimonials">
+      {/* Background photo */}
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 bg-cover bg-center lg:bg-fixed"
+        style={{ backgroundImage: "url('https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1920&q=80&auto=format&fit=crop')" }}
+      />
+      {/* Brand-colour overlay for readability */}
+      <div
+        aria-hidden="true"
+        className="absolute inset-0"
+        style={{ background: "linear-gradient(155deg, rgba(42,48,84,0.94) 0%, rgba(59,65,103,0.88) 45%, rgba(69,111,120,0.84) 80%, rgba(76,128,138,0.88) 100%)" }}
+      />
       <div className="max-w-[1400px] mx-auto px-4 lg:px-8 relative z-10">
         <div className="text-center mb-12">
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-md border border-[#4C808A] mb-4" style={{ background: "#4C808A" }}>
             <span className="text-white text-xs font-semibold tracking-widest uppercase">Testimonials</span>
           </div>
-          <h2 className="text-white mb-3" style={{ fontSize: "clamp(1.5rem, 3vw, 2rem)", fontWeight: 700 }}>
+          <h2 className="text-white mb-3" style={{ fontSize: "clamp(1.75rem, 3.5vw, 2.75rem)", fontWeight: 700 }}>
             Voices from Our Ecosystem
           </h2>
         </div>
 
         <div className="max-w-3xl mx-auto">
-          <div className="bg-white/5 backdrop-blur-sm rounded-md p-8 relative">
+          <div className="bg-white/10 backdrop-blur-md border border-white/15 rounded-md p-8 relative shadow-xl">
             <Quote className="w-10 h-10 text-[#4C808A]/30 absolute top-6 right-6" />
 
             <div className="flex items-center gap-4 mb-6">
@@ -96,7 +106,7 @@ export function Testimonials() {
               />
               <div>
                 <h3 className="text-white font-bold text-sm">{t.name}</h3>
-                <p className="text-white/60 text-xs">{t.role}</p>
+                <p className="text-white/75 text-xs">{t.role}</p>
                 <span
                   className="inline-block mt-1 px-2 py-0.5 rounded-md text-[9px] font-bold"
                   style={{ background: typeBgColors[t.type], color: typeTextColors[t.type] }}

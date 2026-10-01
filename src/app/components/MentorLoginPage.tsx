@@ -398,9 +398,9 @@ function LoginView({
           type="button"
           onClick={onApplyMentor}
           className="text-xs font-bold transition-colors hover:opacity-90"
-          style={{ color: "#a8d5db", textDecoration: "underline", textUnderlineOffset: 3 }}
+          style={{ color: "#a8d5db" }}
         >
-          Apply to Become a Mentor →
+          Apply to Become a Mentor
         </button>
       </div>
     </form>

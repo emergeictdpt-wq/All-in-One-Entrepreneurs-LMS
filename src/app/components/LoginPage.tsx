@@ -219,12 +219,25 @@ export function LoginPage({ onBack, onNavigate }: {
                     <button
                       key={r}
                       onClick={() => { setRole(r); setError(""); setAttempts(0); setCountdown(0); }}
-                      className="flex-1 py-2 rounded-md text-xs font-bold transition-all"
+                      className="flex-1 py-2 rounded-md text-xs font-bold transition-all inline-flex items-center justify-center gap-1.5"
                       style={{
                         background: role === r ? "rgba(76,128,138,0.5)" : "transparent",
                         color: role === r ? "#fff" : "rgba(255,255,255,0.4)",
                       }}
                     >
+                      {r === "manager" && (
+                        <span
+                          aria-hidden="true"
+                          className="inline-block shrink-0"
+                          style={{
+                            width: 16,
+                            height: 16,
+                            backgroundColor: "currentColor",
+                            WebkitMask: "url('/icons/referral.png') center / contain no-repeat",
+                            mask: "url('/icons/referral.png') center / contain no-repeat",
+                          }}
+                        />
+                      )}
                       {r === "entrepreneur" ? "Entrepreneur" : "Program Manager"}
                     </button>
                   ))}
@@ -363,8 +376,8 @@ export function LoginPage({ onBack, onNavigate }: {
                   <button
                     onClick={() => onNavigate?.("incubation-apply")}
                     className="text-[10px] font-bold transition-colors hover:opacity-80"
-                    style={{ color: "#a8d5db", textDecoration: "underline", textUnderlineOffset: 3 }}>
-                    Register as an Entrepreneur →
+                    style={{ color: "#a8d5db" }}>
+                    Register as an Entrepreneur
                   </button>
                 </div>
 

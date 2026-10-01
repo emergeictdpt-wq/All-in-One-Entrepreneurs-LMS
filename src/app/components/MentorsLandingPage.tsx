@@ -515,13 +515,31 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
       </section>
 
       {/* ── 6. Mentorship Journey ── */}
-      <section className="py-20 bg-[#0f1528]" id="mentorship-journey">
-        <div className="max-w-[1400px] mx-auto px-4 lg:px-8">
+      <section className="relative overflow-hidden py-24 bg-[#0f1528]" id="mentorship-journey">
+        {/* Background photo */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-cover bg-center lg:bg-fixed"
+          style={{ backgroundImage: "url('https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=1920&q=80&auto=format&fit=crop')" }}
+        />
+        {/* Dark brand overlay for readability */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-0"
+          style={{ background: "linear-gradient(180deg, rgba(15,21,40,0.92) 0%, rgba(15,21,40,0.82) 50%, rgba(15,21,40,0.94) 100%)" }}
+        />
+        {/* Teal tint accent */}
+        <div aria-hidden="true" className="absolute inset-0" style={{ background: "radial-gradient(ellipse at top, rgba(76,128,138,0.28), transparent 60%)" }} />
+
+        <div className="relative z-10 max-w-[1400px] mx-auto px-4 lg:px-8">
           <div className="text-center mb-14">
-            <h2 className="text-white mb-3" style={{ fontSize: "clamp(1.5rem, 3vw, 2.25rem)", fontWeight: 700 }}>
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-md border border-white/20 mb-4" style={{ background: "#4C808A" }}>
+              <span className="text-white text-xs font-semibold tracking-widest uppercase">Featured</span>
+            </div>
+            <h2 className="text-white mb-3" style={{ fontSize: "clamp(1.75rem, 3.5vw, 2.75rem)", fontWeight: 700 }}>
               The Mentor Lifecycle
             </h2>
-            <p className="text-white/50 text-sm max-w-xl mx-auto">
+            <p className="text-white/80 text-sm max-w-xl mx-auto">
               From application to recognition, a clear, structured path for every mentor.
             </p>
           </div>
@@ -860,9 +878,9 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             </h2>
           </div>
 
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="flex flex-wrap justify-center gap-4">
             {opportunities.map((o) => (
-              <div key={o.title} className="bg-[#f8f9fb] rounded-md p-5 border border-[#3B4167]/10 hover:border-[#4C808A]/40 hover:shadow-md transition-all flex flex-col">
+              <div key={o.title} className="w-full sm:w-[calc(50%-8px)] lg:w-[calc(25%-12px)] bg-[#f8f9fb] rounded-md p-5 border border-[#3B4167]/10 hover:border-[#4C808A]/40 hover:shadow-md transition-all flex flex-col">
                 <span className="inline-block px-2.5 py-0.5 rounded-md text-white text-[9px] font-bold uppercase tracking-wide mb-3 self-start" style={{ background: "#4C808A" }}>
                   {o.tag}
                 </span>

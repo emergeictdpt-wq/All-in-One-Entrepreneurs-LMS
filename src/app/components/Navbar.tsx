@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Menu, X, ChevronDown, LogIn, User, Building2, ClipboardList } from "lucide-react";
+import { Menu, X, ChevronDown, LogIn, User, ClipboardList } from "lucide-react";
 
 const navItems = [
   { label: "Home", href: "#" },
@@ -169,12 +169,22 @@ export function Navbar({ onNavigate, onLogin, onTrack }: { onNavigate?: (page: "
                   onClick={() => { setLoginDropdown(false); onLogin?.(); }}
                   className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-[#4C808A]/8 transition-colors group"
                 >
-                  <div className="w-7 h-7 rounded-md bg-[#3B4167]/10 flex items-center justify-center shrink-0 group-hover:bg-[#3B4167]/20 transition-colors">
-                    <Building2 size={14} />
+                  <div className="w-7 h-7 rounded-md bg-[#3B4167]/10 flex items-center justify-center shrink-0 group-hover:bg-[#3B4167]/20 transition-colors text-[#3B4167]">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block shrink-0"
+                      style={{
+                        width: 16,
+                        height: 16,
+                        backgroundColor: "currentColor",
+                        WebkitMask: "url('/icons/referral.png') center / contain no-repeat",
+                        mask: "url('/icons/referral.png') center / contain no-repeat",
+                      }}
+                    />
                   </div>
                   <div>
                     <div className="text-[#3B4167] text-xs font-bold">Program Manager</div>
-                    <div className="text-[#6b7280] text-[10px]">Manage programs & cohorts</div>
+                    <div className="text-[#6b7280] text-[10px]">Manage programs and cohorts</div>
                   </div>
                 </button>
               </div>
@@ -227,7 +237,17 @@ export function Navbar({ onNavigate, onLogin, onTrack }: { onNavigate?: (page: "
               onClick={() => { setMobileOpen(false); onLogin?.(); }}
               className="w-full flex items-center gap-3 px-4 py-2.5 rounded-md border border-[#3B4167] text-[#3B4167] text-xs font-bold"
             >
-              <Building2 size={14} /> Program Manager Login
+              <span
+                      aria-hidden="true"
+                      className="inline-block shrink-0"
+                      style={{
+                        width: 14,
+                        height: 14,
+                        backgroundColor: "currentColor",
+                        WebkitMask: "url('/icons/referral.png') center / contain no-repeat",
+                        mask: "url('/icons/referral.png') center / contain no-repeat",
+                      }}
+                    /> Program Manager Login
             </button>
           </div>
         </div>

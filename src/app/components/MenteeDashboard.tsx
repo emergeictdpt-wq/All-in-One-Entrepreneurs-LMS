@@ -133,9 +133,22 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
   const NAV_ITEMS: { key: NavSection; icon: React.ReactNode; label: string }[] = [
     { key: "overview", icon: <Home size={16} />, label: "Overview" },
     { key: "mentor", icon: <User size={16} />, label: unreadMsgs ? `My Mentor (${unreadMsgs})` : "My Mentor" },
-    { key: "goals", icon: <Target size={16} />, label: "Goals & Milestones" },
+    { key: "goals", icon: (
+      <span
+        aria-hidden="true"
+        style={{
+          display: "inline-block",
+          width: 18,
+          height: 18,
+          flexShrink: 0,
+          backgroundColor: "currentColor",
+          WebkitMask: "url('/icons/goals.png') center / contain no-repeat",
+          mask: "url('/icons/goals.png') center / contain no-repeat",
+        }}
+      />
+    ), label: "Goals and Milestones" },
     { key: "sessions", icon: <Calendar size={16} />, label: "Sessions" },
-    { key: "tasks", icon: <CheckSquare size={16} />, label: "Tasks & Learning" },
+    { key: "tasks", icon: <CheckSquare size={16} />, label: "Tasks and Learning" },
     { key: "resources", icon: <BookOpen size={16} />, label: "Resources" },
     { key: "profile", icon: <User size={16} />, label: "My Profile" },
   ];
@@ -242,7 +255,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
                 {[
                   { label: "Sessions Done", val: String(MENTOR.sessionCount), sub: `with ${MENTOR.name.split(" ").slice(0, 2).join(" ")}`, icon: <Calendar size={18} color="#fff" /> },
-                  { label: "Goals On Track", val: `${GOALS.filter(g => g.status === "on-track" || g.status === "complete").length}/${GOALS.filter(g => g.status !== "proposed").length}`, sub: `${GOALS.filter(g => g.status === "at-risk").length} at risk`, icon: <Target size={18} color="#fff" /> },
+                  { label: "Goals On Track", val: `${GOALS.filter(g => g.status === "on-track" || g.status === "complete").length}/${GOALS.filter(g => g.status !== "proposed").length}`, sub: `${GOALS.filter(g => g.status === "at-risk").length} at risk`, icon: <img src="/icons/goals.png" alt="" aria-hidden="true" width={20} height={20} style={{ display: "block" }} /> },
                   { label: "Tasks Pending", val: String(TASKS.filter(t => t.status !== "done").length), sub: `${TASKS.filter(t => isOverdue(t)).length} overdue`, icon: <CheckSquare size={18} color="#fff" /> },
                   { label: "Next Session", val: nb ? (cd.days ? `${cd.days} Days` : `${cd.hrs} Hrs`) : "None", sub: nb ? fmtBooking(nb) : "Propose a time in Sessions", icon: <Clock size={18} color="#fff" /> },
                 ].map((k, i) => (
@@ -592,7 +605,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
           {nav === "tasks" && (
             <div style={{ display: "grid", gap: 16 }}>
               <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Tasks & Assignments</p>
+                <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Tasks and Assignments</p>
                 {TASKS.map(t => (
                   <div key={t.id} style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 12, padding: "10px 12px", background: "#f8f9fb", borderRadius: 3 }}>
                     <div style={{ marginTop: 2, cursor: "pointer" }} title="Toggle done" onClick={() => P.setTaskStatus(t.id, t.status === "done" ? "pending" : "done")}>
