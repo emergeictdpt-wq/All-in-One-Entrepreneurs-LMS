@@ -1,0 +1,5839 @@
+import { useState, useRef, useEffect, useMemo, createContext, useContext, Fragment } from "react";
+import { toast } from "sonner";
+import {
+  LayoutGrid, FileText, CheckCircle, ThumbsUp, GitMerge,
+  XCircle, LogOut, Settings, Mail, Activity, Users,
+  ChevronDown, ChevronRight, ChevronLeft, Bell, Search, User,
+  Eye, EyeOff, UserMinus, UserPlus, Download, MoreHorizontal, Share2,
+  PlusCircle, MapPin, Edit2, Trash2 as TrashIcon,
+  TrendingUp, AlertCircle, Clock,
+  Send, Inbox, Star, Trash2, Sliders,
+  GraduationCap, Award, BookOpen, CheckSquare, UserCheck, Plus,
+  Calendar, Video, Cloud, Link2, MessageSquare, ClipboardList, Image as ImageIcon, Camera,
+  Filter, X, Layers, FileCheck, Lightbulb, RotateCcw, FileX, Phone, Sparkles, CheckCheck, BellRing,
+} from "lucide-react";
+import { AdminRelHealthView, AdminCohortView, AdminReportingView, AdminIntegrationView } from "./AdminProgrammeViews";
+import { useProgramme, fmtDate, cohortEnrolled, AS_OF } from "../data/programmeStore";
+import { validateProgram, programFacts, loadInterest, interestToCsv, INTEREST_KEY, type Interest } from "../data/programUtils";
+import type { AdminProgram, TimelineEntry, EntrepreneurApplication, MentorApplication } from "../types";
+
+const TEAL = "#4C808A";
+const NAVY = "#3B4167";
+const PANEL_BG = "linear-gradient(155deg, #2a3054 0%, #3B4167 45%, #456f78 80%, #4C808A 100%)";
+
+// ── CSS ─────────────────────────────────────────────────────────────────────
+const css = `
+@keyframes im-fadeIn {
+  from { opacity:0; transform:translateY(10px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+@keyframes im-slideIn {
+  from { opacity:0; transform:translateX(-16px); }
+  to   { opacity:1; transform:translateX(0); }
+}
+@keyframes im-dropdown {
+  from { opacity:0; transform:translateY(-8px) scale(0.97); }
+  to   { opacity:1; transform:translateY(0)    scale(1); }
+}
+.im-fade { animation: im-fadeIn 0.35s ease both; }
+.im-slide { animation: im-slideIn 0.3s ease both; }
+.im-dd { animation: im-dropdown 0.2s ease both; }
+
+/* Table row hover */
+.im-row:hover td { background: rgba(76,128,138,0.06); }
+.im-row td.im-sticky-act { position: sticky; right: 0; z-index: 4; background: #fff; box-shadow: -6px 0 8px -6px rgba(0,0,0,0.15); }
+.im-row:hover td.im-sticky-act { background: #f1f6f7; }
+
+/* sidebar scroll */
+.im-sidebar { overflow-y: auto; overflow-x: hidden; }
+.im-sidebar::-webkit-scrollbar { width: 3px; }
+.im-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius:3px; }
+
+/* main scroll */
+.im-main { overflow-y: auto; }
+.im-main::-webkit-scrollbar { width: 5px; }
+.im-main::-webkit-scrollbar-thumb { background: rgba(76,128,138,0.3); border-radius:3px; }
+
+/* status badge */
+.im-badge { display:inline-flex; align-items:center; padding:2px 10px; border-radius:3px; font-size:10px; font-weight:700; }
+
+@keyframes im-spin {
+  to { transform: rotate(360deg); }
+}
+`;
+
+// ── Sidebar nav structure ────────────────────────────────────────────────────
+export type NavKey =
+  | "Applications" | "Selection" | "Rejected" | "Matching" | "Dropouts"
+  | "Email Dashboard" | "Program Health" | "Alumni" | "Program Setup"
+  | "Pairing & Matching" | "Relationship Health" | "Cohort Management" | "Reports & Analytics" | "Integration Hub"
+  | "Settings";
+
+export interface MentorPair {
+  id: number;
+  mentee: string;
+  menteeVenture: string;
+  mentor: string;
+  expertise: string;
+  stage: string;
+  matchScore: number;
+  status: "Active" | "Pending" | "Completed" | "Terminated";
+  sessions: number;
+  lastSession: string;
+  reMatchReq: boolean;
+  /** derived from the programme store */
+  pairId?: string;
+  rematchId?: string;
+  sector?: string;
+  note?: string;
+}
+
+export interface IncubationNotification {
+  id: string;
+  section: "Applications" | "Selection" | "Rejected" | "Matching" | "Dropouts" | "General";
+  title: string;
+  message: string;
+  candidateName?: string;
+  candidateId?: string;
+  timestamp: string;
+  createdAt: number;
+  read: boolean;
+  type: "success" | "warning" | "danger" | "info";
+  actionTarget?: NavKey;
+}
+
+// ── Application data context ──────────────────────────────────────────────────
+import { ADMIN_KEY, decisionMailto } from "../data/applicationTracker";
+/** Introductory call: a real date plus a status, never free text. */
+const introLabel = (iso: string | undefined, paired: boolean): string => {
+  if (!paired) return "—";
+  if (!iso) return "Not scheduled";
+  const d = fmtDate(iso);
+  return iso > AS_OF ? `${d} · Scheduled` : `${d} · Completed`;
+};
+const MATCH_STATUS_COLOR: Record<string, string> = {
+  "Paired": "#059669", "Mentoring": "#059669", "Awaiting mentor": "#d97706", "Awaiting mentee": "#d97706",
+  "Re-match requested": "#dc2626", "At capacity": "#7c3aed",
+};
+const AppDataCtx = createContext<{
+  entApps: EntrepreneurApplication[];
+  mntApps: MentorApplication[];
+  setStatusOverride: (id: string, status: string, reason?: string) => void;
+  confirmPairing: (
+    entId: string,
+    mentorId: string,
+    mentorName: string,
+    mentorExpertise: string,
+    matchScore: number,
+    entName: string,
+    entSector: string
+  ) => void;
+  setActiveNav?: (key: NavKey) => void;
+  /** Read-only view built from the programme store (single source of truth for pairs) */
+  matchPairs: MentorPair[];
+  /** Ask for a re-match of one live pair (by store pair id). */
+  requestPairRematch: (pairId: string) => void;
+  /** Jump to the Matching Engine, started from an entrepreneur or from a mentor. */
+  openEngine: (target: { entId?: string; mentorId?: string }) => void;
+  engineTarget: { entId?: string; mentorId?: string } | null;
+  clearEngineTarget: () => void;
+  notifications: IncubationNotification[];
+  addNotification: (notif: Omit<IncubationNotification, "id" | "createdAt" | "read" | "timestamp"> & { timestamp?: string }) => void;
+  markNotificationAsRead: (id: string) => void;
+  markAllNotificationsAsRead: () => void;
+  clearNotifications: () => void;
+  removeNotification: (id: string) => void;
+}>({
+  entApps: [],
+  mntApps: [],
+  setStatusOverride: () => {},
+  confirmPairing: () => {},
+  matchPairs: [],
+  requestPairRematch: () => {},
+  openEngine: () => {},
+  engineTarget: null,
+  clearEngineTarget: () => {},
+  notifications: [],
+  addNotification: () => {},
+  markNotificationAsRead: () => {},
+  markAllNotificationsAsRead: () => {},
+  clearNotifications: () => {},
+  removeNotification: () => {},
+});
+
+
+// ── Sample data (MOCKUP — replace with backend data when ready) ───────────────
+export const MOCK_MNT_APPS: MentorApplication[] = [
+  { id: "MNT-001", name: "Dr. Thoko Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 100 001", expertise: "Business Strategy",  date: "2026-01-06", status: "Approved",  score: 95, program: "Incubation", isMockup: true, email: "t.banda@univ.ac.mw", title: "Senior Business Advisor", employer: "Banda Strategy Partners" },
+  { id: "MNT-002", name: "Mr. Chikumbe Phiri",    gender: "Male",   district: "Blantyre",   phone: "+265 888 200 002", expertise: "Finance & Accounts", date: "2026-01-07", status: "Matching",  score: 88, program: "Incubation", isMockup: true, email: "cphiri@fincorp.mw", title: "Chartered Accountant & CFO", employer: "Apex Financial Advisory" },
+  { id: "MNT-003", name: "Ms. Rejoice Mwale",     gender: "Female", district: "Mzuzu",      phone: "+265 993 300 003", expertise: "Agriculture",        date: "2026-01-09", status: "Matching",  score: 80, program: "Incubation", isMockup: true, email: "rmwale@agridev.org", title: "Agri-Tech Consultant", employer: "Malawi AgriDev Hub", selectionReason: "High expertise in Agri-Tech value chains and exemplary mentorship capability", selectedDate: "2026-01-16" },
+  { id: "MNT-004", name: "Mr. Patrick Tembo",     gender: "Male",   district: "Zomba",      phone: "+265 881 400 004", expertise: "Technology",         date: "2026-01-10", status: "Matching",   score: 72, program: "Incubation", isMockup: true, email: "ptembo@techmw.com", title: "Software Architect", employer: "InnoTech Solutions" },
+  { id: "MNT-005", name: "Mrs. Faith Nyirenda",   gender: "Female", district: "Kasungu",    phone: "+265 992 500 005", expertise: "Marketing",          date: "2026-01-11", status: "Matching",  score: 91, program: "Incubation", isMockup: true, email: "fnyirenda@brandplus.mw", title: "Chief Marketing Strategist", employer: "BrandPlus Malawi" },
+  { id: "MNT-006", name: "Dr. Samuel Chirwa",     gender: "Male",   district: "Dedza",      phone: "+265 889 600 006", expertise: "Legal & Compliance", date: "2026-01-12", status: "Rejected",  score: 45, program: "Incubation", isMockup: true, email: "schirwa@lawchamber.mw", title: "Corporate Counsel", employer: "Chirwa & Co Advocates", rejectionReason: "Weekly availability below required 4 hours/month minimum threshold", rejectedDate: "2026-01-18", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
+  { id: "MNT-007", name: "Ms. Miriam Kamwana",    gender: "Female", district: "Lilongwe",   phone: "+265 994 700 007", expertise: "Social Enterprise",  date: "2026-01-13", status: "Matching",  score: 85, program: "Incubation", isMockup: true, email: "mkamwana@impactmw.org", title: "Executive Director", employer: "Social Enterprise Alliance" },
+  { id: "MNT-008", name: "Mr. Joseph Mkandawire", gender: "Male",   district: "Nkhotakota", phone: "+265 882 800 008", expertise: "Manufacturing",      date: "2026-01-14", status: "Dropouts",  score: 60, program: "Incubation", isMockup: true, email: "jmkandawire@mfg.mw", title: "Operations Director", employer: "Lakeside Industrial" },
+  { id: "MNT-009", name: "Mrs. Grace Gondwe",     gender: "Female", district: "Salima",     phone: "+265 995 900 009", expertise: "Export & Trade",     date: "2026-01-15", status: "Selected",  score: 78, program: "Incubation", isMockup: true, email: "ggondwe@exportmw.com", title: "Trade Specialist", employer: "Malawi Export Bureau", selectionReason: "Regional cross-border trade leadership and proven business advisory experience", selectedDate: "2026-01-20" },
+  { id: "MNT-010", name: "Mr. Charles Nkosi",     gender: "Male",   district: "Mulanje",    phone: "+265 883 010 010", expertise: "Business Strategy",  date: "2026-01-16", status: "Matching",  score: 93, program: "Incubation", isMockup: true, email: "cnkosi@nkosigroup.mw", title: "Managing Partner", employer: "Nkosi Group" },
+  { id: "MNT-011", name: "Ms. Chimwemwe Banda",   gender: "Female", district: "Lilongwe",   phone: "+265 997 110 011", expertise: "Digital Marketing",  date: "2026-02-03", status: "Pending",   score: 74, program: "Incubation", isMockup: true, email: "cbanda@digitalscope.mw", title: "Growth Marketing Lead", employer: "DigitalScope" },
+  { id: "MNT-012", name: "Dr. Felix Kaunda",      gender: "Male",   district: "Blantyre",   phone: "+265 885 220 012", expertise: "Investment & VC",    date: "2026-02-10", status: "Approved",  score: 97, program: "Incubation", isMockup: true, email: "fkaunda@seedfund.mw", title: "Principal Partner", employer: "SeedFund Capital" },
+  { id: "MNT-013", name: "Ellen Chimwaza",        gender: "Female", district: "Blantyre",   phone: "+265 887 330 013", expertise: "General Management", date: "2026-02-04", status: "Rejected",  score: 47, program: "Incubation", isMockup: true, email: "echimwaza@mwmg.org", title: "Operations Supervisor", employer: "Southern Logistics", rejectionReason: "Mentorship track record and executive governance documentation incomplete", rejectedDate: "2026-02-14", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
+  { id: "MNT-014", name: "Andrew Mkuzi",          gender: "Male",   district: "Lilongwe",   phone: "+265 998 440 014", expertise: "Energy & Environment",date: "2026-02-06", status: "Rejected", score: 41, program: "Incubation", isMockup: true, email: "amkuzi@solarmw.com", title: "Renewables Engineer", employer: "EcoPower Malawi", rejectionReason: "Institutional conflict of interest with participating agribusiness incubatee", rejectedDate: "2026-02-16", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Remediation Required" },
+  { id: "MNT-015", name: "Grace Manda",           gender: "Female", district: "Mzuzu",      phone: "+265 884 550 015", expertise: "Agri-Business",       date: "2026-02-09", status: "Matching",  score: 89, program: "Incubation", isMockup: true, email: "gmanda@agrilink.mw", title: "Commercial Agribusiness Director", employer: "Northern Agrilink" },
+  { id: "MNT-016", name: "Frank Kalua",           gender: "Male",   district: "Zomba",      phone: "+265 993 660 016", expertise: "Creative Arts",       date: "2026-02-12", status: "Matching",  score: 82, program: "Incubation", isMockup: true, email: "fkalua@creativemedia.mw", title: "Creative Director", employer: "Zomba Media Lab" },
+  { id: "MNT-017", name: "Dr. Tiwonge Banda",      gender: "Male",   district: "Lilongwe",   phone: "+265 991 170 017", expertise: "AgriTech and Finance",       date: "2026-01-05", status: "Matching",  score: 91, program: "Incubation", isMockup: true, email: "tbanda@agritech.mw", title: "AgriTech Consultant", employer: "AgroFinance Malawi", capacity: 4 },
+  { id: "MNT-018", name: "Prof. Patrick Likoswe",  gender: "Male",   district: "Zomba",      phone: "+265 881 180 018", expertise: "EdTech & Curriculum",         date: "2026-01-06", status: "Matching",  score: 90, program: "Incubation", isMockup: true, email: "plikoswe@unima.mw", title: "Professor of Education", employer: "University of Malawi", capacity: 4 },
+  { id: "MNT-019", name: "Limbani Gondwe",         gender: "Male",   district: "Blantyre",   phone: "+265 882 190 019", expertise: "CleanEnergy and Hardware",    date: "2026-01-08", status: "Matching",  score: 84, program: "Incubation", isMockup: true, email: "lgondwe@solarco.mw", title: "Renewable Energy Engineer", employer: "SolarCo Malawi", capacity: 3 },
+  { id: "MNT-020", name: "Dr. Chimwemwe Phiri",    gender: "Female", district: "Lilongwe",   phone: "+265 999 200 020", expertise: "HealthTech & UX",             date: "2026-01-09", status: "Matching",  score: 87, program: "Incubation", isMockup: true, email: "cphiri@healthlab.mw", title: "Health Informatics Lead", employer: "Kamuzu Health Lab", capacity: 3 },
+];
+
+export const MOCK_ENT_APPS: EntrepreneurApplication[] = [
+  { id: "APP-001", name: "Chisomo Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 234 567", sector: "Agri-Business",          date: "2026-01-08", status: "Matching",   score: 82, program: "Incubation", isMockup: true, businessName: "Banda Agri-Hub", stage: "Growth", email: "chisomo.banda@gmail.com" },
+  { id: "APP-002", name: "Grace Phiri",         gender: "Female", district: "Blantyre",   phone: "+265 888 345 678", sector: "Technology",             date: "2026-01-09", status: "Approved",  score: 91, program: "Incubation", isMockup: true, businessName: "TechHub Malawi", stage: "Early Traction", email: "grace.phiri@outlook.com" },
+  { id: "APP-003", name: "Takondwa Mwale",      gender: "Male",   district: "Mzuzu",      phone: "+265 993 456 789", sector: "Manufacturing",          date: "2026-01-10", status: "Selected",  score: 76, program: "Incubation", isMockup: true, businessName: "Mwale Processing", stage: "Idea Stage", email: "takondwa.mwale@gmail.com", selectionReason: "High manufacturing feasibility and robust local import-substitution value proposition", selectedDate: "2026-01-18" },
+  { id: "APP-004", name: "Kondwani Tembo",      gender: "Male",   district: "Zomba",      phone: "+265 881 567 890", sector: "Trade",                  date: "2026-01-11", status: "Rejected",  score: 48, program: "Incubation", isMockup: true, businessName: "Tembo General Supplies", stage: "Idea Stage", email: "kondwani.tembo@yahoo.com", rejectionReason: "Evaluation score below 50-point cutoff threshold", rejectedDate: "2026-01-18", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
+  { id: "APP-005", name: "Lusungu Nyirenda",    gender: "Female", district: "Kasungu",    phone: "+265 992 678 901", sector: "Services",               date: "2026-01-12", status: "Matching",  score: 87, program: "Incubation", isMockup: true, businessName: "Nyirenda Logistics", stage: "MVP / Prototype", email: "lusungu.nyirenda@gmail.com" },
+  { id: "APP-006", name: "Thandiwe Chirwa",     gender: "Female", district: "Lilongwe",   phone: "+265 889 789 012", sector: "Agri-Business",          date: "2026-01-13", status: "Pending",   score: 71, program: "Incubation", isMockup: true, businessName: "Chirwa Poultry Farm", stage: "Idea Stage", email: "thandiwe.chirwa@gmail.com" },
+  { id: "APP-007", name: "Blessings Kamwana",   gender: "Male",   district: "Blantyre",   phone: "+265 994 890 123", sector: "Technology",             date: "2026-01-14", status: "Approved",  score: 88, program: "Incubation", isMockup: true, businessName: "CloudSolv Malawi", stage: "Early Traction", email: "bkamwana@cloudsolv.mw" },
+  { id: "APP-008", name: "Esther Chikaonda",    gender: "Female", district: "Mzuzu",      phone: "+265 882 901 234", sector: "Creative Arts",          date: "2026-01-15", status: "Dropouts",  score: 62, program: "Incubation", isMockup: true, businessName: "Chikaonda Textiles", stage: "Idea Stage", email: "esther.chikaonda@gmail.com" },
+  { id: "APP-009", name: "Moses Mkandawire",    gender: "Male",   district: "Dedza",      phone: "+265 995 012 345", sector: "Trade",                  date: "2026-01-16", status: "Selected",  score: 79, program: "Incubation", isMockup: true, businessName: "Dedza Agri-Trading", stage: "Growth", email: "moses.mkandawire@gmail.com", selectionReason: "Demonstrated local trade traction and strong job creation potential in Dedza", selectedDate: "2026-01-22" },
+  { id: "APP-010", name: "Alinafe Gondwe",      gender: "Female", district: "Salima",     phone: "+265 883 123 456", sector: "Services",               date: "2026-01-17", status: "Matching",  score: 84, program: "Incubation", isMockup: true, businessName: "Lakeside Hospitality Solutions", stage: "Early Traction", email: "alinafe.gondwe@gmail.com" },
+  { id: "APP-011", name: "Innocent Phiri",      gender: "Male",   district: "Nkhotakota", phone: "+265 996 234 567", sector: "Agri-Business",          date: "2026-01-18", status: "Pending",   score: 68, program: "Incubation", isMockup: true, businessName: "RicePro Malawi", stage: "Idea Stage", email: "innocent.phiri@gmail.com" },
+  { id: "APP-012", name: "Vitumbiko Nkosi",     gender: "Male",   district: "Mulanje",    phone: "+265 884 345 678", sector: "Manufacturing",          date: "2026-01-19", status: "Approved",  score: 93, program: "Incubation", isMockup: true, businessName: "TeaCraft Agro", stage: "Growth", email: "vitumbiko.nkosi@gmail.com" },
+  { id: "APP-013", name: "Patricia Nnensa",     gender: "Female", district: "Chiradzulu", phone: "+265 997 456 789", sector: "Health & Wellbeing",     date: "2026-02-02", status: "Pending",   score: 70, program: "Incubation", isMockup: true, businessName: "CarePlus Wellness", stage: "Idea Stage", email: "patricia.nnensa@gmail.com" },
+  { id: "APP-014", name: "Daniel Chizala",      gender: "Male",   district: "Lilongwe",   phone: "+265 885 567 890", sector: "Energy & Environment",   date: "2026-02-05", status: "Approved",  score: 89, program: "Incubation", isMockup: true, businessName: "EcoBreeze Energy", stage: "Early Traction", email: "daniel.chizala@gmail.com" },
+  { id: "APP-015", name: "Tamara Kachingwe",    gender: "Female", district: "Blantyre",   phone: "+265 992 678 012", sector: "Financial Services",     date: "2026-02-08", status: "Matching",  score: 77, program: "Incubation", isMockup: true, businessName: "FinLit Mobile", stage: "MVP / Prototype", email: "tamara.kachingwe@gmail.com" },
+  { id: "APP-016", name: "Wisdom Chilambe",     gender: "Male",   district: "Mzuzu",      phone: "+265 883 789 123", sector: "Education & Training",   date: "2026-02-11", status: "Rejected",  score: 42, program: "Incubation", isMockup: true, businessName: "SkillBridge Edu", stage: "Idea Stage", email: "wisdom.chilambe@gmail.com", rejectionReason: "Early concept stage lacking proof-of-concept and market validation", rejectedDate: "2026-02-16", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
+  { id: "APP-017", name: "Olivia Gondwe",       gender: "Female", district: "Zomba",      phone: "+265 998 890 234", sector: "Tourism & Hospitality",  date: "2026-02-14", status: "Selected",  score: 81, program: "Incubation", isMockup: true, businessName: "Zomba Plateau Eco-Tours", stage: "Early Traction", email: "olivia.gondwe@gmail.com", selectionReason: "Sustainable eco-tourism business model with clear community socio-economic impact", selectedDate: "2026-02-19" },
+  { id: "APP-018", name: "Elliot Phiri",        gender: "Male",   district: "Kasungu",    phone: "+265 886 901 345", sector: "Agri-Business",          date: "2026-02-17", status: "Pending",   score: 65, program: "Incubation", isMockup: true, businessName: "Kasungu Seedlings", stage: "Idea Stage", email: "elliot.phiri@gmail.com" },
+  { id: "APP-019", name: "Mphatso Kazembe",     gender: "Female", district: "Lilongwe",   phone: "+265 995 789 012", sector: "Agri-Business",          date: "2026-02-18", status: "Rejected",  score: 46, program: "Incubation", isMockup: true, businessName: "Kazembe Agro Processors", stage: "Idea Stage", email: "mphatso.kazembe@gmail.com", rejectionReason: "Incomplete financial model canvas and market traction data", rejectedDate: "2026-02-22", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
+  { id: "APP-020", name: "Yamikani Banda",      gender: "Male",   district: "Blantyre",   phone: "+265 882 123 789", sector: "Manufacturing",          date: "2026-02-20", status: "Rejected",  score: 38, program: "Incubation", isMockup: true, businessName: "Banda Brickworks", stage: "Idea Stage", email: "yamikani.banda@gmail.com", rejectionReason: "Did not meet core incubation eligibility requirements (<40 score)", rejectedDate: "2026-02-24", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Remediation Required" },
+  { id: "APP-021", name: "Chisomo Matenje",     gender: "Female", district: "Kasungu",    phone: "+265 994 456 012", sector: "Technology",             date: "2026-02-22", status: "Rejected",  score: 47, program: "Incubation", isMockup: true, businessName: "Kasungu Mobile Tech", stage: "Idea Stage", email: "cmatenje@techmw.com", rejectionReason: "Working prototype unavailable during technical evaluation session", rejectedDate: "2026-02-26", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
+  { id: "APP-022", name: "Dalitso Mvula",       gender: "Male",   district: "Lilongwe",   phone: "+265 888 654 321", sector: "Agri-Business",          date: "2026-02-23", status: "Matching",  score: 86, program: "Incubation", isMockup: true, businessName: "GreenSprout Hydroponics", stage: "MVP / Prototype", email: "dalitso.mvula@greensprout.mw" },
+  { id: "APP-023", name: "Brian Kumwenda",      gender: "Male",   district: "Mzuzu",      phone: "+265 991 765 432", sector: "Technology",             date: "2026-02-25", status: "Matching",  score: 82, program: "Incubation", isMockup: true, businessName: "Mzuzu Coders Hub", stage: "MVP / Prototype", email: "bkumwenda@codershub.mw" },
+  { id: "APP-024", name: "Enelesi Phiri",       gender: "Female", district: "Zomba",      phone: "+265 884 876 543", sector: "Creative Arts",          date: "2026-02-26", status: "Matching",  score: 80, program: "Incubation", isMockup: true, businessName: "Zomba Weavers Co-op", stage: "Early Traction", email: "enelesi.phiri@gmail.com" },
+  { id: "APP-025", name: "Kondwani Phiri",      gender: "Male",   district: "Zomba",      phone: "+265 881 250 025", sector: "EdTech",         date: "2026-01-14", status: "Matching",  score: 85, program: "Incubation", isMockup: true, businessName: "EduBridge", stage: "MVP / Prototype", email: "kondwani.phiri@gmail.com" },
+  { id: "APP-026", name: "Tadala Chirwa",       gender: "Female", district: "Mzuzu",      phone: "+265 992 260 026", sector: "CleanEnergy",    date: "2026-01-14", status: "Matching",  score: 79, program: "Incubation", isMockup: true, businessName: "CleanHeat", stage: "Idea", email: "tadala.chirwa@gmail.com" },
+  { id: "APP-027", name: "Yamikani Mwale",      gender: "Female", district: "Blantyre",   phone: "+265 883 270 027", sector: "EdTech",         date: "2026-01-15", status: "Matching",  score: 74, program: "Incubation", isMockup: true, businessName: "LearnLoop", stage: "Idea", email: "yamikani.mwale@gmail.com" },
+  { id: "APP-028", name: "Grace Kamwendo",      gender: "Female", district: "Lilongwe",   phone: "+265 994 280 028", sector: "HealthTech",     date: "2026-01-16", status: "Matching",  score: 88, program: "Incubation", isMockup: true, businessName: "HealthTrack", stage: "MVP / Prototype", email: "grace.kamwendo@gmail.com" },
+  { id: "APP-029", name: "Madalitso Chiumia",   gender: "Male",   district: "Lilongwe",   phone: "+265 995 290 029", sector: "AgriTech",       date: "2026-01-17", status: "Matching",  score: 76, program: "Incubation", isMockup: true, businessName: "FarmLink", stage: "Idea", email: "madalitso.chiumia@gmail.com" },
+];
+
+const EMAILS = [
+  { id: 1, subject: "Welcome to ARISE Youth Incubation Programme", recipients: 98,  opened: 74, clicked: 42, sent: "2026-01-05", status: "Delivered" },
+  { id: 2, subject: "Application Shortlist Notification — Round 1",  recipients: 52,  opened: 49, clicked: 31, sent: "2026-01-12", status: "Delivered" },
+  { id: 3, subject: "Mentor Matching Update: Your Mentor is Ready",   recipients: 31,  opened: 28, clicked: 19, sent: "2026-01-20", status: "Delivered" },
+  { id: 4, subject: "Monthly Progress Check-In — February 2026",      recipients: 98,  opened: 61, clicked: 29, sent: "2026-02-01", status: "Delivered" },
+  { id: 5, subject: "Incubation Bootcamp Reminder — March 2026",       recipients: 142, opened: 0,  clicked: 0,  sent: "2026-03-01", status: "Scheduled"},
+];
+
+const ALUMNI = [
+  { name: "Grace Phiri",       cohort: "2024", business: "FarmFresh Malawi",       sector: "Agri-Business", revenue: "MK 4.2M", district: "Blantyre",  award: true  },
+  { name: "Blessings Kamwana", cohort: "2024", business: "TechHub Malawi",          sector: "Technology",    revenue: "MK 6.8M", district: "Blantyre",  award: false },
+  { name: "Vitumbiko Nkosi",   cohort: "2023", business: "NkosiCraft Industries",   sector: "Manufacturing", revenue: "MK 3.1M", district: "Mulanje",   award: true  },
+  { name: "Alinafe Gondwe",    cohort: "2023", business: "Gondwe Services Ltd",     sector: "Services",      revenue: "MK 2.4M", district: "Salima",    award: false },
+  { name: "Innocent Phiri",    cohort: "2022", business: "GreenFields Agri Co.",    sector: "Agri-Business", revenue: "MK 5.0M", district: "Nkhotakota",award: false },
+  { name: "Chisomo Banda",     cohort: "2022", business: "Banda Creative Studio",   sector: "Creative Arts", revenue: "MK 1.8M", district: "Lilongwe",  award: true  },
+];
+
+const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
+  Pending:   { bg: "rgba(76,128,138,0.15)",  color: "#4C808A" },
+  pending:   { bg: "rgba(76,128,138,0.15)",  color: "#4C808A" },
+  Selected:  { bg: "rgba(59,130,246,0.15)",  color: "#2563eb" },
+  Approved:  { bg: "rgba(16,185,129,0.15)",  color: "#059669" },
+  "Pending Approval": { bg: "rgba(245,158,11,0.15)", color: "#d97706" },
+  "Re-match Requested": { bg: "rgba(239,68,68,0.15)", color: "#dc2626" },
+  Matching:  { bg: "rgba(139,92,246,0.15)",  color: "#7c3aed" },
+  Rejected:  { bg: "rgba(239,68,68,0.15)",   color: "#dc2626" },
+  Dropped:   { bg: "rgba(107,114,128,0.15)", color: "#6b7280" },
+  Dropouts:  { bg: "rgba(107,114,128,0.15)", color: "#6b7280" },
+  Delivered: { bg: "rgba(16,185,129,0.15)",  color: "#059669" },
+  Scheduled: { bg: "rgba(245,158,11,0.15)",  color: "#d97706" },
+};
+
+const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
+  {
+    id: "notif-1",
+    section: "Selection",
+    title: "Candidate Selected",
+    message: "Tamara Kachingwe (APP-015) was selected by the evaluation committee for Incubation Stage 2.",
+    candidateName: "Tamara Kachingwe",
+    candidateId: "APP-015",
+    timestamp: "12m ago",
+    createdAt: Date.now() - 12 * 60 * 1000,
+    read: false,
+    type: "success",
+    actionTarget: "Selection",
+  },
+  {
+    id: "notif-2",
+    section: "Matching",
+    title: "Mentor Match Confirmed",
+    message: "Pair match confirmed: Dalitso Mvula paired with Ms. Rejoice Mwale (95% compatibility).",
+    candidateName: "Dalitso Mvula",
+    candidateId: "APP-022",
+    timestamp: "45m ago",
+    createdAt: Date.now() - 45 * 60 * 1000,
+    read: false,
+    type: "success",
+    actionTarget: "Matching",
+  },
+  {
+    id: "notif-3",
+    section: "Matching",
+    title: "Partner Re-assignment Requested",
+    message: "Grace Kamwendo partner re-assigned: Status changed to Pending Approval. Re-match request created in Pairing and Matching.",
+    candidateName: "Grace Kamwendo",
+    candidateId: "APP-020",
+    timestamp: "2h ago",
+    createdAt: Date.now() - 2 * 60 * 60 * 1000,
+    read: false,
+    type: "warning",
+    actionTarget: "Pairing & Matching",
+  },
+  {
+    id: "notif-4",
+    section: "Rejected",
+    title: "Application Disqualified",
+    message: "Enelesi Phiri (APP-024) disqualified by evaluation committee. Notice sent to applicant.",
+    candidateName: "Enelesi Phiri",
+    candidateId: "APP-024",
+    timestamp: "4h ago",
+    createdAt: Date.now() - 4 * 60 * 60 * 1000,
+    read: true,
+    type: "danger",
+    actionTarget: "Rejected",
+  },
+  {
+    id: "notif-5",
+    section: "Dropouts",
+    title: "Candidate Dropout Recorded",
+    message: "Esther Chikaonda (APP-008) recorded as Dropout due to relocation outside pilot district.",
+    candidateName: "Esther Chikaonda",
+    candidateId: "APP-008",
+    timestamp: "Yesterday",
+    createdAt: Date.now() - 24 * 60 * 60 * 1000,
+    read: true,
+    type: "warning",
+    actionTarget: "Dropouts",
+  },
+  {
+    id: "notif-6",
+    section: "Applications",
+    title: "New Application Received",
+    message: "Lusungu Nyirenda (APP-005) submitted new Incubation application for Nyirenda Logistics.",
+    candidateName: "Lusungu Nyirenda",
+    candidateId: "APP-005",
+    timestamp: "1d ago",
+    createdAt: Date.now() - 28 * 60 * 60 * 1000,
+    read: true,
+    type: "info",
+    actionTarget: "Applications",
+  },
+];
+
+// ── Notification bell dropdown ──────────────────────────────────────────────
+function NotificationBellDropdown({
+  notifications,
+  onMarkRead,
+  onMarkAllRead,
+  onClearAll,
+  onRemove,
+  onNavigate,
+}: {
+  notifications: IncubationNotification[];
+  onMarkRead: (id: string) => void;
+  onMarkAllRead: () => void;
+  onClearAll: () => void;
+  onRemove: (id: string) => void;
+  onNavigate: (target: NavKey) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-8 h-8 rounded-md flex items-center justify-center relative transition-all hover:brightness-125 cursor-pointer"
+        style={{ background: open ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)" }}
+        title={`Incubation Activity Notifications (${unreadCount} unread)`}
+      >
+        <Bell size={13} color="#fff" />
+        {unreadCount > 0 && (
+          <span
+            className="absolute -top-1 -right-1 px-1 min-w-[17px] h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white shadow-md animate-pulse"
+            style={{ background: "#e85454", border: "1.5px solid #3B4167" }}
+          >
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div
+          className="absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-xl overflow-hidden z-50 im-dd shadow-2xl bg-white text-gray-800"
+          style={{ border: "1px solid #e5e7eb", boxShadow: "0 16px 40px rgba(0,0,0,0.25)" }}
+        >
+          {/* Header */}
+          <div
+            className="px-4 py-3 text-white flex items-center justify-between"
+            style={{ background: "linear-gradient(135deg, #2a3054 0%, #3B4167 60%, #4C808A 100%)" }}
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-white shadow-xs flex items-center justify-center">
+                <Bell size={12} color="#4C808A" />
+              </div>
+              <div>
+                <h4 className="font-bold text-xs leading-none">Notifications Tracker</h4>
+                <p className="text-[10px] text-white/80 mt-0.5">
+                  {unreadCount > 0 ? `${unreadCount} unread update${unreadCount > 1 ? "s" : ""}` : "All actions up to date"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {unreadCount > 0 && (
+                <button
+                  onClick={() => onMarkAllRead()}
+                  className="px-2 py-1 rounded-md bg-white hover:bg-gray-100 text-[10px] font-bold text-[#4C808A] shadow-xs transition-colors cursor-pointer flex items-center gap-1"
+                  title="Mark all as read"
+                >
+                  <CheckCheck size={11} color="#4C808A" /> Read all
+                </button>
+              )}
+              {notifications.length > 0 && (
+                <button
+                  onClick={() => onClearAll()}
+                  className="w-6 h-6 rounded-md bg-white hover:bg-gray-100 shadow-xs transition-colors cursor-pointer flex items-center justify-center"
+                  title="Clear all notifications"
+                >
+                  <Trash2 size={12} color="#4C808A" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Notifications List */}
+          <div className="max-h-[340px] overflow-y-auto divide-y divide-gray-100">
+            {notifications.length === 0 ? (
+              <div className="p-8 text-center text-gray-400">
+                <Inbox size={26} className="mx-auto mb-2 opacity-40 text-gray-400" />
+                <p className="text-xs font-bold text-gray-600">No notifications</p>
+                <p className="text-[10px] text-gray-400 mt-1 max-w-[220px] mx-auto">
+                  Notification actions taken across Applications, Selection, Rejected, Matching & Dropouts are tracked here.
+                </p>
+              </div>
+            ) : (
+              notifications.map(notif => {
+                return (
+                  <div
+                    key={notif.id}
+                    onClick={() => {
+                      if (!notif.read) onMarkRead(notif.id);
+                      if (notif.actionTarget) {
+                        onNavigate(notif.actionTarget);
+                        setOpen(false);
+                      }
+                    }}
+                    className={`p-3 transition-colors cursor-pointer relative group ${
+                      !notif.read ? "bg-teal-50/40 hover:bg-teal-50/70" : "bg-white hover:bg-gray-50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-gray-400 font-medium">{notif.timestamp}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemove(notif.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded-md bg-white hover:bg-gray-100 border border-gray-200 shadow-xs transition-all cursor-pointer flex items-center justify-center"
+                        title="Dismiss"
+                      >
+                        <X size={10} color="#4C808A" />
+                      </button>
+                    </div>
+
+                    <h5 className={`text-xs font-bold mt-1 leading-snug ${!notif.read ? "text-gray-900" : "text-gray-700"}`}>
+                      {notif.title}
+                    </h5>
+
+                    <p className="text-[11px] text-gray-600 mt-0.5 leading-snug line-clamp-2">
+                      {notif.message}
+                    </p>
+
+                    {notif.actionTarget && (
+                      <div className="mt-1.5 flex items-center gap-1 text-[10px] font-bold text-[#4C808A]">
+                        <span>View in {notif.actionTarget}</span>
+                        <ChevronRight size={10} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-3.5 py-2 bg-gray-50 border-t border-gray-200 flex items-center justify-between text-[10px] text-gray-500">
+            <span>Tracking active across 5 sections</span>
+            <span className="font-semibold text-[#4C808A]">Click to navigate</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Profile dropdown ──────────────────────────────────────────────────────────
+function ProfileDropdown({ onSignOut }: { onSignOut: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all hover:brightness-110"
+        style={{ background: "rgba(255,255,255,0.12)" }}
+      >
+        <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+          style={{ background: `linear-gradient(135deg, ${NAVY}, ${TEAL})` }}>
+          <svg viewBox="0 0 28 28" width="20" height="20" fill="none">
+            <circle cx="14" cy="10" r="4.5" fill="rgba(255,255,255,0.9)" />
+            <ellipse cx="14" cy="23" rx="8.5" ry="5" fill="rgba(255,255,255,0.9)" />
+          </svg>
+        </div>
+        <span className="text-white text-[11px] font-bold hidden sm:block">Gift Chimwendo</span>
+        <ChevronDown size={11} color="rgba(255,255,255,0.6)" />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-52 rounded-md overflow-hidden z-50 im-dd"
+          style={{ background: "#4C808A", border: "1px solid rgba(255,255,255,0.25)", boxShadow: "0 16px 40px rgba(0,0,0,0.35)", backdropFilter: "blur(20px)" }}>
+          <div className="px-4 py-3 flex items-center gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.18)" }}>
+            <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+              style={{ background: NAVY, border: "1px solid rgba(255,255,255,0.25)" }}>
+              <svg viewBox="0 0 28 28" width="28" height="28" fill="none">
+                <circle cx="14" cy="10" r="4.5" fill="rgba(255,255,255,0.95)" />
+                <ellipse cx="14" cy="23" rx="8.5" ry="5" fill="rgba(255,255,255,0.95)" />
+              </svg>
+            </div>
+            <div className="min-w-0">
+              <div className="text-white text-xs font-bold truncate">Gift Chimwendo</div>
+              <div className="text-[10px] truncate text-white/80 font-medium">Program Manager</div>
+            </div>
+          </div>
+          <div className="py-1.5">
+            {[{ icon: User, label: "My Profile" }, { icon: Settings, label: "Settings" }].map(({ icon: Icon, label }) => (
+              <button key={label} onClick={() => setOpen(false)}
+                className="flex items-center gap-3 w-full px-4 py-2.5 text-xs font-semibold transition-all text-left"
+                style={{ color: "#ffffff" }}
+                onMouseEnter={e => (e.currentTarget.style.background = "rgba(27,54,93,0.35)")}
+                onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: NAVY }}>
+                  <Icon size={11} color="#ffffff" />
+                </div>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div style={{ borderTop: "1px solid rgba(255,255,255,0.18)" }}>
+            <button onClick={() => { setOpen(false); onSignOut(); }}
+              className="flex items-center gap-3 w-full px-4 py-3 text-xs font-bold transition-all text-left"
+              style={{ color: "#fee2e2" }}
+              onMouseEnter={e => (e.currentTarget.style.background = "rgba(220,38,38,0.2)")}
+              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+              <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: "rgba(239,68,68,0.25)" }}>
+                <LogOut size={11} color="#fee2e2" />
+              </div>
+              Sign Out
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sidebar nav item ──────────────────────────────────────────────────────────
+function NavItem({
+  icon: Icon, label, active, onClick, indent = false, count, extra,
+}: {
+  icon: React.ElementType; label: string; active: boolean; onClick: () => void; indent?: boolean; count?: number; extra?: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2.5 w-full text-left transition-all rounded-md px-3 py-2.5 group"
+      style={{
+        paddingLeft: indent ? 36 : 12,
+        background: active ? "rgba(255,255,255,0.14)" : "transparent",
+        color: active ? "#fff" : "rgba(255,255,255,0.65)",
+        fontWeight: active ? 700 : 500,
+        fontSize: indent ? 11 : 12,
+      }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
+      onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+    >
+      <Icon size={indent ? 12 : 14} color={active ? "#fff" : "rgba(255,255,255,0.55)"} />
+      <span className="flex-1 truncate">{label}</span>
+      {count !== undefined && (
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md"
+          style={{ background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)", color: active ? "#fff" : "rgba(255,255,255,0.6)" }}>
+          {count}
+        </span>
+      )}
+      {extra}
+      {active && !indent && <div className="w-1 h-4 rounded-md shrink-0" style={{ background: "#fff" }} />}
+    </button>
+  );
+}
+
+// ── Dashboard data ────────────────────────────────────────────────────────────
+const ENT_DISTRICT_DATA = [
+  { district: "Lilongwe", male: 38, female: 34, total: 72 },
+  { district: "Blantyre", male: 32, female: 28, total: 60 },
+  { district: "Mzuzu",    male: 24, female: 20, total: 44 },
+  { district: "Zomba",    male: 18, female: 16, total: 34 },
+  { district: "Kasungu",  male: 14, female: 12, total: 26 },
+  { district: "Dedza",    male: 12, female: 10, total: 22 },
+  { district: "Salima",   male: 10, female: 8,  total: 18 },
+  { district: "Nkhotakota", male: 8, female: 6, total: 14 },
+  { district: "Mulanje",  male: 7,  female: 5,  total: 12 },
+  { district: "Chiradzulu", male: 6, female: 4, total: 10 },
+  { district: "Mangochi", male: 5,  female: 4,  total: 9  },
+];
+const ENT_GENDER  = { male: 138, female: 120 };
+const ENT_TARGETS = { applications: 180, approval: 120, incubation: 90 };
+
+const MNT_DISTRICT_DATA = [
+  { district: "Lilongwe", male: 22, female: 18, total: 40 },
+  { district: "Blantyre", male: 18, female: 14, total: 32 },
+  { district: "Mzuzu",    male: 14, female: 10, total: 24 },
+  { district: "Zomba",    male: 10, female: 8,  total: 18 },
+  { district: "Kasungu",  male: 8,  female: 6,  total: 14 },
+  { district: "Dedza",    male: 7,  female: 5,  total: 12 },
+  { district: "Salima",   male: 6,  female: 4,  total: 10 },
+  { district: "Nkhotakota", male: 5, female: 4, total: 9  },
+  { district: "Mulanje",  male: 4,  female: 3,  total: 7  },
+];
+const MNT_GENDER  = { male: 72, female: 56 };
+const MNT_TARGETS = { applications: 120, approval: 80, incubation: 55 };
+
+// ── Custom SVG bar chart with horizontal scroll & sticky Y-axis ───────────────
+function CustomBarChart({
+  data, onFilter, activeDistrict,
+}: {
+  data: { district: string; male: number; female: number; total: number }[];
+  onFilter?: (d: string | null) => void;
+  activeDistrict?: string | null;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const BAR_W = 14, BAR_GAP = 3, GROUP_GAP = 18;
+  const CHART_H = 112, PAD_T = 6, PAD_B = 22;
+  const Y_AXIS_W = 26;
+  const SERIES: { key: "male" | "female" | "total"; color: string }[] = [
+    { key: "male",   color: NAVY },
+    { key: "female", color: TEAL },
+    { key: "total",  color: "url(#barDistrictTotalGrad)" },
+  ];
+  const groupW = 3 * BAR_W + 2 * BAR_GAP;
+  const totalW = data.length * (groupW + GROUP_GAP) + 16;
+  const svgH   = CHART_H + PAD_T + PAD_B;
+  const maxVal = data.length > 0 ? Math.max(1, ...data.flatMap(d => [d.male, d.female, d.total])) : 5;
+  const yMax   = Math.max(5, maxVal <= 10 ? Math.ceil(maxVal) + 1 : Math.ceil(maxVal / 10) * 10);
+  const toBarH = (v: number) => (v / yMax) * CHART_H;
+  const toY    = (v: number) => PAD_T + CHART_H - toBarH(v);
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => Math.round(f * yMax));
+
+  const handleScroll = (delta: number) => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollBy({ left: delta, behavior: "smooth" });
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", flex: 1, minWidth: 0 }}>
+      {/* Scroll controls */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3, marginBottom: 2, padding: "0 2px" }}>
+        <button
+          type="button"
+          onClick={() => handleScroll(-120)}
+          title="Scroll left"
+          style={{
+            width: 16, height: 16, borderRadius: "50%",
+            border: "1px solid #d1d5db", background: "#f9fafb",
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", color: NAVY, padding: 0,
+          }}>
+          <ChevronLeft size={10} />
+        </button>
+        <button
+          type="button"
+          onClick={() => handleScroll(120)}
+          title="Scroll right"
+          style={{
+            width: 16, height: 16, borderRadius: "50%",
+            border: "1px solid #d1d5db", background: "#f9fafb",
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", color: NAVY, padding: 0,
+          }}>
+          <ChevronRight size={10} />
+        </button>
+      </div>
+
+      {/* Main chart row: Fixed Y-axis + Horizontally scrollable bars */}
+      <div style={{ display: "flex", width: "100%", flex: 1, minWidth: 0, position: "relative" }}>
+        {/* Fixed Y-Axis */}
+        <div style={{ width: Y_AXIS_W, flexShrink: 0 }}>
+          <svg width={Y_AXIS_W} height={svgH} style={{ display: "block" }}>
+            {yTicks.map(v => {
+              const y = toY(v);
+              return (
+                <g key={v}>
+                  <text x={Y_AXIS_W - 5} y={y + 3} textAnchor="end" fontSize={7.5} fontWeight="600" fill="#9ca3af">{v}</text>
+                  <line x1={Y_AXIS_W - 3} y1={y} x2={Y_AXIS_W} y2={y} stroke="#d1d5db" strokeWidth={1} />
+                </g>
+              );
+            })}
+            <line x1={Y_AXIS_W - 1} y1={PAD_T} x2={Y_AXIS_W - 1} y2={PAD_T + CHART_H} stroke="#d1d5db" strokeWidth={1} />
+          </svg>
+        </div>
+
+        {/* Scrollable Bar Viewport */}
+        <div
+          ref={scrollRef}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflowX: "auto",
+            overflowY: "hidden",
+            scrollbarWidth: "thin",
+            scrollbarColor: `${TEAL} #f1f5f9`,
+            WebkitOverflowScrolling: "touch",
+            paddingBottom: 2,
+          }}>
+          <svg width={totalW} height={svgH} style={{ display: "block" }}>
+            <defs>
+              <linearGradient id="barDistrictTotalGrad" x1="0" y1="1" x2="0" y2="0">
+                <stop offset="0%" stopColor={NAVY} />
+                <stop offset="100%" stopColor={TEAL} />
+              </linearGradient>
+            </defs>
+            {yTicks.map(v => {
+              const y = toY(v);
+              return (
+                <line key={v} x1={0} y1={y} x2={totalW} y2={y} stroke="#f3f4f6" strokeWidth={1} />
+              );
+            })}
+            {data.map((d, gi) => {
+              const gx  = 8 + gi * (groupW + GROUP_GAP);
+              const dim = activeDistrict && activeDistrict !== d.district;
+              return (
+                <g key={d.district} style={{ cursor: onFilter ? "pointer" : "default" }}
+                  onClick={() => onFilter?.(activeDistrict === d.district ? null : d.district)}>
+                  {/* Hover highlight */}
+                  <rect x={gx - 3} y={PAD_T} width={groupW + 6} height={CHART_H}
+                    fill={activeDistrict === d.district ? "rgba(76,128,138,0.12)" : "transparent"} rx={3} />
+                  {SERIES.map((s, si) => {
+                    const x = gx + si * (BAR_W + BAR_GAP);
+                    const h = toBarH(d[s.key]);
+                    const y = toY(d[s.key]);
+                    return (
+                      <g key={s.key}>
+                        <rect x={x} y={y} width={BAR_W} height={h} fill={s.color} rx={2} ry={2}
+                          opacity={dim ? 0.3 : 1} />
+                        {h > 14 && !dim && (
+                          <text x={x + BAR_W / 2} y={y + h - 3} textAnchor="middle" fontSize={7.5} fontWeight="bold" fill="#fff">
+                            {d[s.key]}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+                  <text x={gx + groupW / 2} y={svgH - 6} textAnchor="middle" fontSize={8}
+                    fill={activeDistrict === d.district ? NAVY : "#4b5563"} fontWeight={activeDistrict === d.district ? 700 : 500}>
+                    {d.district}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SVG Donut — leader lines to outside values, size matching SectorPieChart ──
+function DonutChart({ male, female, totalApps, onFilter }: { male: number; female: number; totalApps?: number; onFilter?: (g: string | null) => void }) {
+  const total = male + female;
+  const displayTotal = totalApps ?? total;
+
+  if (total === 0) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", width: "100%", padding: "10px 0" }}>
+        <div style={{ position: "relative", width: 90, height: 90, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <svg width={90} height={90} viewBox="0 0 90 90">
+            <circle cx={45} cy={45} r={30} fill="none" stroke="#e5e7eb" strokeWidth={14} />
+            <text x={45} y={45} textAnchor="middle" fontSize={15} fontWeight="900" fill={NAVY}>0</text>
+            <text x={45} y={54} textAnchor="middle" fontSize={7} fontWeight="700" fill="#9ca3af">TOTAL</text>
+          </svg>
+        </div>
+        <div style={{ fontSize: 9, color: "#9ca3af", fontWeight: 600, marginTop: 4 }}>No data</div>
+      </div>
+    );
+  }
+
+  // Matching SectorPieChart: R = 64, IR = 26, stroke center r = 45, stroke width sw = 38
+  const cx = 110, cy = 80, r = 45, sw = 38;
+  const circ = 2 * Math.PI * r;
+  const femPct = Math.round((female / total) * 100);
+  const malPct = 100 - femPct;
+
+  const toXY = (deg: number, radius: number) => {
+    const rad = (deg - 90) * (Math.PI / 180);
+    return { x: cx + radius * Math.cos(rad), y: cy + radius * Math.sin(rad) };
+  };
+
+  const femSweepDeg = (female / total) * 360;
+  const femMidDeg = femSweepDeg / 2;
+  const malMidDeg = femSweepDeg + (360 - femSweepDeg) / 2;
+
+  // Outer radius of donut slice is r + sw/2 = 45 + 19 = 64 (matches SectorPieChart R = 64)
+  const outerR = r + sw / 2;
+  const fStart = toXY(femMidDeg, outerR);
+  const fElbow = toXY(femMidDeg, outerR + 9);
+  const fEnd = { x: fElbow.x + 8, y: fElbow.y };
+
+  const mStart = toXY(malMidDeg, outerR);
+  const mElbow = toXY(malMidDeg, outerR + 9);
+  const mEnd = { x: mElbow.x - 8, y: mElbow.y };
+
+  const gap = female > 0 && male > 0 ? 2 : 0;
+  const femLen = female > 0 ? (male > 0 ? circ * (female / total) - gap : circ) : 0;
+  const malLen = male > 0 ? (female > 0 ? circ * (male / total) - gap : circ) : 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", height: "100%", width: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1, width: "100%" }}>
+        <svg width={192} height={140} viewBox="0 0 220 160" style={{ display: "block", flexShrink: 0, overflow: "visible", cursor: onFilter ? "pointer" : "default" }}>
+          <defs>
+            <linearGradient id="genderDonutGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={NAVY} />
+              <stop offset="100%" stopColor={TEAL} />
+            </linearGradient>
+          </defs>
+
+          {/* Female arc */}
+          {female > 0 && (
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke={TEAL} strokeWidth={sw}
+              strokeDasharray={`${femLen} ${circ}`} strokeDashoffset={0}
+              transform={`rotate(-90 ${cx} ${cy})`}
+              onClick={() => onFilter?.("Female")} style={{ cursor: "pointer" }} />
+          )}
+
+          {/* Male arc */}
+          {male > 0 && (
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke={NAVY} strokeWidth={sw}
+              strokeDasharray={`${malLen} ${circ}`} strokeDashoffset={-(femLen + gap)}
+              transform={`rotate(-90 ${cx} ${cy})`}
+              onClick={() => onFilter?.("Male")} style={{ cursor: "pointer" }} />
+          )}
+
+          {/* Female pointer line & outside values without badge */}
+          {female > 0 && (
+            <>
+              <circle cx={fStart.x} cy={fStart.y} r={2} fill={TEAL} />
+              <polyline
+                points={`${fStart.x},${fStart.y} ${fElbow.x},${fElbow.y} ${fEnd.x},${fEnd.y}`}
+                fill="none" stroke={TEAL} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
+              <text x={fEnd.x + 3} y={fEnd.y - 2} textAnchor="start" fontSize={10.5} fontWeight="900" fill={TEAL}>{female}</text>
+              <text x={fEnd.x + 3} y={fEnd.y + 8} textAnchor="start" fontSize={8} fontWeight="700" fill="#4b5563">{femPct}%</text>
+            </>
+          )}
+
+          {/* Male pointer line & outside values without badge */}
+          {male > 0 && (
+            <>
+              <circle cx={mStart.x} cy={mStart.y} r={2} fill={NAVY} />
+              <polyline
+                points={`${mStart.x},${mStart.y} ${mElbow.x},${mElbow.y} ${mEnd.x},${mEnd.y}`}
+                fill="none" stroke={NAVY} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
+              <text x={mEnd.x - 3} y={mEnd.y - 2} textAnchor="end" fontSize={10.5} fontWeight="900" fill={NAVY}>{male}</text>
+              <text x={mEnd.x - 3} y={mEnd.y + 8} textAnchor="end" fontSize={8} fontWeight="700" fill="#4b5563">{malPct}%</text>
+            </>
+          )}
+
+          {/* Center: gradient ring accent + realistic total figure */}
+          <circle cx={cx} cy={cy} r={r - sw / 2 - 3} fill="none" stroke="url(#genderDonutGrad)" strokeWidth={1.5} opacity={0.35} />
+          <text x={cx} y={cy} textAnchor="middle" fontSize={15} fontWeight="900" fill={NAVY} style={{ cursor: "pointer" }}
+            onClick={() => onFilter?.(null)}>{displayTotal}</text>
+          <text x={cx} y={cy + 10} textAnchor="middle" fontSize={7.5} fontWeight="700" fill="#9ca3af" letterSpacing="0.05em" style={{ cursor: "pointer" }}
+            onClick={() => onFilter?.(null)}>TOTAL</text>
+        </svg>
+      </div>
+
+      {/* Legend bottom center without badge styling */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 14,
+        marginTop: 8,
+        paddingTop: 4,
+        paddingBottom: 2,
+      }}>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: onFilter ? "pointer" : "default" }}
+          onClick={() => onFilter?.("Male")}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: NAVY, flexShrink: 0 }} />
+          <span style={{ fontSize: 9.5, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>Male</span>
+        </div>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: onFilter ? "pointer" : "default" }}
+          onClick={() => onFilter?.("Female")}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: TEAL, flexShrink: 0 }} />
+          <span style={{ fontSize: 9.5, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>Female</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Sector gradients strictly composed of #3B4167, #4C808A, and their blends ──
+const SECTOR_GRADIENTS = [
+  { start: "#3B4167", end: "#4C808A" }, // Full Navy to Teal gradient
+  { start: "#4C808A", end: "#3B4167" }, // Teal to Navy reverse gradient
+  { start: "#3B4167", end: "#43657b" }, // Navy to Mid-slate
+  { start: "#43657b", end: "#4C808A" }, // Mid-slate to Teal
+  { start: "#2c314f", end: "#3B4167" }, // Deep Navy
+  { start: "#4C808A", end: "#629da8" }, // Bright Teal
+  { start: "#344b63", end: "#487584" }, // Harmonious gradient step
+  { start: "#4a7886", end: "#4C808A" }, // Soft Teal
+];
+
+function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; isEnt: boolean; onFilter?: (s: string | null) => void; activeFilter?: string | null }) {
+  const categoryKey = isEnt ? "sector" : "expertise";
+  const sectors = Array.from(new Set(pool.map((a: any) => a[categoryKey])));
+  const total = pool.length;
+
+  if (total === 0) return (
+    <div style={{ textAlign: "center", color: "#9ca3af", fontSize: 11, padding: 20 }}>No data</div>
+  );
+
+  const rows = sectors.map((sec, idx) => {
+    const grad = SECTOR_GRADIENTS[idx % SECTOR_GRADIENTS.length];
+    return {
+      sector: sec as string,
+      count: pool.filter((a: any) => a[categoryKey] === sec).length,
+      gradStart: grad.start,
+      gradEnd: grad.end,
+      gradId: `sec-grad-${idx}`,
+    };
+  });
+
+  const R = 64, IR = 26, CX = 80, CY = 80;
+  let angle = -Math.PI / 2;
+
+  const slices = rows.map((row, idx) => {
+    const sweep = (row.count / total) * 2 * Math.PI;
+    const end   = angle + sweep;
+    const x1 = CX + R * Math.cos(angle), y1 = CY + R * Math.sin(angle);
+    const x2 = CX + R * Math.cos(end),   y2 = CY + R * Math.sin(end);
+    const xi1 = CX + IR * Math.cos(angle), yi1 = CY + IR * Math.sin(angle);
+    const xi2 = CX + IR * Math.cos(end),   yi2 = CY + IR * Math.sin(end);
+    const mid  = angle + sweep / 2;
+    const lx   = CX + (R * 0.68) * Math.cos(mid);
+    const ly   = CY + (R * 0.68) * Math.sin(mid);
+    const large = sweep > Math.PI ? 1 : 0;
+    const path = `M ${xi1} ${yi1} L ${x1} ${y1} A ${R} ${R} 0 ${large} 1 ${x2} ${y2} L ${xi2} ${yi2} A ${IR} ${IR} 0 ${large} 0 ${xi1} ${yi1} Z`;
+    angle = end;
+    return { ...row, path, lx, ly, sweep, idx };
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", height: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}>
+        <svg width={140} height={140} viewBox="0 0 160 160" style={{ display: "block", flexShrink: 0 }}>
+          <defs>
+            {slices.map((slice) => (
+              <linearGradient key={slice.gradId} id={slice.gradId} x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={slice.gradStart} />
+                <stop offset="100%" stopColor={slice.gradEnd} />
+              </linearGradient>
+            ))}
+          </defs>
+          {slices.map(slice => {
+            const dimmed = !!activeFilter && activeFilter !== slice.sector;
+            return (
+              <g key={slice.sector} style={{ cursor: onFilter ? "pointer" : "default" }}
+                onClick={() => onFilter?.(slice.sector)}>
+                <path
+                  d={slice.path}
+                  fill={`url(#${slice.gradId})`}
+                  stroke="#fff"
+                  strokeWidth={2}
+                  opacity={dimmed ? 0.3 : 1}
+                  style={{ transition: "opacity 0.2s" }}
+                />
+                {slice.sweep > 0.32 && (
+                  <text x={slice.lx} y={slice.ly} textAnchor="middle" dominantBaseline="middle"
+                    fontSize={9} fontWeight="800" fill="#fff" style={{ pointerEvents: "none" }}>
+                    {slice.count}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+          {/* Center number only */}
+          <text x={CX} y={CY + 5} textAnchor="middle" fontSize={16} fontWeight="900" fill={NAVY}>{total}</text>
+        </svg>
+      </div>
+
+      {/* Legend bottom center - single scrollable row */}
+      <div
+        style={{
+          display: "flex",
+          maxWidth: "100%",
+          width: "100%",
+          overflowX: "auto",
+          marginTop: 8,
+          paddingTop: 4,
+          paddingBottom: 2,
+          scrollbarWidth: "none",
+        }}
+      >
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 12, margin: "0 auto", paddingLeft: 4, paddingRight: 4, flexShrink: 0 }}>
+          {rows.map(r => (
+            <div
+              key={r.sector}
+              onClick={() => onFilter?.(r.sector)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                cursor: onFilter ? "pointer" : "default",
+                opacity: activeFilter && activeFilter !== r.sector ? 0.4 : 1,
+                transition: "opacity 0.2s",
+                flexShrink: 0,
+              }}
+            >
+              <div style={{
+                width: 8, height: 8, borderRadius: "50%",
+                background: `linear-gradient(135deg, ${r.gradStart}, ${r.gradEnd})`,
+                flexShrink: 0
+              }} />
+              <span style={{ fontSize: 9, color: "#6b7280", fontWeight: 600, whiteSpace: "nowrap" }}>
+                {r.sector}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+
+// ── Applications dashboard ────────────────────────────────────────────────────
+function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "mentors"; filterStatus?: string | null }) {
+  const programme = useProgramme();
+  const { entApps, mntApps } = useContext(AppDataCtx);
+  const isEnt     = tab === "entrepreneurs";
+  const pool      = isEnt ? entApps : mntApps;
+  const targets   = isEnt ? ENT_TARGETS : MNT_TARGETS;
+
+  const [sectorFilter,   setSectorFilter]   = useState<string | null>(null);
+  const [districtFilter, setDistrictFilter] = useState<string | null>(null);
+  const [genderFilter,   setGenderFilter]   = useState<string | null>(null);
+
+  const isRejectedSection  = filterStatus === "Rejected";
+  const isSelectionSection = filterStatus === "Selected";
+  const isMatchingSection  = filterStatus === "Matching";
+
+  // Section base pool (before drill-through filters)
+  const sectionBasePool = useMemo(() => {
+    if (filterStatus) return pool.filter((a: any) => a.status === filterStatus);
+    return pool;
+  }, [pool, filterStatus]);
+
+  // Combined active pool — all filters (sector, district, gender) applied together for drill-through table and KPIs
+  const activePool = useMemo(() => {
+    return sectionBasePool.filter((a: any) => {
+      if (sectorFilter   && (isEnt ? a.sector : a.expertise) !== sectorFilter)   return false;
+      if (districtFilter && a.district !== districtFilter) return false;
+      if (genderFilter   && a.gender !== genderFilter) return false;
+      return true;
+    });
+  }, [sectionBasePool, sectorFilter, districtFilter, genderFilter, isEnt]);
+
+  // Chart-level pool (filters by sector and district, preserving male/female split for the donut)
+  const chartFilteredPool = useMemo(() => {
+    return sectionBasePool.filter((a: any) => {
+      if (sectorFilter   && (isEnt ? a.sector : a.expertise) !== sectorFilter)   return false;
+      if (districtFilter && a.district !== districtFilter) return false;
+      return true;
+    });
+  }, [sectionBasePool, sectorFilter, districtFilter, isEnt]);
+
+  const maleCount   = chartFilteredPool.filter((a: any) => a.gender === "Male").length;
+  const femaleCount = chartFilteredPool.filter((a: any) => a.gender === "Female").length;
+  const genderTotal = maleCount + femaleCount;
+
+  // Dynamic district data matching current section and chart filters
+  const dynamicDistData = useMemo(() => {
+    const map: Record<string, { district: string; male: number; female: number; total: number }> = {};
+    chartFilteredPool.forEach((a: any) => {
+      const d = a.district || "Unknown";
+      if (!map[d]) map[d] = { district: d, male: 0, female: 0, total: 0 };
+      if (a.gender === "Female") map[d].female += 1;
+      else map[d].male += 1;
+      map[d].total += 1;
+    });
+    return Object.values(map).sort((a, b) => b.total - a.total);
+  }, [chartFilteredPool]);
+
+  const anyFilter = sectorFilter || districtFilter || genderFilter;
+
+  // General metrics
+  const districts  = new Set(activePool.map(a => a.district)).size;
+  const categories = new Set(activePool.map((a: any) => isEnt ? a.sector : a.expertise)).size;
+  const inProgress = pool.filter(a => ["Selected", "Approved", "Matching"].includes(a.status)).length;
+  const avgGeneralScore = activePool.length > 0
+    ? Math.round(activePool.reduce((acc, a: any) => acc + (a.score || 0), 0) / activePool.length)
+    : 0;
+
+  // Rejection metrics
+  const rejectedPool = pool.filter((a: any) => a.status === "Rejected");
+  const rejectedDistricts  = new Set(activePool.map(a => a.district)).size;
+  const rejectedCategories = new Set(activePool.map((a: any) => isEnt ? a.sector : a.expertise)).size;
+  const rejectionRate = Math.round((rejectedPool.length / (pool.length || 1)) * 100);
+  const avgRejectedScore = activePool.length > 0
+    ? Math.round(activePool.reduce((acc, a: any) => acc + (a.score || 0), 0) / activePool.length)
+    : 0;
+  const belowCutoffCount = activePool.filter((a: any) => (a.score || 0) < 50).length;
+  const reapplyEligibleCount = activePool.filter((a: any) => (a.score || 0) >= 40 && (a.score || 0) < 50).length;
+
+  // Selection metrics
+  const selectedDistricts  = new Set(activePool.map(a => a.district)).size;
+  const selectedCategories = new Set(activePool.map((a: any) => isEnt ? a.sector : a.expertise)).size;
+  const avgSelectionScore  = activePool.length > 0
+    ? Math.round(activePool.reduce((acc, a: any) => acc + (a.score || 0), 0) / activePool.length)
+    : 0;
+  const selectionRate = Math.round((activePool.length / (pool.length || 1)) * 100);
+
+  // Matching metrics
+  const matchingDistricts  = new Set(activePool.map(a => a.district)).size;
+  const matchingCategories = new Set(activePool.map((a: any) => isEnt ? a.sector : a.expertise)).size;
+  // Matching KPIs are all computed from the rows shown in the table (which are derived from the programme store)
+  const pairedRows        = activePool.filter((a: any) => a.matchState === "Paired" || a.matchState === "Re-match requested").length;
+  const awaitingRows      = activePool.filter((a: any) => a.matchState === "Awaiting mentor" || a.matchState === "Awaiting mentee").length;
+  const rematchRows       = activePool.filter((a: any) => a.matchState === "Re-match requested").length;
+  const menteesPlaced     = activePool.reduce((acc, a: any) => acc + (a.load ?? 0), 0);
+  const seatsFree         = activePool.reduce((acc, a: any) => acc + Math.max(0, (a.capacity ?? 4) - (a.load ?? 0)), 0);
+  const scoredPairs       = programme.pairs.filter(p => activePool.some((a: any) => isEnt ? a.pairId === p.id : (a.mentees ?? []).some((m: any) => m.pairId === p.id)));
+  const avgPairScore      = scoredPairs.length ? `${Math.round(scoredPairs.reduce((acc, p) => acc + p.matchScore, 0) / scoredPairs.length)}%` : "—";
+
+  const metricCards = isRejectedSection ? [
+    { label: isEnt ? "Total Rejected Applicants" : "Total Rejected Mentors", value: activePool.length,      icon: XCircle     },
+    { label: "Overall Disqualification Rate",                                value: `${rejectionRate}%`,    icon: AlertCircle },
+    { label: "Average Evaluation Score",                                     value: `${avgRejectedScore}%`, icon: FileX       },
+    { label: "Below Passing Threshold (<50)",                                value: belowCutoffCount,       icon: TrendingUp  },
+    { label: "Evaluations Completed",                                        value: activePool.length,      icon: CheckCircle },
+  ] : isMatchingSection ? (isEnt ? [
+    { label: "Entrepreneurs in Matching",  value: activePool.length, icon: GitMerge  },
+    { label: "Paired with a mentor",       value: pairedRows,        icon: Users     },
+    { label: "Awaiting mentor",            value: awaitingRows,      icon: Clock     },
+    { label: "Re-match requested",         value: rematchRows,       icon: RotateCcw },
+    { label: "Average pair match score",   value: avgPairScore,      icon: Star      },
+  ] : [
+    { label: "Mentors in Matching Pool",   value: activePool.length, icon: GitMerge  },
+    { label: "Mentees placed",             value: menteesPlaced,     icon: Users     },
+    { label: "Open mentee seats",          value: seatsFree,         icon: UserPlus },
+    { label: "Mentors awaiting a mentee",  value: awaitingRows,      icon: Clock     },
+    { label: "Average pair match score",   value: avgPairScore,      icon: Star      },
+  ]) : isSelectionSection ? [
+    { label: isEnt ? "Total Applicants Selected" : "Total Mentors Selected",  value: activePool.length,       icon: CheckCircle },
+    { label: "Selected Districts Covered",                                   value: selectedDistricts,       icon: MapPin      },
+    { label: isEnt ? "Priority Sectors Represented" : "Selected Expertise Areas", value: selectedCategories, icon: Layers      },
+    { label: "Average Selection Score",                                      value: `${avgSelectionScore}%`, icon: Award       },
+    { label: "Selection Acceptance Rate",                                    value: `${selectionRate}%`,     icon: TrendingUp  },
+  ] : [
+    { label: isEnt ? "Total Applications Received" : "Total Mentor Registrations", value: activePool.length, icon: FileText     },
+    { label: "Districts Represented",                                        value: districts,         icon: MapPin       },
+    { label: isEnt ? "Total Business Sectors" : "Total Expertise Areas",      value: categories,        icon: Layers       },
+    { label: "Applications In Progress",                                     value: inProgress,        icon: Clock        },
+    { label: "Average Candidate Score",                                      value: `${avgGeneralScore}%`, icon: Award    },
+  ];
+
+  const targetCards = (isRejectedSection || isMatchingSection) ? [] : isSelectionSection ? [
+    { label: "Selection Cohort Target", value: 120, sub: "Pre-Incubation Shortlist Goal", icon: CheckCircle },
+    { label: "Due Diligence Approval Target", value: targets.approval, sub: "Vetting & Verification Target", icon: UserCheck },
+    { label: "Incubation Induction Target", value: targets.incubation, sub: "Final Cohort Onboarding Goal", icon: Lightbulb },
+  ] : [
+    { label: "Applications Intake Target", value: targets.applications, sub: "Total Intake Submissions Target", icon: FileCheck },
+    { label: "Approval / Shortlist Target", value: targets.approval, sub: "Stage 2 Candidate Target", icon: UserCheck },
+    { label: "Incubation Target", value: targets.incubation, sub: "Graduating Cohort Goal", icon: Lightbulb },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {/* ROW 1: 5 metric tiles (PipeCard style, compact height) */}
+      <div style={{ display: "flex", gap: 14, alignItems: "stretch" }}>
+        {metricCards.map((m, i) => {
+          const Icon = m.icon;
+          const circ = 2 * Math.PI * 14;
+          return (
+            <div key={i} style={{
+              flex: 1, minWidth: 0,
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+              background: "#4C808A",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 3,
+              padding: "10px 8px",
+              boxShadow: "0 4px 14px rgba(76,128,138,0.22)",
+              textAlign: "center",
+              position: "relative",
+              overflow: "hidden",
+            }}>
+              {/* Compact ring with icon */}
+              <div style={{ position: "relative", width: 34, height: 34, flexShrink: 0 }}>
+                <svg width={34} height={34} viewBox="0 0 34 34" style={{ transform: "rotate(-90deg)" }}>
+                  <circle cx={17} cy={17} r={14} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth={3} />
+                  <circle cx={17} cy={17} r={14} fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth={3}
+                    strokeLinecap="round"
+                    strokeDasharray={circ}
+                    strokeDashoffset={circ * 0.25}
+                  />
+                </svg>
+                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Icon size={12} color="rgba(255,255,255,0.9)" />
+                </div>
+              </div>
+
+              <div style={{ color: "#fff", fontWeight: 900, fontSize: 20, lineHeight: 1 }}>{m.value}</div>
+              <div style={{ color: "rgba(255,255,255,0.65)", fontWeight: 700, fontSize: 7.5, textTransform: "uppercase", letterSpacing: "0.06em", lineHeight: 1.3 }}>
+                {m.label}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ROW 2: target cards (hidden in rejected section) */}
+      {targetCards.length > 0 && (
+        <div style={{ display: "flex", gap: 14 }}>
+          {targetCards.map((t: any) => {
+            const Icon = t.icon;
+            return (
+              <div key={t.label} style={{
+                flex: 1, minWidth: 0,
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                padding: "12px 14px",
+                background: "#fff",
+                border: `2px solid ${TEAL}55`,
+                borderRadius: 3,
+                boxShadow: "0 2px 10px rgba(76,128,138,0.08)",
+                textAlign: "center",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 4 }}>
+                  <Icon size={20} color={TEAL} />
+                </div>
+                <span style={{ fontSize: 18, fontWeight: 900, color: TEAL, lineHeight: 1 }}>{t.value}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: NAVY, marginTop: 4 }}>{t.label}</span>
+                {t.sub && (
+                  <span style={{ fontSize: 8.5, color: "#6b7280", marginTop: 2, fontWeight: 500 }}>{t.sub}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Active filter badges */}
+      {anyFilter && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {sectorFilter && (
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
+              color: "#fff", background: TEAL, borderRadius: 3, padding: "2px 8px" }}>
+              Sector: {sectorFilter}
+              <button onClick={() => setSectorFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
+            </span>
+          )}
+          {districtFilter && (
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
+              color: "#fff", background: NAVY, borderRadius: 3, padding: "2px 8px" }}>
+              District: {districtFilter}
+              <button onClick={() => setDistrictFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
+            </span>
+          )}
+          {genderFilter && (
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
+              color: "#fff", background: genderFilter === "Male" ? NAVY : TEAL, borderRadius: 3, padding: "2px 8px" }}>
+              Gender: {genderFilter}
+              <button onClick={() => setGenderFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
+            </span>
+          )}
+          <button onClick={() => { setSectorFilter(null); setDistrictFilter(null); setGenderFilter(null); }}
+            style={{ fontSize: 9, fontWeight: 700, color: "#6b7280", background: "#f3f4f6", border: "none", borderRadius: 3, padding: "2px 8px", cursor: "pointer" }}>
+            Clear all
+          </button>
+        </div>
+      )}
+
+      {/* ROW 3: charts — district bar | sector bar | gender donut */}
+      <div style={{ display: "flex", gap: 14 }}>
+        {/* District by Gender bar chart */}
+        <div style={{
+          flex: 1, minWidth: 0,
+          background: "#fff", border: `2px solid ${TEAL}55`,
+          borderRadius: 3, padding: "10px 12px",
+          boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
+          display: "flex", flexDirection: "column",
+        }}>
+          <div style={{ fontSize: 9.5, fontWeight: 700, color: NAVY, marginBottom: 8, lineHeight: 1.3, textAlign: "center" }}>
+            {isSelectionSection
+              ? "Selected Applicants by District"
+              : isRejectedSection
+                ? (isEnt ? "Rejected Applicants by District" : "Rejected Mentors by District")
+                : isMatchingSection
+                  ? (isEnt ? "Matching Queue by District" : "Matching Mentors by District")
+                  : "App. Received by District by Gender"}
+          </div>
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <CustomBarChart data={dynamicDistData}
+              onFilter={d => setDistrictFilter(d === districtFilter ? null : d)}
+              activeDistrict={districtFilter} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 14, marginTop: 8, paddingTop: 4 }}>
+            {[
+              { c: NAVY, l: "Male", isGrad: false },
+              { c: TEAL, l: "Female", isGrad: false },
+              { c: `linear-gradient(135deg, ${NAVY}, ${TEAL})`, l: "Total", isGrad: true },
+            ].map(x => (
+              <div key={x.l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{
+                  width: 7, height: 7, borderRadius: "50%",
+                  background: x.isGrad ? x.c : undefined,
+                  backgroundColor: !x.isGrad ? x.c : undefined,
+                  flexShrink: 0
+                }} />
+                <span style={{ fontSize: 9, color: "#6b7280", fontWeight: 600 }}>{x.l}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Total Apps Received by Sectors */}
+        <div style={{
+          flex: 1, minWidth: 0,
+          background: "#fff", border: `2px solid ${sectorFilter ? TEAL : TEAL}55`,
+          borderRadius: 3, padding: "10px 12px",
+          boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
+          display: "flex", flexDirection: "column",
+        }}>
+          <div style={{ fontSize: 9.5, fontWeight: 700, color: NAVY, marginBottom: 8, lineHeight: 1.3, textAlign: "center" }}>
+            {isSelectionSection
+              ? (isEnt ? "Selected Applicants by Sector" : "Selected Mentors by Expertise")
+              : isRejectedSection
+                ? (isEnt ? "Rejected Applicants by Sector" : "Rejected Mentors by Expertise")
+                : isMatchingSection
+                  ? (isEnt ? "Matching Queue by Sector" : "Matching Mentors by Expertise")
+                  : (isEnt ? "Total Apps Received by Sectors" : "Total Apps Received by Expertise")}
+          </div>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", width: "100%" }}>
+            <SectorPieChart pool={chartFilteredPool} isEnt={isEnt} activeFilter={sectorFilter} onFilter={s => setSectorFilter(s === sectorFilter ? null : s)} />
+          </div>
+        </div>
+
+        {/* Donut card */}
+        <div style={{
+          background: "#fff", border: `2px solid ${TEAL}55`,
+          borderRadius: 3, padding: "10px 12px",
+          boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
+          display: "flex", flexDirection: "column",
+          flex: 1, minWidth: 0,
+        }}>
+          <div style={{ fontSize: 9.5, fontWeight: 700, color: NAVY, marginBottom: 8, textAlign: "center", lineHeight: 1.3, whiteSpace: "nowrap" }}>
+            {isSelectionSection
+              ? "Selected Gender Distribution"
+              : isRejectedSection
+                ? "Rejected Applicants Gender Distribution"
+                : isMatchingSection
+                  ? "Matching Pool Gender Distribution"
+                  : "Gender Distribution"}
+          </div>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", width: "100%" }}>
+            <DonutChart male={maleCount} female={femaleCount}
+              totalApps={genderTotal}
+              onFilter={g => setGenderFilter(g === genderFilter ? null : g)} />
+          </div>
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+// ── App Detail Panel ─────────────────────────────────────────────────────────
+function AppDetailPanel({
+  app,
+  kind,
+  onBack,
+  onEditReason,
+}: {
+  app: EntrepreneurApplication | MentorApplication;
+  kind: "entrepreneur" | "mentor";
+  onBack: () => void;
+  onEditReason?: (app: EntrepreneurApplication | MentorApplication, action: "Select" | "Reject") => void;
+}) {
+  const programme = useProgramme();
+  const isEnt = kind === "entrepreneur";
+  const ent = app as EntrepreneurApplication;
+  const mnt = app as MentorApplication;
+  const sc = STATUS_COLORS[app.status as keyof typeof STATUS_COLORS] ?? STATUS_COLORS["Pending"];
+  function Row({ label, value }: { label: string; value?: string }) {
+    return (
+      <div className="flex gap-4 py-2.5" style={{ borderBottom: "1px solid #f3f4f6" }}>
+        <span className="w-40 shrink-0 text-[11px] font-bold uppercase tracking-wider text-gray-400">{label}</span>
+        <span className="text-[13px] text-gray-700">{value || "—"}</span>
+      </div>
+    );
+  }
+
+  function Section({ title, children }: { title: string; children: React.ReactNode }) {
+    return (
+      <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+        <div className="px-5 py-3" style={{ background: `linear-gradient(135deg,${NAVY}08,${TEAL}10)`, borderBottom: "1px solid #e9edf2" }}>
+          <span className="font-black text-[11px] uppercase tracking-widest" style={{ color: NAVY }}>{title}</span>
+        </div>
+        <div className="px-5 py-1">{children}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="im-fade space-y-5">
+      {/* Back button */}
+      <button
+        onClick={onBack}
+        className="flex items-center gap-2 text-xs font-bold rounded-md px-3 py-2 transition-all hover:brightness-90"
+        style={{ background: `${TEAL}15`, color: TEAL }}
+      >
+        <ChevronLeft size={14} /> Back to list
+      </button>
+
+      {/* Identity card */}
+      <div className="rounded-md p-6 flex flex-wrap gap-5 items-center justify-between"
+        style={{ background: `linear-gradient(135deg,${NAVY},${TEAL})`, boxShadow: "0 4px 20px rgba(59,65,103,0.25)" }}>
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-full flex items-center justify-center font-black text-xl"
+            style={{ background: "rgba(255,255,255,0.18)", color: "#fff", border: "2px solid rgba(255,255,255,0.35)" }}>
+            <User size={24} color="#fff" strokeWidth={1.5} />
+          </div>
+          <div>
+            <div className="text-white font-black text-lg leading-tight">{app.name}</div>
+            <div className="text-[11px] mt-0.5 font-medium" style={{ color: "rgba(255,255,255,0.75)" }}>{app.id} &nbsp;{isEnt ? "Entrepreneur" : "Mentor"}</div>
+            <div className="mt-1.5">
+              <span className="im-badge" style={{
+                background: app.status === "Pending" ? "#ffffff" : sc.bg,
+                color: app.status === "Pending" ? "#4C808A" : sc.color,
+                fontWeight: 800,
+                boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
+                backdropFilter: "blur(4px)"
+              }}>{app.status}</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color: "rgba(255,255,255,0.55)" }}>Score</div>
+          <div className="text-3xl font-black text-white">{app.score}</div>
+          <div className="text-[10px]" style={{ color: "rgba(255,255,255,0.5)" }}>Applied {app.date}</div>
+        </div>
+      </div>
+
+      {/* Selection Details & Shortlist Section */}
+      {app.status === "Selected" && (
+        <div className="rounded-md overflow-hidden border border-emerald-200 bg-white shadow-xs">
+          <div className="px-5 py-3 flex items-center justify-between" style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.08), rgba(5,150,105,0.14))", borderBottom: "1px solid #d1fae5" }}>
+            <div className="flex items-center gap-2">
+              <CheckCircle size={16} className="text-emerald-600" />
+              <span className="font-black text-xs uppercase tracking-wider text-emerald-800">Selection Assessment & Shortlist Details</span>
+            </div>
+            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">Shortlisted for Incubation</span>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-3 rounded-md bg-emerald-50/60 border border-emerald-100">
+                <span className="text-[10px] font-bold uppercase text-emerald-600">Evaluation Score</span>
+                <div className="text-lg font-black text-emerald-700 mt-0.5">{app.score} / 100</div>
+                <span className="text-[9px] text-gray-500">Threshold: 50 Pts minimum</span>
+              </div>
+              <div className="p-3 rounded-md bg-emerald-50/60 border border-emerald-100">
+                <span className="text-[10px] font-bold uppercase text-emerald-600">Selection Date</span>
+                <div className="text-sm font-black text-gray-800 mt-1">{app.selectedDate ?? app.date}</div>
+                <span className="text-[9px] text-gray-500">Approved by Selection Committee</span>
+              </div>
+              <div className="p-3 rounded-md bg-emerald-50/60 border border-emerald-100">
+                <span className="text-[10px] font-bold uppercase text-emerald-600">Admission Stage</span>
+                <div className="text-sm font-black text-teal-700 mt-1 flex items-center gap-1">
+                  <CheckCircle size={12} /> Pre-Incubation Shortlist
+                </div>
+                <span className="text-[9px] text-gray-500">Eligibility verified</span>
+              </div>
+              <div className="p-3 rounded-md bg-emerald-50/60 border border-emerald-100">
+                <span className="text-[10px] font-bold uppercase text-emerald-600">Next Pipeline Step</span>
+                <div className="text-sm font-black text-purple-700 mt-1">Ready for Matching</div>
+                <span className="text-[9px] text-gray-500">Mentor pairing queue</span>
+              </div>
+            </div>
+            <div className="p-3.5 rounded-md bg-emerald-50/40 border border-emerald-100">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-bold uppercase text-emerald-700">Official Selection Justification & Committee Notes</span>
+                {onEditReason && (
+                  <button
+                    type="button"
+                    onClick={() => onEditReason(app, "Select")}
+                    className="text-[10px] font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Edit2 size={11} /> Edit Reason
+                  </button>
+                )}
+              </div>
+              <p
+                className={`text-xs font-semibold text-gray-800 leading-relaxed ${onEditReason ? "cursor-pointer hover:text-[#4C808A]" : ""}`}
+                title={onEditReason ? "Click to edit reason" : undefined}
+                onClick={() => onEditReason && onEditReason(app, "Select")}
+              >
+                {app.selectionReason ?? (app.score >= 80 ? "Exceeds technical merit & innovation criteria with proven market feasibility." : "Meets core eligibility requirements with strong entrepreneurial potential.")}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rejection Details & Feedback Section */}
+      {app.status === "Rejected" && (
+        <div className="rounded-md overflow-hidden border border-red-200 bg-white shadow-xs">
+          <div className="px-5 py-3 flex items-center justify-between" style={{ background: "linear-gradient(135deg, rgba(239,68,68,0.08), rgba(220,38,38,0.14))", borderBottom: "1px solid #fee2e2" }}>
+            <div className="flex items-center gap-2">
+              <XCircle size={16} className="text-red-600" />
+              <span className="font-black text-xs uppercase tracking-wider text-red-800">Rejection Assessment & Feedback Details</span>
+            </div>
+            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">Disqualified</span>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="p-3 rounded-md bg-red-50/60 border border-red-100">
+                <span className="text-[10px] font-bold uppercase text-red-500">Evaluation Score</span>
+                <div className="text-lg font-black text-red-700 mt-0.5">{app.score} / 100</div>
+                <span className="text-[9px] text-gray-500">Threshold: 50 Pts minimum</span>
+              </div>
+              <div className="p-3 rounded-md bg-red-50/60 border border-red-100">
+                <span className="text-[10px] font-bold uppercase text-red-500">Rejection Date</span>
+                <div className="text-sm font-black text-gray-800 mt-1">{app.rejectedDate ?? app.date}</div>
+                <span className="text-[9px] text-gray-500">Reviewed by Evaluation Panel</span>
+              </div>
+            </div>
+            <div className="p-3.5 rounded-md bg-gray-50 border border-gray-200">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] font-bold uppercase text-gray-500">Official Disqualification Reason & Assessor Notes</span>
+                {onEditReason && (
+                  <button
+                    type="button"
+                    onClick={() => onEditReason(app, "Reject")}
+                    className="text-[10px] font-bold text-gray-600 hover:text-gray-900 flex items-center gap-1 cursor-pointer"
+                  >
+                    <Edit2 size={11} /> Edit Reason
+                  </button>
+                )}
+              </div>
+              <p
+                className={`text-xs font-semibold text-gray-800 leading-relaxed ${onEditReason ? "cursor-pointer hover:text-[#4C808A]" : ""}`}
+                title={onEditReason ? "Click to edit reason" : undefined}
+                onClick={() => onEditReason && onEditReason(app, "Reject")}
+              >
+                {app.rejectionReason ?? (app.score < 50 ? "Candidate did not meet the mandatory 50-point technical threshold required for cohort admission." : "Incomplete business model canvas and traction verification.")}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Matching details: everything here is read from the programme store */}
+      {app.status === "Matching" && (() => {
+        const state = (app as any).matchState as string | undefined;
+        const mentees: any[] = (app as any).mentees ?? [];
+        const pairIntro = isEnt ? [{ pairId: (app as any).pairId as string | undefined, name: (app as any).matchedMentor as string | undefined, introDate: (app as any).introDate as string | undefined }].filter(x => x.pairId)
+                                : mentees.map(m => ({ pairId: m.pairId, name: m.name, introDate: m.introDate }));
+        return (
+        <div className="rounded-md overflow-hidden border border-purple-200 bg-white shadow-xs">
+          <div className="px-5 py-3 flex items-center justify-between" style={{ background: "linear-gradient(135deg, rgba(147,51,234,0.08), rgba(126,34,206,0.12))", borderBottom: "1px solid #f3e8ff" }}>
+            <div className="flex items-center gap-2">
+              <GitMerge size={16} className="text-purple-600" />
+              <span className="font-black text-xs uppercase tracking-wider text-purple-900">Mentorship Pairing</span>
+            </div>
+            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">{state ?? "—"}</span>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
+                <span className="text-[10px] font-bold uppercase text-purple-600">{isEnt ? "Mentor" : `Mentees (${mentees.length}/${(app as any).capacity ?? 4})`}</span>
+                <div className="text-sm font-black text-gray-900 mt-1">
+                  {isEnt ? ((app as any).matchedMentor ?? "Awaiting mentor") : (mentees.length ? mentees.map(m => m.name).join(", ") : "Awaiting mentee")}
+                </div>
+              </div>
+              <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
+                <span className="text-[10px] font-bold uppercase text-purple-600">{isEnt ? "Pair match score" : "Average pair score"}</span>
+                <div className="text-sm font-black text-purple-800 mt-1 flex items-center gap-1">
+                  <Star size={12} className="fill-purple-600 text-purple-600" />
+                  {isEnt
+                    ? ((app as any).matchScore != null ? `${(app as any).matchScore}%` : "—")
+                    : (mentees.length ? `${Math.round(mentees.reduce((a, m) => a + m.score, 0) / mentees.length)}%` : "—")}
+                </div>
+                <span className="text-[9px] text-gray-500">Set when the pairing was confirmed in the Matching Engine</span>
+              </div>
+              <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
+                <span className="text-[10px] font-bold uppercase text-purple-600">Application score</span>
+                <div className="text-sm font-black text-gray-800 mt-1">{app.score}</div>
+                <span className="text-[9px] text-gray-500">From the application evaluation</span>
+              </div>
+            </div>
+            {pairIntro.length > 0 && (
+              <div className="p-3 rounded-md bg-teal-50/50 border border-teal-100">
+                <span className="text-[10px] font-bold uppercase text-teal-700">Introductory call</span>
+                {pairIntro.map(x => (
+                  <div key={x.pairId} className="flex items-center justify-between gap-3 mt-2 text-xs">
+                    <span className="font-semibold text-gray-800">{x.name}</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-gray-600">{introLabel(x.introDate, true)}</span>
+                      <input type="date" value={x.introDate ?? ""} onChange={e => programme.scheduleIntro(x.pairId as string, e.target.value)}
+                        className="border border-gray-200 rounded-md px-1.5 py-0.5 text-[11px]" aria-label={`Intro call date for ${x.name}`} />
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* Sections */}
+      <Section title="Personal Information">
+        <Row label="Full Name"    value={app.name} />
+        <Row label="District"     value={app.district} />
+        <Row label="Phone"        value={app.phone} />
+        <Row label="Email"        value={isEnt ? ent.email : mnt.email} />
+        {isEnt && <Row label="Gender" value={ent.gender} />}
+      </Section>
+
+      {isEnt ? (
+        <Section title="Business Information">
+          <Row label="Business Name" value={ent.businessName} />
+          <Row label="Sector"        value={ent.sector} />
+          <Row label="Stage"         value={ent.stage} />
+        </Section>
+      ) : (
+        <Section title="Professional Information">
+          <Row label="Title / Designation" value={mnt.title} />
+          <Row label="Employer / Company"  value={mnt.employer} />
+          <Row label="Expertise Area"      value={mnt.expertise} />
+        </Section>
+      )}
+
+      <Section title="Application Details">
+        <Row label="Application ID" value={app.id} />
+        <Row label="Programme"      value={(app as { programName?: string }).programName ?? app.program} />
+        <Row label="Date Applied"   value={app.date} />
+        <Row label="Status"         value={app.status} />
+        <Row label="Score"          value={String(app.score)} />
+      </Section>
+    </div>
+  );
+}
+
+// ── View: Applications table ─────────────────────────────────────────────────
+function filterByStatus<T extends { status: string }>(pool: T[], status: string | null): T[] {
+  if (!status) return pool;
+  return pool.filter(a => a.status === status);
+}
+
+type AppTab = "entrepreneurs" | "mentors";
+
+function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
+  const { entApps, mntApps, setStatusOverride, requestPairRematch, openEngine, addNotification } = useContext(AppDataCtx);
+  const [tab, setTab] = useState<AppTab>("entrepreneurs");
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("All Sectors");
+  const [viewingApp, setViewingApp] = useState<(EntrepreneurApplication | MentorApplication) | null>(null);
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
+  const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
+  const [decisionModal, setDecisionModal] = useState<{
+    app: any;
+    action: "Select" | "Reject";
+  } | null>(null);
+  const [customReasonText, setCustomReasonText] = useState<string>("");
+  const [editReasonModal, setEditReasonModal] = useState<{
+    app: any;
+    action: "Select" | "Reject";
+    initialReason: string;
+  } | null>(null);
+  const [editingReasonText, setEditingReasonText] = useState<string>("");
+  const menuRef = useRef<HTMLDivElement>(null);
+  const filterPopupRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpenId) return;
+    function handleOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpenId(null);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [menuOpenId]);
+
+  useEffect(() => {
+    if (!openFilterCol) return;
+    function handleOutsideFilter(e: MouseEvent) {
+      if (filterPopupRef.current && !filterPopupRef.current.contains(e.target as Node)) {
+        setOpenFilterCol(null);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideFilter);
+    return () => document.removeEventListener("mousedown", handleOutsideFilter);
+  }, [openFilterCol]);
+
+  // Reset detail view and column filters when tab or filter changes
+  useEffect(() => {
+    setViewingApp(null);
+    setColumnFilters({});
+    setOpenFilterCol(null);
+  }, [tab, filterStatus]);
+
+  const isEntrepreneur = tab === "entrepreneurs";
+  const useTealStyle = true; // both tables share the entrepreneur (teal) styling
+  const pool = isEntrepreneur ? entApps : mntApps;
+  const categoryKey = isEntrepreneur ? "sector" : "expertise";
+  const categories = ["All Sectors", ...Array.from(new Set(pool.map((a: any) => a[categoryKey])))];
+
+  const isRejected = filterStatus === "Rejected";
+  const isMatching = filterStatus === "Matching";
+  const isSelected = filterStatus === "Selected";
+  const isDropouts = filterStatus === "Dropouts";
+
+  const getColValue = (a: any, col: string): string => {
+    if (isEntrepreneur) {
+      switch (col) {
+        case "Fullname": return a.name ?? "";
+        case "Gender": return a.gender ?? "—";
+        case "Age": return a.age != null ? String(a.age) : "—";
+        case "Nationality": return a.nationality ?? "Malawian";
+        case "Email Address": return a.email ?? "—";
+        case "Phone Number(s)": return a.phone ?? "—";
+        case "Physical Address": return a.address ?? "—";
+        case "District/City": return a.district ?? "—";
+        case "Region": return a.region ?? "Central";
+        case "Language(s) Spoken": return a.languages ?? "English, Chichewa";
+        case "Youth-Owned": return a.youthOwned ? "Yes" : "No";
+        case "Woman-Owned": return a.womanOwned ? "Yes" : "No";
+        case "PWD": return a.pwd ? "Yes" : "No";
+        case "Location Type": return a.locationType ?? "Urban";
+        case "Highest Qualification": return a.qualification ?? "Bachelor's";
+        case "Field Study": return a.fieldStudy ?? "Business";
+        case "Institution": return a.institution ?? "MUST";
+        case "Business Experience": return a.bizExperience ?? "1–2 yrs";
+        case "Why become Entrepreneur?": return a.whyEntrepreneur ?? "To create jobs and contribute to Malawi's economy.";
+        case "Venture Name": return a.businessName ?? a.venture ?? ((a.name ? a.name.split(" ")[0] : "") + " Ventures");
+        case "Sector": return a.sector ?? "";
+        case "Year Started": return a.yearStarted != null ? String(a.yearStarted) : "2024";
+        case "Business Reg. Status": return a.bizRegStatus ?? "Unregistered";
+        case "Target Customers": return a.targetCustomers ?? "SMEs";
+        case "Business Stages": return a.bizStage ?? "Idea";
+        case "Co-Founder Name(s)": return a.coFounderName ?? "—";
+        case "Co-Founder Role": return a.coFounderRole ?? "—";
+        case "Score": return a.score != null ? String(a.score) : "";
+        case "Status": return isMatching
+          ? (a.matchState ?? "Awaiting mentor")
+          : (!filterStatus ? "Pending" : (a.status ?? ""));
+        case "Selection Reason": return a.selectionReason ?? "Demonstrated strong market feasibility and job creation potential";
+        case "Selected Date": return a.selectedDate ?? a.date ?? "2026-02-18";
+        case "Rejection Reason": return a.rejectionReason ?? (a.score < 50 ? "Score below 50-point cutoff threshold" : "Incomplete business model canvas and traction verification");
+        case "Rejection Date": return a.rejectedDate ?? a.date ?? "2026-02-15";
+        case "Feedback Status": return a.feedbackStatus ?? "Formal Notice Dispatched";
+        case "Re-application Eligibility": return a.reapplyEligible ?? ((a.score || 0) >= 40 ? "Eligible for Next Cohort" : "Remediation Required");
+        case "Compatibility Match": return a.matchScore != null ? `${a.matchScore}%` : "—";
+        case "Assigned Mentor": return a.matchedMentor ?? "Awaiting mentor";
+        case "Intro Session": return introLabel(a.introDate, !!a.matchedMentor);
+        default: return "";
+      }
+    } else {
+      switch (col) {
+        case "Fullname": return a.name ?? "";
+        case "Gender": return a.gender ?? "—";
+        case "Age": return a.age != null ? String(a.age) : "—";
+        case "Nationality": return a.nationality ?? "Malawian";
+        case "Email Address": return a.email ?? "—";
+        case "Phone Number(s)": return a.phone ?? "—";
+        case "Physical Address": return a.address ?? "—";
+        case "District/City": return a.district ?? "—";
+        case "Region": return a.region ?? "Central";
+        case "Expertise Area": return a.expertise ?? "";
+        case "Institution": return a.employer ?? a.institution ?? "—";
+        case "Highest Qualification": return a.qualification ?? "Master's";
+        case "Years of Experience": return a.yearsExp ?? "5+";
+        case "Languages Spoken": return a.languages ?? "English";
+        case "Availability": return a.availability ?? "Part-time";
+        case "Score": return a.score != null ? String(a.score) : "";
+        case "Status": return isMatching
+          ? (a.matchState ?? "Awaiting mentee")
+          : (a.status ?? "");
+        case "Selection Reason": return a.selectionReason ?? "High professional domain experience and availability for incubatees";
+        case "Selected Date": return a.selectedDate ?? a.date ?? "2026-02-18";
+        case "Rejection Reason": return a.rejectionReason ?? (a.score < 50 ? "Weekly availability below required 4 hours/month minimum threshold" : "Mentorship credentials verification incomplete");
+        case "Rejection Date": return a.rejectedDate ?? a.date ?? "2026-02-15";
+        case "Feedback Status": return a.feedbackStatus ?? "Formal Notice Dispatched";
+        case "Re-application Eligibility": return a.reapplyEligible ?? "Eligible for Next Cohort";
+        case "Capacity": return `${a.load ?? 0}/${a.capacity ?? 4}`;
+        case "Assigned Mentees": return (a.mentees ?? []).map((m: any) => m.name).join(", ") || "—";
+        case "Mentee Sector": return (a.mentees ?? []).map((m: any) => m.sector).join(", ") || "—";
+        case "Pair Match Score": return (a.mentees ?? []).map((m: any) => `${m.score}%`).join(", ") || "—";
+        default: return "";
+      }
+    }
+  };
+
+  const getColOptions = (col: string): string[] => {
+    if (isMatching && col === "Status") {
+      return isEntrepreneur ? ["Awaiting mentor", "Paired", "Re-match requested"] : ["Awaiting mentee", "Mentoring"];
+    }
+    const vals = new Set<string>();
+    pool.forEach((item: any) => {
+      const v = getColValue(item, col);
+      if (v && v !== "—") vals.add(v);
+    });
+    return Array.from(vals).sort();
+  };
+
+  const data = filterByStatus(pool as any, filterStatus).filter((a: any) => {
+    if (categoryFilter !== "All Sectors" && a[categoryKey] !== categoryFilter) {
+      return false;
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      const matchSearch =
+        (a.name && a.name.toLowerCase().includes(q)) ||
+        (a.district && a.district.toLowerCase().includes(q));
+      if (!matchSearch) return false;
+    }
+    for (const [col, filterVal] of Object.entries(columnFilters)) {
+      if (!filterVal || filterVal.trim() === "" || filterVal === "All") continue;
+      const cellVal = getColValue(a, col).toLowerCase();
+      const query = filterVal.toLowerCase().trim();
+      if (!cellVal.includes(query)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const activeColumnFilterKeys = Object.entries(columnFilters).filter(
+    ([, v]) => v && v.trim() !== "" && v !== "All"
+  );
+  const activeFilterCount = activeColumnFilterKeys.length;
+  const clearAllColumnFilters = () => setColumnFilters({});
+
+  const handleOpenEditReason = (appToEdit: any, action: "Select" | "Reject") => {
+    const defaultReason = action === "Select"
+      ? (appToEdit.selectionReason ?? "Demonstrated strong market feasibility and job creation potential")
+      : (appToEdit.rejectionReason ?? (appToEdit.score < 50 ? "Score below 50-point cutoff threshold" : "Incomplete business model canvas and traction verification"));
+    setEditingReasonText(defaultReason);
+    setEditReasonModal({
+      app: appToEdit,
+      action,
+      initialReason: defaultReason,
+    });
+  };
+
+  const renderEditReasonModal = () => {
+    if (!editReasonModal) return null;
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
+        <div className="w-full max-w-lg bg-white rounded-lg shadow-xl overflow-hidden border border-gray-200 im-fade">
+          {/* Modal Header */}
+          <div className="px-6 py-4 bg-white border-b border-gray-200 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">
+                {editReasonModal.action === "Select" ? "Edit Selection Reason" : "Edit Rejection Reason"}
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Update official justification for {editReasonModal.app.name}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditReasonModal(null)}
+              className="text-gray-400 hover:text-gray-600 p-1 rounded-md hover:bg-gray-100 cursor-pointer transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Modal Body */}
+          <div className="p-6 space-y-4">
+            <div className="bg-gray-50 rounded-md p-3.5 border border-gray-200 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-black text-gray-900">{editReasonModal.app.name}</div>
+                <div className="text-xs text-gray-500 flex items-center gap-2 mt-0.5">
+                  <span className="font-mono text-[11px] font-semibold text-gray-600">{editReasonModal.app.id}</span>
+                  <span>{getColValue(editReasonModal.app, isEntrepreneur ? "Venture Name" : "Expertise Area")}</span>
+                  <span className="text-gray-500">{editReasonModal.app.district}</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-[10px] uppercase font-bold text-gray-400">Score</div>
+                <div className="text-base font-black text-gray-800">
+                  {editReasonModal.app.score}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5">
+                {editReasonModal.action === "Select" ? "Official Selection Reason & Justification" : "Official Disqualification Reason & Assessor Notes"}
+              </label>
+              <textarea
+                value={editingReasonText}
+                onChange={e => setEditingReasonText(e.target.value)}
+                rows={4}
+                placeholder="Enter official reason and committee notes..."
+                className="w-full text-xs p-3 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#4C808A] resize-none"
+                autoFocus
+              />
+              <p className="text-[10.5px] text-gray-500 mt-1">
+                This reason will be recorded and displayed under the {editReasonModal.action === "Select" ? "Selection" : "Rejection"} section.
+              </p>
+            </div>
+          </div>
+
+          {/* Modal Footer */}
+          <div className="px-6 py-3.5 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2.5">
+            <button
+              type="button"
+              onClick={() => setEditReasonModal(null)}
+              className="px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-100 rounded-md border border-gray-300 cursor-pointer transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const updatedText = editingReasonText.trim();
+                if (!updatedText) {
+                  toast.error("Reason cannot be empty.");
+                  return;
+                }
+                const targetStatus = editReasonModal.action === "Select" ? "Selected" : "Rejected";
+                setStatusOverride(editReasonModal.app.id, targetStatus, updatedText);
+                if (viewingApp && viewingApp.id === editReasonModal.app.id) {
+                  setViewingApp({
+                    ...viewingApp,
+                    ...(editReasonModal.action === "Select" ? { selectionReason: updatedText } : { rejectionReason: updatedText }),
+                  });
+                }
+                toast.success(`${editReasonModal.action === "Select" ? "Selection" : "Rejection"} reason updated successfully!`);
+                setEditReasonModal(null);
+              }}
+              className="px-4 py-2 text-xs font-bold text-white rounded-md bg-[#4C808A] hover:bg-[#3d6971] cursor-pointer shadow-sm transition-colors"
+            >
+              Save Reason
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const columns = useMemo(() => {
+    if (isRejected) {
+      return isEntrepreneur
+        ? [
+            "Fullname", "Gender", "District/City", "Venture Name", "Sector",
+            "Score", "Rejection Reason", "Rejection Date",
+            "Phone Number(s)", "Email Address", "Status", "Actions"
+          ]
+        : [
+            "Fullname", "Gender", "District/City", "Expertise Area", "Highest Qualification",
+            "Score", "Rejection Reason", "Rejection Date",
+            "Phone Number(s)", "Email Address", "Status", "Actions"
+          ];
+    }
+    if (isMatching) {
+      return isEntrepreneur
+        ? [
+            "Fullname", "Gender", "District/City", "Venture Name", "Sector",
+            "Score", "Assigned Mentor", "Compatibility Match", "Intro Session",
+            "Phone Number(s)", "Email Address", "Status", "Actions"
+          ]
+        : [
+            "Fullname", "Gender", "District/City", "Expertise Area", "Years of Experience",
+            "Score", "Capacity", "Assigned Mentees", "Mentee Sector", "Pair Match Score",
+            "Phone Number(s)", "Email Address", "Status", "Actions"
+          ];
+    }
+    if (isSelected) {
+      return isEntrepreneur
+        ? [
+            "Fullname", "Gender", "District/City", "Venture Name", "Sector",
+            "Score", "Selection Reason", "Selected Date",
+            "Phone Number(s)", "Email Address", "Status", "Actions"
+          ]
+        : [
+            "Fullname", "Gender", "District/City", "Expertise Area", "Highest Qualification",
+            "Score", "Selection Reason", "Selected Date",
+            "Phone Number(s)", "Email Address", "Status", "Actions"
+          ];
+    }
+    if (isDropouts) {
+      return isEntrepreneur
+        ? [
+            "Fullname", "Gender", "District/City", "Venture Name", "Sector",
+            "Score", "Status", "Phone Number(s)", "Email Address", "Actions"
+          ]
+        : [
+            "Fullname", "Gender", "District/City", "Expertise Area",
+            "Score", "Status", "Phone Number(s)", "Email Address", "Actions"
+          ];
+    }
+    return isEntrepreneur
+      ? [
+          "Fullname","Gender","Age","Nationality","Email Address","Phone Number(s)",
+          "Physical Address","District/City","Region","Language(s) Spoken",
+          "Youth-Owned","Woman-Owned","PWD","Location Type",
+          "Highest Qualification","Field Study","Institution","Business Experience",
+          "Why become Entrepreneur?","Venture Name","Sector","Year Started",
+          "Business Reg. Status","Target Customers","Business Stages",
+          "Co-Founder Name(s)","Co-Founder Role","Score","Status","Actions",
+        ]
+      : [
+          "Fullname","Gender","Age","Nationality","Email Address","Phone Number(s)",
+          "Physical Address","District/City","Region","Expertise Area",
+          "Institution","Highest Qualification","Years of Experience",
+          "Languages Spoken","Availability","Score","Status","Actions",
+        ];
+  }, [isRejected, isMatching, isSelected, isDropouts, isEntrepreneur]);
+
+  if (viewingApp) {
+    // Re-read the row from the live pool so store-derived match data (e.g. a newly set intro date) refreshes in the panel
+    const liveApp = (pool as any[]).find(x => x.id === viewingApp.id) ?? viewingApp;
+    const appToView = (!filterStatus && isEntrepreneur)
+      ? { ...liveApp, status: "Pending" }
+      : liveApp;
+    return (
+      <>
+        <AppDetailPanel
+          app={appToView}
+          kind={isEntrepreneur ? "entrepreneur" : "mentor"}
+          onBack={() => setViewingApp(null)}
+          onEditReason={handleOpenEditReason}
+        />
+        {editReasonModal && renderEditReasonModal()}
+      </>
+    );
+  }
+
+  return (
+    <div className="im-fade space-y-5">
+
+      {/* ── Tab switcher ── */}
+      <div className="flex items-center gap-1 p-1 rounded-md self-start w-fit"
+        style={{ background: "#e9edf2", border: "1px solid #d1d5db" }}>
+        {(["entrepreneurs", "mentors"] as AppTab[]).map(t => {
+          const countVal = t === "entrepreneurs"
+            ? (filterStatus ? entApps.filter(a => a.status === filterStatus).length : entApps.length)
+            : (filterStatus ? mntApps.filter(a => a.status === filterStatus).length : mntApps.length);
+          return (
+            <button
+              key={t}
+              onClick={() => { setTab(t); setSearch(""); setCategoryFilter("All Sectors"); setColumnFilters({}); }}
+              className="px-5 py-2 rounded-md text-xs font-bold capitalize transition-all"
+              style={{
+                background: tab === t ? `linear-gradient(135deg, ${NAVY}, ${TEAL})` : "transparent",
+                color: tab === t ? "#fff" : "#6b7280",
+                boxShadow: tab === t ? "0 2px 8px rgba(59,65,103,0.25)" : "none",
+              }}
+            >
+              {t === "entrepreneurs" ? "Entrepreneurs" : "Mentors"} ({countVal})
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Dashboard: metric cards + district bar chart + gender donut */}
+      <ApplicationsDashboard tab={tab} filterStatus={filterStatus} />
+
+      {/* Search + Category filter */}
+      <div className="flex flex-wrap gap-3 items-center">
+
+        {/* Search */}
+        <div className="flex items-center gap-2 rounded-md px-3 py-2 flex-1 min-w-[180px]"
+          style={{ background: "#fff", border: "1px solid #e5e7eb" }}>
+          <Search size={13} color="#9ca3af" />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder={`Search ${tab}…`}
+            className="bg-transparent text-sm flex-1 focus:outline-none text-gray-700 placeholder-gray-400" />
+        </div>
+
+        {/* Category filter */}
+        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+          className="rounded-md px-3 py-2 text-xs font-semibold focus:outline-none"
+          style={{ background: "#fff", border: "1px solid #e5e7eb", color: "#374151" }}>
+          {categories.map(c => <option key={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {/* Table */}
+      <div className="rounded-md overflow-hidden" style={{ border: "1px solid #e5e7eb", background: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
+        {/* Table header bar - dot removed in front of Entrepreneur Applications */}
+        <div className="px-5 py-3 flex items-center justify-between gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.3)", background: useTealStyle ? "#4C808A" : "#f9fafb" }}>
+          <div className="flex items-center gap-2">
+            {!useTealStyle && <div className="w-2 h-2 rounded-full" style={{ background: NAVY }} />}
+            <span className="text-xs font-black uppercase tracking-wider" style={{ color: useTealStyle ? "#ffffff" : "#374151" }}>
+              {filterStatus === "Rejected"
+                ? (isEntrepreneur ? "Details and Feedback of Rejected Applications" : "Details and Feedback of Rejected Applications")
+                : (filterStatus === "Selected"
+                    ? (isEntrepreneur ? "Selected Entrepreneur Applications" : "Selected Mentor Applications")
+                    : (filterStatus === "Matching"
+                        ? (isEntrepreneur ? "Entrepreneurs: mentor status" : "Mentors: capacity and mentees")
+                        : (isEntrepreneur ? "Entrepreneur Applications" : "Mentor Applications")))}
+            </span>
+          </div>
+
+          {activeFilterCount > 0 && (
+            <button
+              onClick={clearAllColumnFilters}
+              className="text-[11px] font-bold px-3 py-1 rounded-md bg-white text-[#4C808A] hover:bg-gray-100 flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+            >
+              <X size={12} /> Clear all filters ({activeFilterCount})
+            </button>
+          )}
+        </div>
+
+        {/* Active Filter Chips Bar */}
+        {activeFilterCount > 0 && (
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-amber-200" style={{ background: "#fffbeb" }}>
+            <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wider flex items-center gap-1">
+              <Filter size={10} /> Active Filters ({activeFilterCount}):
+            </span>
+            {activeColumnFilterKeys.map(([k, v]) => (
+              <span key={k} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-white text-gray-800 px-2 py-0.5 rounded-md border border-amber-300 shadow-xs">
+                <span className="text-gray-500 font-bold">{k}:</span>
+                <span className="text-amber-800 font-bold">{v}</span>
+                <button
+                  type="button"
+                  onClick={() => setColumnFilters(prev => { const n = { ...prev }; delete n[k]; return n; })}
+                  className="ml-1 text-gray-400 hover:text-red-600 font-black cursor-pointer"
+                  title={`Remove filter on ${k}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <button
+              type="button"
+              onClick={clearAllColumnFilters}
+              className="text-[10px] font-bold text-red-600 hover:text-red-800 underline ml-auto cursor-pointer"
+            >
+              Reset All
+            </button>
+          </div>
+        )}
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 11, minWidth: isRejected || isMatching ? "1100px" : "2800px", width: "100%" }}>
+            <thead>
+              {/* Header Title Row */}
+              <tr style={{ background: useTealStyle ? "#4C808A" : "#f9fafb", borderBottom: useTealStyle ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb" }}>
+                {columns.map(h => {
+                  const hasFilter = Boolean(columnFilters[h]);
+                  return (
+                    <th key={h} className="px-3 py-2.5 text-left font-bold text-[9px] uppercase tracking-wider whitespace-nowrap"
+                      style={{
+                        color: useTealStyle ? "#ffffff" : "#6b7280",
+                        background: useTealStyle ? (hasFilter ? "#36636c" : "#4C808A") : (hasFilter ? "#e5e7eb" : undefined),
+                        borderRight: useTealStyle ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
+                        borderBottom: useTealStyle ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
+                        position: h === "Actions" ? "sticky" : "relative",
+                        ...(h === "Actions" ? { right: 0, zIndex: 6, background: useTealStyle ? "#4C808A" : "#f9fafb" } : {}),
+                      }}>
+                      {h === "Actions" ? (
+                        <div className="flex items-center justify-center">
+                          {activeFilterCount > 0 ? (
+                            <button
+                              type="button"
+                              onClick={clearAllColumnFilters}
+                              title="Clear all filters"
+                              className="text-[8px] font-bold px-1.5 py-0.5 rounded-md bg-white text-[#4C808A] hover:bg-gray-100 transition-all flex items-center gap-0.5 cursor-pointer"
+                            >
+                              <X size={8} /> Reset
+                            </button>
+                          ) : (
+                            <span>Actions</span>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span>{isMatching ? (({ Score: "Application Score", "Compatibility Match": "Pair Match Score", "Assigned Mentor": "Mentor", "Assigned Mentees": "Mentees", "Intro Session": "Intro Call" } as Record<string, string>)[h] ?? h) : h}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenFilterCol(openFilterCol === h ? null : h);
+                            }}
+                            className={`p-1 rounded-md transition-all cursor-pointer ${
+                              hasFilter
+                                ? "bg-amber-400 text-gray-900 font-black shadow-sm"
+                                : useTealStyle
+                                ? "text-white/80 hover:bg-white/20 hover:text-white"
+                                : "text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                            }`}
+                            title={`Filter ${h}`}
+                          >
+                            <Filter size={10} className={hasFilter ? "fill-current" : ""} />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Dropdown Popover for this column */}
+                      {openFilterCol === h && (
+                        <div
+                          ref={filterPopupRef}
+                          className="im-dd"
+                          style={{
+                            position: "absolute",
+                            top: "100%",
+                            left: 0,
+                            zIndex: 100,
+                            background: "#ffffff",
+                            borderRadius: 3,
+                            boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
+                            border: "1px solid #e5e7eb",
+                            minWidth: 210,
+                            maxWidth: 280,
+                            padding: 10,
+                            marginTop: 4,
+                            textAlign: "left",
+                            color: "#111827",
+                            textTransform: "none",
+                            fontWeight: "normal",
+                          }}
+                          onClick={e => e.stopPropagation()}
+                        >
+                          <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-gray-100">
+                            <span className="text-[11px] font-bold text-gray-800">Filter: {h}</span>
+                            <button
+                              type="button"
+                              onClick={() => setOpenFilterCol(null)}
+                              className="w-5 h-5 rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-700 flex items-center justify-center text-xs cursor-pointer"
+                            >
+                              ✕
+                            </button>
+                          </div>
+
+                          <input
+                            type="text"
+                            value={columnFilters[h] ?? ""}
+                            onChange={e => setColumnFilters(prev => ({ ...prev, [h]: e.target.value }))}
+                            placeholder={`Filter ${h}...`}
+                            className="w-full text-xs px-2.5 py-1.5 rounded-md border border-gray-200 focus:outline-none focus:border-[#4C808A] mb-2"
+                            autoFocus
+                          />
+
+                          <div className="max-h-36 overflow-y-auto space-y-1 mb-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setColumnFilters(prev => { const n = { ...prev }; delete n[h]; return n; });
+                              }}
+                              className={`w-full text-left px-2 py-1 rounded-md text-[11px] font-medium transition-all cursor-pointer ${
+                                !columnFilters[h] ? "bg-[#4C808A]/15 text-[#4C808A] font-bold" : "hover:bg-gray-50 text-gray-700"
+                              }`}
+                            >
+                              (All)
+                            </button>
+                            {getColOptions(h).map(opt => {
+                              const isSelected = columnFilters[h] === opt;
+                              return (
+                                <button
+                                  key={opt}
+                                  type="button"
+                                  onClick={() => {
+                                    setColumnFilters(prev => ({ ...prev, [h]: opt }));
+                                  }}
+                                  className={`w-full text-left px-2 py-1 rounded-md text-[11px] truncate block transition-all cursor-pointer ${
+                                    isSelected ? "bg-[#4C808A]/15 text-[#4C808A] font-bold" : "hover:bg-gray-50 text-gray-700"
+                                  }`}
+                                >
+                                  {opt}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {columnFilters[h] && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setColumnFilters(prev => { const n = { ...prev }; delete n[h]; return n; });
+                                setOpenFilterCol(null);
+                              }}
+                              className="w-full py-1 text-center text-[10px] font-bold text-red-600 hover:bg-red-50 rounded-md transition-all border border-red-200 cursor-pointer"
+                            >
+                              Clear filter
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </th>
+                  );
+                })}
+              </tr>
+
+              {/* Dedicated Inline Filter Controls Sub-Row */}
+              <tr style={{ background: useTealStyle ? "#3d6b74" : "#f3f4f6", borderBottom: "1px solid #e5e7eb" }}>
+                {columns.map(h => {
+                  if (h === "Actions") {
+                    return (
+                      <th key={`sub-${h}`} className="px-2 py-1 text-center whitespace-nowrap"
+                        style={{
+                          borderBottom: "1px solid #e5e7eb",
+                          background: useTealStyle ? "#3d6b74" : "#f3f4f6",
+                          position: "sticky", right: 0, zIndex: 6,
+                        }}>
+                        {activeFilterCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={clearAllColumnFilters}
+                            className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-amber-400 hover:bg-amber-500 text-gray-900 transition-all shadow-sm cursor-pointer"
+                            title="Clear all column filters"
+                          >
+                            Clear ({activeFilterCount})
+                          </button>
+                        ) : (
+                          <span className="text-[9px] font-semibold" style={{ color: useTealStyle ? "rgba(255,255,255,0.4)" : "#9ca3af" }}>—</span>
+                        )}
+                      </th>
+                    );
+                  }
+
+                  const hasFilter = Boolean(columnFilters[h]);
+                  const options = getColOptions(h);
+
+                  return (
+                    <th key={`sub-${h}`} className="px-1.5 py-1 whitespace-nowrap"
+                      style={{
+                        borderRight: useTealStyle ? "1px solid rgba(255,255,255,0.3)" : "1px solid #e5e7eb",
+                        borderBottom: "1px solid #e5e7eb",
+                        background: useTealStyle ? (hasFilter ? "#32575f" : "#3d6b74") : (hasFilter ? "#e2e8f0" : "#f3f4f6"),
+                      }}>
+                      <div className="relative flex items-center">
+                        <select
+                          value={columnFilters[h] ?? ""}
+                          onChange={e => setColumnFilters(prev => ({ ...prev, [h]: e.target.value }))}
+                          className="w-full text-[10px] font-semibold px-1.5 py-0.5 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-300 cursor-pointer"
+                          style={{
+                            background: hasFilter ? "#fff" : "rgba(255,255,255,0.92)",
+                            color: "#111827",
+                            border: hasFilter ? "1px solid #f59e0b" : "1px solid rgba(0,0,0,0.15)",
+                            minWidth: 80,
+                          }}
+                        >
+                          <option value="">All</option>
+                          {options.map(opt => (
+                            <option key={opt} value={opt} title={opt}>
+                              {opt.length > 32 ? opt.slice(0, 30) + "…" : opt}
+                            </option>
+                          ))}
+                        </select>
+                        {hasFilter && (
+                          <button
+                            type="button"
+                            onClick={() => setColumnFilters(prev => { const n = { ...prev }; delete n[h]; return n; })}
+                            className="absolute right-5 text-gray-400 hover:text-red-500 font-bold text-xs cursor-pointer"
+                            title="Clear"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((a: any) => {
+                const sc = STATUS_COLORS[a.status] ?? { bg: "#f3f4f6", color: "#374151" };
+                return (
+                  <tr key={a.id} className="im-row" style={{ borderBottom: "1px solid #e5e7eb" }}>
+                    {columns.map(col => {
+                      if (col === "Actions") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 whitespace-nowrap im-sticky-act" style={{ borderBottom: "1px solid #e5e7eb" }}>
+                            <div className="flex items-center gap-1" style={{ position: "relative" }}>
+                              <button
+                                className="w-7 h-7 rounded-md flex items-center justify-center hover:brightness-110 transition-all cursor-pointer"
+                                style={{ background: `${TEAL}15` }}
+                                onClick={() => setViewingApp(a)}
+                                title="View application details"
+                              >
+                                <Eye size={11} color={TEAL} />
+                              </button>
+                              <button
+                                className="w-7 h-7 rounded-md flex items-center justify-center hover:brightness-110 transition-all cursor-pointer"
+                                style={{ background: menuOpenId === a.id ? "#e5e7eb" : "#f3f4f6" }}
+                                onClick={e => { e.stopPropagation(); setMenuOpenId(menuOpenId === a.id ? null : a.id); }}
+                                title="More actions"
+                              >
+                                <MoreHorizontal size={11} color="#6b7280" />
+                              </button>
+                              {menuOpenId === a.id && (
+                                <div ref={menuRef} className="im-dd" style={{
+                                  position: "absolute", top: "100%", right: 0, zIndex: 100,
+                                  background: "#fff", borderRadius: 3, boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+                                  border: "1px solid #e5e7eb", minWidth: 175, padding: "5px 0", marginTop: 4,
+                                }}>
+                                  {isRejected ? (
+                                    <>
+                                      <button
+                                        onClick={() => {
+                                          setMenuOpenId(null);
+                                          setCustomReasonText(a.selectionReason || "Demonstrated commitment and improved business model canvas");
+                                          setDecisionModal({ app: a, action: "Select" });
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#059669", fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#f0fdf4")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <RotateCcw size={13} color="#059669" /> Re-evaluate (Select)
+                                      </button>
+                                      <div style={{ height: 1, background: "#f3f4f6", margin: "3px 0" }} />
+                                      <button
+                                        onClick={() => {
+                                          setMenuOpenId(null);
+                                          toast.info(`Formal feedback notice re-sent to ${a.name} via Email.`);
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: TEAL, fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#f0fdfa")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <Send size={13} color={TEAL} /> Resend Notice
+                                      </button>
+                                    </>
+                                  ) : isMatching ? (
+                                    <>
+                                      {isEntrepreneur ? (
+                                        <>
+                                          {a.matchState !== "Paired" && (
+                                            <button
+                                              onClick={() => { setMenuOpenId(null); openEngine({ entId: a.id }); }}
+                                              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
+                                              onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
+                                              onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                            >
+                                              <GitMerge size={13} color="#7c3aed" /> {a.matchState === "Re-match requested" ? "Choose new mentor" : "Find mentor"}
+                                            </button>
+                                          )}
+                                          {a.matchState === "Paired" && a.pairId && (
+                                            <button
+                                              onClick={() => { setMenuOpenId(null); requestPairRematch(a.pairId); }}
+                                              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
+                                              onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
+                                              onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                            >
+                                              <RotateCcw size={13} color="#7c3aed" /> Request re-match
+                                            </button>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <button
+                                          disabled={a.matchState === "At capacity"}
+                                          onClick={() => { setMenuOpenId(null); openEngine({ mentorId: a.id }); }}
+                                          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: a.matchState === "At capacity" ? "not-allowed" : "pointer", opacity: a.matchState === "At capacity" ? 0.5 : 1, fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
+                                          onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
+                                          onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                        >
+                                          <GitMerge size={13} color="#7c3aed" /> Assign mentee{a.matchState === "At capacity" ? " (at capacity)" : ""}
+                                        </button>
+                                      )}
+                                      <div style={{ height: 1, background: "#f3f4f6", margin: "3px 0" }} />
+                                      <button
+                                        onClick={() => {
+                                          setMenuOpenId(null);
+                                          const defaultRej = a.rejectionReason || ((a.score || 0) < 50 ? "Evaluation score below mandatory 50-point cutoff threshold" : "Incomplete business model canvas and traction verification");
+                                          setCustomReasonText(defaultRej);
+                                          setDecisionModal({ app: a, action: "Reject" });
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#ef4444", fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#fef2f2")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <XCircle size={13} color="#ef4444" /> Reject
+                                      </button>
+                                    </>
+                                  ) : isSelected ? (
+                                    <>
+                                      <button
+                                        onClick={() => {
+                                          setStatusOverride(a.id, "Matching");
+                                          setMenuOpenId(null);
+                                          toast.success(`${a.name} moved to Matching section.`);
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <GitMerge size={13} color="#7c3aed" /> Move to Matching
+                                      </button>
+                                      <div style={{ height: 1, background: "#f3f4f6", margin: "3px 0" }} />
+                                      <button
+                                        onClick={() => {
+                                          setMenuOpenId(null);
+                                          const defaultRej = a.rejectionReason || ((a.score || 0) < 50 ? "Evaluation score below mandatory 50-point cutoff threshold" : "Incomplete business model canvas and traction verification");
+                                          setCustomReasonText(defaultRej);
+                                          setDecisionModal({ app: a, action: "Reject" });
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#ef4444", fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#fef2f2")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <XCircle size={13} color="#ef4444" /> Reject
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        onClick={() => {
+                                          setMenuOpenId(null);
+                                          setCustomReasonText(a.selectionReason || "Demonstrated strong market feasibility and job creation potential");
+                                          setDecisionModal({ app: a, action: "Select" });
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#059669", fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#f0fdf4")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <CheckCircle size={13} color="#059669" /> Select
+                                      </button>
+                                      <div style={{ height: 1, background: "#f3f4f6", margin: "3px 0" }} />
+                                      <button
+                                        onClick={() => {
+                                          setMenuOpenId(null);
+                                          const defaultRej = a.rejectionReason || ((a.score || 0) < 50 ? "Evaluation score below mandatory 50-point cutoff threshold" : "Incomplete business model canvas and traction verification");
+                                          setCustomReasonText(defaultRej);
+                                          setDecisionModal({ app: a, action: "Reject" });
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#ef4444", fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#fef2f2")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <XCircle size={13} color="#ef4444" /> Reject
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                              {isMatching && !isEntrepreneur && (a.mentees ?? []).length > 0 && (
+                                <div className="flex flex-col" style={{ marginLeft: 8, paddingLeft: 8, borderLeft: "1px solid #e5e7eb" }}>
+                                  {(a.mentees as any[]).map(m => (
+                                    <div key={m.pairId} className="flex items-center" style={{ height: 26 }}>
+                                      {m.rematch
+                                        ? <span style={{ background: "#fef2f2", color: "#dc2626", fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 3 }}>Re-match requested</span>
+                                        : (
+                                          <button
+                                            onClick={() => requestPairRematch(m.pairId)}
+                                            title={`Request a re-match for ${m.name}`}
+                                            className="flex items-center gap-1 hover:brightness-95 transition-all cursor-pointer"
+                                            style={{ background: "#f5f3ff", color: "#7c3aed", border: "none", fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 3 }}
+                                          >
+                                            <RotateCcw size={10} color="#7c3aed" /> Re-match
+                                          </button>
+                                        )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        );
+                      }
+
+                      if (col === "Score") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            <div className="flex items-center gap-2">
+                              <div className="h-1.5 w-12 rounded-full bg-gray-100 overflow-hidden">
+                                <div className="h-full rounded-md" style={{ width: `${Math.min(100, Math.max(0, a.score))}%`, background: "#059669" }} />
+                              </div>
+                              <span className="font-bold text-[11px]" style={{ color: "#374151" }}>{a.score}</span>
+                            </div>
+                          </td>
+                        );
+                      }
+
+                      if (col === "Status") {
+                        const isEntAppSection = !filterStatus && isEntrepreneur;
+                        const statusVal = isMatching
+                          ? (a.matchState ?? (isEntrepreneur ? "Awaiting mentor" : "Awaiting mentee"))
+                          : (isEntAppSection ? "Pending" : a.status);
+                        const statusColor = MATCH_STATUS_COLOR[statusVal] ?? (STATUS_COLORS[statusVal] ?? STATUS_COLORS[a.status] ?? { color: "#4C808A" }).color;
+                        return (
+                          <td key={col} className="px-3 py-2.5 whitespace-nowrap text-[12px] font-semibold" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            <span style={{ color: statusColor }}>
+                              {statusVal}
+                            </span>
+                          </td>
+                        );
+                      }
+
+                      if (col === "Selection Reason" || col === "Rejection Reason") {
+                        const isSelect = col === "Selection Reason";
+                        const reasonValue = getColValue(a, col);
+                        return (
+                          <td
+                            key={col}
+                            className="px-3 py-2.5 text-xs text-gray-800 whitespace-nowrap cursor-pointer hover:bg-gray-100/70 transition-colors"
+                            style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}
+                            title="Click to edit reason"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenEditReason(a, isSelect ? "Select" : "Reject");
+                            }}
+                          >
+                            <span className="hover:underline hover:text-[#4C808A] transition-colors">
+                              {reasonValue}
+                            </span>
+                          </td>
+                        );
+                      }
+
+                      if (col === "Selected Date") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 text-xs text-gray-600 whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {getColValue(a, col)}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Fullname") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 font-bold whitespace-nowrap" style={{ color: "#111827", borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {a.name}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Venture Name") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 font-semibold whitespace-nowrap" style={{ color: NAVY, borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {getColValue(a, col)}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Compatibility Match") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 text-xs text-gray-700 whitespace-nowrap font-medium" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {getColValue(a, col)}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Capacity") {
+                        const full = (a.load ?? 0) >= (a.capacity ?? 4);
+                        return (
+                          <td key={col} className="px-3 py-2.5 text-xs whitespace-nowrap font-bold" style={{ color: full ? "#7c3aed" : NAVY, borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {getColValue(a, col)}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Assigned Mentees" || col === "Mentee Sector" || col === "Pair Match Score") {
+                        const list: any[] = a.mentees ?? [];
+                        return (
+                          <td key={col} className="px-3 py-2.5 text-xs whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb", minWidth: col === "Assigned Mentees" ? 170 : undefined }}>
+                            {list.length === 0 ? <span className="text-gray-400">—</span> : list.map(m => (
+                              <div key={m.pairId} className="flex items-center" style={{ height: 26 }}>
+                                {col === "Assigned Mentees" && <span className="font-bold" style={{ color: NAVY }}>{m.name}</span>}
+                                {col === "Mentee Sector" && <span className="text-gray-600">{m.sector}</span>}
+                                {col === "Pair Match Score" && <span className="font-medium text-gray-700">{m.score}%</span>}
+                              </div>
+                            ))}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Assigned Mentor") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 font-bold whitespace-nowrap text-xs" style={{ color: a.matchedMentor ? NAVY : "#9ca3af", borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {getColValue(a, col)}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Youth-Owned" || col === "Woman-Owned" || col === "PWD") {
+                        const val = getColValue(a, col);
+                        const isYes = val === "Yes";
+                        return (
+                          <td key={col} className="px-3 py-2.5 text-center whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: isYes ? (col === "Woman-Owned" ? "#7c3aed" : TEAL) : "#9ca3af" }}>{val}</span>
+                          </td>
+                        );
+                      }
+
+                      if (col === "Business Reg. Status") {
+                        const isReg = getColValue(a, col) === "Registered";
+                        return (
+                          <td key={col} className="px-3 py-2.5 text-gray-500 whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {isReg ? (
+                              <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 3, background: "#d1fae5", color: "#065f46" }}>Registered</span>
+                            ) : (
+                              getColValue(a, col)
+                            )}
+                          </td>
+                        );
+                      }
+
+                      if (col === "Why become Entrepreneur?") {
+                        return (
+                          <td key={col} className="px-3 py-2.5 text-gray-500" style={{ minWidth: 180, maxWidth: 220, whiteSpace: "normal", lineHeight: 1.4, borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {getColValue(a, col)}
+                          </td>
+                        );
+                      }
+
+                      return (
+                        <td key={col} className="px-3 py-2.5 text-gray-600 whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                          {getColValue(a, col)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {data.length === 0 && (
+          <div className="py-16 text-center text-gray-400 text-sm">No records found.</div>
+        )}
+        <div className="px-4 py-3 flex items-center justify-between" style={{ borderTop: "1px solid #f3f4f6" }}>
+          <span className="text-xs text-gray-500">Showing {data.length} of {pool.length} records</span>
+          <div className="flex gap-2">
+            {[1, 2, 3].map(p => (
+              <button key={p} className="w-7 h-7 rounded-md text-xs font-bold"
+                style={{ background: p === 1 ? TEAL : "#f3f4f6", color: p === 1 ? "#fff" : "#6b7280" }}>{p}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Pop up Modal Screen for Selection / Rejection ── */}
+      {decisionModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+          onClick={() => setDecisionModal(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl overflow-hidden w-full max-w-lg"
+            style={{ border: "1px solid #e5e7eb" }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div
+              className="px-6 py-4 flex items-center justify-between text-white"
+              style={{
+                background: decisionModal.action === "Select"
+                  ? "#4C808A"
+                  : "linear-gradient(135deg, #991b1b, #dc2626)"
+              }}
+            >
+              <div>
+                <h3 className="font-bold text-sm leading-snug">
+                  {decisionModal.action === "Select" ? "Select Candidate for Incubation" : "Reject Candidate Application"}
+                </h3>
+                <p className="text-[11px] text-white/80">
+                  {decisionModal.action === "Select"
+                    ? "Record official selection justification to be displayed in the Selection section"
+                    : "Record formal disqualification reason to be displayed in the Rejection section"}
+                </p>
+              </div>
+              <button
+                onClick={() => setDecisionModal(null)}
+                className="w-7 h-7 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center text-white cursor-pointer transition-colors"
+                title="Close"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+              {/* Applicant Card */}
+              <div className="p-3.5 rounded-lg bg-gray-50 border border-gray-200 flex items-center justify-between">
+                <div>
+                  <div className="font-bold text-sm text-gray-900">{decisionModal.app.name}</div>
+                  <div className="text-xs text-gray-600 mt-1 flex flex-wrap items-center gap-x-2">
+                    <span className="font-semibold text-gray-800">{decisionModal.app.id}</span>
+                    <span>{getColValue(decisionModal.app, isEntrepreneur ? "Venture Name" : "Expertise Area")}</span>
+                    <span className="text-gray-500">{decisionModal.app.district}</span>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] uppercase font-bold text-gray-400">Score</div>
+                  <div className="text-base font-black text-gray-800 flex items-center gap-1.5 justify-end">
+                    <div className="h-1.5 w-10 rounded-full bg-gray-200 overflow-hidden">
+                      <div className="h-full bg-[#059669]" style={{ width: `${Math.min(100, decisionModal.app.score)}%` }} />
+                    </div>
+                    <span>{decisionModal.app.score}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Textarea for detailed justification */}
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5">
+                  Official Reason & Committee Notes
+                </label>
+                <textarea
+                  value={customReasonText}
+                  onChange={e => setCustomReasonText(e.target.value)}
+                  rows={4}
+                  placeholder={`Enter official reason and committee notes for ${decisionModal.action.toLowerCase()}ing this applicant...`}
+                  className="w-full text-xs p-3 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#4C808A] resize-none"
+                />
+                <p className="text-[10.5px] text-gray-500 mt-1">
+                  This reason will be recorded and displayed under the {decisionModal.action === "Select" ? "Selection" : "Rejection"} section.
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3.5 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setDecisionModal(null)}
+                className="px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-100 rounded-md border border-gray-300 cursor-pointer transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const finalReason = customReasonText.trim() || (decisionModal.action === "Select" ? "Meets selection criteria and approved for incubation shortlisting" : "Disqualified by evaluation committee");
+                  const targetStatus = decisionModal.action === "Select" ? "Selected" : "Rejected";
+                  setStatusOverride(decisionModal.app.id, targetStatus, finalReason);
+                  // The applicant sees the decision under Track Application straight away; this also lets the admin email them.
+                  const mailto = decisionMailto(decisionModal.app, targetStatus as "Selected" | "Rejected", finalReason);
+                  const emailAction = mailto ? { label: "Email applicant", onClick: () => { window.location.href = mailto; } } : undefined;
+                  if (decisionModal.action === "Select") {
+                    toast.success(`${decisionModal.app.name} has been selected! Reason recorded and moved to Selection.`, { action: emailAction, duration: emailAction ? 12000 : undefined });
+                  } else {
+                    toast.error(`${decisionModal.app.name} has been rejected. Reason recorded in Rejection section.`, { action: emailAction, duration: emailAction ? 12000 : undefined });
+                  }
+                  setDecisionModal(null);
+                }}
+                className={`px-4 py-2 text-xs font-bold text-white rounded-md flex items-center justify-center cursor-pointer shadow-sm transition-colors ${
+                  decisionModal.action === "Select"
+                    ? "bg-[#4C808A] hover:bg-[#3d6971]"
+                    : "bg-[#dc2626] hover:bg-[#b91c1c]"
+                }`}
+              >
+                {decisionModal.action === "Select" ? (
+                  "Confirm Select and Shortlist"
+                ) : (
+                  "Confirm Disqualification"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit Reason Modal ── */}
+      {renderEditReasonModal()}
+    </div>
+  );
+}
+
+// ── View: Email Dashboard ─────────────────────────────────────────────────────
+function EmailDashboardView() {
+  return (
+    <div className="im-fade space-y-6">
+      {/* Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {[
+          { icon: Send,    label: "Sent",      value: "5",    color: TEAL  },
+          { icon: Inbox,   label: "Delivered",  value: "4",    color: "#059669" },
+          { icon: Star,    label: "Avg. Open",  value: "73%",  color: "#7c3aed" },
+          { icon: TrendingUp, label: "Avg. Click", value: "38%", color: "#d97706" },
+        ].map(s => (
+          <div key={s.label} className="rounded-md p-4 flex flex-col gap-2"
+            style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.05)" }}>
+            <div className="w-8 h-8 rounded-md flex items-center justify-center" style={{ background: `${s.color}15` }}>
+              <s.icon size={15} color={s.color} />
+            </div>
+            <div className="font-black text-2xl" style={{ color: s.color }}>{s.value}</div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Campaigns table */}
+      <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
+        <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid #f3f4f6" }}>
+          <h3 className="font-black text-sm" style={{ color: NAVY }}>Email Campaigns</h3>
+          <button className="flex items-center gap-1.5 text-xs font-bold text-white px-3 py-1.5 rounded-md"
+            style={{ background: TEAL }}><PlusCircle size={12} /> New Campaign</button>
+        </div>
+        <table className="w-full" style={{ borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
+              {["Subject", "Recipients", "Opened", "Clicked", "Sent Date", "Status"].map(h => (
+                <th key={h} className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {EMAILS.map((e, i) => {
+              const sc = STATUS_COLORS[e.status] ?? { bg: "#f3f4f6", color: "#374151" };
+              const openRate = e.recipients > 0 ? Math.round((e.opened / e.recipients) * 100) : 0;
+              const clickRate = e.recipients > 0 ? Math.round((e.clicked / e.recipients) * 100) : 0;
+              return (
+                <tr key={e.id} className="im-row" style={{ borderBottom: "1px solid #f3f4f6" }}>
+                  <td className="px-4 py-3 font-semibold max-w-[240px] truncate" style={{ color: "#111827" }}>{e.subject}</td>
+                  <td className="px-4 py-3 font-bold text-center" style={{ color: NAVY }}>{e.recipients}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-14 rounded-full bg-gray-100 overflow-hidden">
+                        <div className="h-full rounded-md" style={{ width: `${openRate}%`, background: "#7c3aed" }} />
+                      </div>
+                      <span className="text-[11px] font-bold" style={{ color: "#374151" }}>{openRate}%</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-14 rounded-full bg-gray-100 overflow-hidden">
+                        <div className="h-full rounded-md" style={{ width: `${clickRate}%`, background: "#d97706" }} />
+                      </div>
+                      <span className="text-[11px] font-bold" style={{ color: "#374151" }}>{clickRate}%</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-500">{e.sent}</td>
+                  <td className="px-4 py-3 text-gray-600 font-medium">
+                    {e.status}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── View: Program Health ──────────────────────────────────────────────────────
+function ProgramHealthView() {
+  const metrics = [
+    { label: "Application Completion Rate", value: 87, color: "#059669", icon: CheckCircle },
+    { label: "Mentor Matching Rate",         value: 73, color: TEAL,     icon: GitMerge    },
+    { label: "Cohort Retention Rate",        value: 91, color: "#7c3aed",icon: Users        },
+    { label: "Business Plan Submission",     value: 68, color: "#d97706",icon: FileText     },
+    { label: "Milestone Achievement",        value: 79, color: NAVY,     icon: CheckSquare  },
+    { label: "Alumni Satisfaction",          value: 94, color: "#059669",icon: Star         },
+  ];
+
+  const alerts = [
+    { level: "warning", msg: "3 applicants have not submitted business plans (deadline: 2026-02-15)." },
+    { level: "info",    msg: "Mentor matching for cohort 3 is 73% complete — 8 unmatched entrepreneurs remain." },
+    { level: "success", msg: "ARISE Youth cohort achieved 91% retention — highest in programme history." },
+  ];
+
+  return (
+    <div className="im-fade space-y-6">
+      {/* Alerts */}
+      <div className="space-y-3">
+        {alerts.map((a, i) => {
+          const config = {
+            warning: { bg: "rgba(245,158,11,0.08)", border: "#d9770620", icon: AlertCircle, color: "#d97706" },
+            info:    { bg: "rgba(59,130,246,0.08)",  border: "#2563eb20", icon: Clock,        color: "#2563eb" },
+            success: { bg: "rgba(16,185,129,0.08)",  border: "#05996920", icon: CheckCircle,  color: "#059669" },
+          }[a.level]!;
+          return (
+            <div key={i} className="flex items-start gap-3 rounded-md px-4 py-3"
+              style={{ background: config.bg, border: `1px solid ${config.border}` }}>
+              <config.icon size={14} color={config.color} style={{ marginTop: 1, flexShrink: 0 }} />
+              <span className="text-xs" style={{ color: "#374151" }}>{a.msg}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Metric bars */}
+      <div className="rounded-md p-5 space-y-4" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
+        <h3 className="font-black text-sm mb-2" style={{ color: NAVY }}>Programme KPIs</h3>
+        {metrics.map(m => (
+          <div key={m.label} className="space-y-1">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <m.icon size={12} color={m.color} />
+                <span className="text-xs font-semibold text-gray-700">{m.label}</span>
+              </div>
+              <span className="text-xs font-black" style={{ color: m.color }}>{m.value}%</span>
+            </div>
+            <div className="h-2 bg-gray-100 rounded-md overflow-hidden">
+              <div className="h-full rounded-md transition-all duration-700" style={{ width: `${m.value}%`, background: m.color }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Stage overview */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+        {[
+          { icon: FileText,      label: "Applications",  value: 98,  color: NAVY  },
+          { icon: CheckCircle,   label: "Selected",       value: 52,  color: TEAL  },
+          { icon: UserCheck,     label: "Approved",       value: 38,  color: "#059669" },
+          { icon: GitMerge,      label: "Matched",        value: 31,  color: "#7c3aed" },
+          { icon: Activity,      label: "Active Cohort",  value: 28,  color: "#d97706" },
+          { icon: GraduationCap, label: "Alumni",          value: 8,   color: "#059669" },
+        ].map(c => (
+          <div key={c.label} className="rounded-md p-4 flex flex-col gap-2"
+            style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            <div className="w-8 h-8 rounded-md flex items-center justify-center" style={{ background: `${c.color}15` }}>
+              <c.icon size={14} color={c.color} />
+            </div>
+            <div className="font-black text-2xl" style={{ color: c.color }}>{c.value}</div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">{c.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── View: Alumni ──────────────────────────────────────────────────────────────
+function AlumniView() {
+  return (
+    <div className="im-fade space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {ALUMNI.map((a, i) => (
+          <div key={i} className="rounded-md p-5 flex flex-col gap-3"
+            style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)", animationDelay: `${i * 40}ms` }}>
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+                  style={{ background: `linear-gradient(135deg, ${NAVY}, ${TEAL})` }}>
+                  <User size={18} color="#fff" strokeWidth={1.8} />
+                </div>
+                <div>
+                  <div className="font-bold text-xs" style={{ color: "#111827" }}>{a.name}</div>
+                  <div className="text-[10px] text-gray-500">Cohort {a.cohort}</div>
+                </div>
+              </div>
+              {a.award && <Award size={14} color="#d97706" />}
+            </div>
+            <div className="space-y-1">
+              <div className="font-semibold text-xs" style={{ color: TEAL }}>{a.business}</div>
+              <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                <BookOpen size={10} />{a.sector}
+                <MapPin size={10} />{a.district}
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid #f3f4f6" }}>
+              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Revenue</span>
+              <span className="text-xs font-black" style={{ color: "#059669" }}>{a.revenue}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── View: Program Setup ───────────────────────────────────────────────────────
+type SetupTab = "Overview" | "Timeline" | "Benefits" | "Eligibility";
+
+const PROG_STATUS_COLORS: Record<string, string> = {
+  "Accepting Applications": "#16a34a",
+  "Coming Soon":            "#d97706",
+  "Active":                 "#2563eb",
+  "Closed":                 "#6b7280",
+};
+
+function ProgramSetupView({
+  adminPrograms,
+  onCreateProgram,
+  onUpdateProgram,
+  onDeleteProgram,
+}: {
+  adminPrograms: AdminProgram[];
+  onCreateProgram: (p: AdminProgram) => void;
+  onUpdateProgram: (p: AdminProgram) => void;
+  onDeleteProgram: (id: string) => void;
+}) {
+  const [addOpen,       setAddOpen]       = useState(false);
+  const [appTab,        setAppTab]        = useState<SetupTab>("Overview");
+  const [coverUrl,      setCoverUrl]      = useState<string>("");
+  const [savedOnce,     setSavedOnce]     = useState(false);
+  const [editingId,     setEditingId]     = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  // Timeline
+  const [tlForm,     setTlForm]     = useState({ title: "", date: "", description: "" });
+  const [addingTl,   setAddingTl]   = useState(false);
+  const [tlEntries,  setTlEntries]  = useState<TimelineEntry[]>([]);
+
+  const emptyProg = {
+    name: "", sector: "", description: "",
+    status: "Accepting Applications", duration: "", location: "", format: "Hybrid",
+    overview: "", benefits: "", eligibility: "",
+    startDate: "", deadline: "", cohortSize: "", cohortId: "",
+  };
+  const [newProg, setNewProg] = useState(emptyProg);
+  const programme = useProgramme();
+  const [showErrors, setShowErrors] = useState(false);
+  const [interest, setInterest] = useState<Interest[]>(loadInterest);
+  useEffect(() => {
+    const on = (e: StorageEvent) => { if (e.key === INTEREST_KEY) setInterest(loadInterest()); };
+    window.addEventListener("storage", on);
+    return () => window.removeEventListener("storage", on);
+  }, []);
+
+  // The programme as it would be published, checked against the same rules the public page relies on
+  const draft: AdminProgram = {
+    id: editingId ?? "draft",
+    name: newProg.name, sector: newProg.sector, description: newProg.description, status: newProg.status, coverUrl,
+    duration: newProg.duration, location: newProg.location, format: newProg.format, overview: newProg.overview,
+    timelineEntries: tlEntries, benefits: newProg.benefits, eligibility: newProg.eligibility, published: true,
+    startDate: newProg.startDate.trim() || undefined,
+    deadline: newProg.deadline.trim() || undefined,
+    cohortSize: newProg.cohortSize.trim() === "" ? undefined : Number(newProg.cohortSize),
+    cohortId: newProg.cohortId === "" ? undefined : Number(newProg.cohortId),
+  };
+  const problems = validateProgram(draft);
+  const errors: Record<string, string> = showErrors ? Object.fromEntries(problems.map(x => [x.field, x.message])) : {};
+  const fieldStyle = (k: string, bg = "#f9fafb") => ({ background: bg, border: `1px solid ${errors[k] ? "#ef4444" : "#e5e7eb"}`, color: "#111827" });
+  const fieldError = (k: string) => errors[k] ? <p className="text-[10px] font-semibold" style={{ color: "#ef4444" }}>{errors[k]}</p> : null;
+  // Same decisions as the public card (start date, deadline, cohort line)
+  const facts = programFacts(draft, programme.cohorts.map(c => ({ id: c.id, name: c.name, startDate: c.startDate, enrolled: cohortEnrolled(c, programme.pairs, programme.waiting.length) })));
+  const effectiveDeadline = facts.deadline !== "—" ? facts.deadline : null;
+
+  // ── Progress calculations ──────────────────────────────────────────────────
+  const profileFields = [newProg.name, newProg.sector, newProg.description, newProg.status, newProg.duration, newProg.location, newProg.format, coverUrl];
+  const profileFilled = profileFields.filter(Boolean).length;
+  const profilePct    = Math.round((profileFilled / 8) * 100);
+
+  const appFilled = [
+    tlEntries.length > 0,
+    !!newProg.benefits,
+    !!newProg.eligibility,
+  ].filter(Boolean).length;
+  const appPct = Math.round((appFilled / 3) * 100);
+
+  const overviewWords = newProg.overview.trim() === "" ? 0 : newProg.overview.trim().split(/\s+/).length;
+  const tlDescWords   = (desc: string) => desc.trim() === "" ? 0 : desc.trim().split(/\s+/).length;
+
+  const handleOverviewChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val   = e.target.value;
+    const words = val.trim() === "" ? [] : val.trim().split(/\s+/);
+    if (words.length <= 40) setNewProg(p => ({ ...p, overview: val }));
+  };
+
+  // Cover is stored as a small data URL (not a blob: URL) so it survives a refresh and can be saved with the programme
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () => toast.error("Could not read that image. Please try another file.");
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => toast.error("That file is not a valid image.");
+      img.onload = () => {
+        const MAX_W = 1200;
+        const scale = Math.min(1, MAX_W / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { setCoverUrl(reader.result as string); return; }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        setCoverUrl(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleTlAdd = () => {
+    if (!tlForm.title.trim() || !tlForm.date.trim() || !tlForm.description.trim()) return;
+    const words = tlDescWords(tlForm.description);
+    if (words > 18) return;
+    const entry: TimelineEntry = {
+      id: Date.now().toString(),
+      title: tlForm.title,
+      date: tlForm.date,
+      description: tlForm.description,
+    };
+    setTlEntries(prev => [...prev, entry]);
+    setTlForm({ title: "", date: "", description: "" });
+    setAddingTl(false);
+  };
+
+  const handleTlRemove = (id: string) => {
+    setTlEntries(prev => prev.filter(e => e.id !== id));
+  };
+
+  const handleSaveChanges = () => {
+    if (problems.length > 0) {
+      setShowErrors(true);
+      setSavedOnce(false);
+      toast.error(`Please complete ${problems.length} required item${problems.length !== 1 ? "s" : ""} before saving.`);
+      return;
+    }
+    setShowErrors(false);
+    setSavedOnce(true);
+    toast.success("Changes saved to preview.");
+  };
+
+  const handleCreate = () => {
+    if (!savedOnce) return;
+    // Re-check: fields may have been cleared after "Save Changes" was clicked
+    if (problems.length > 0) {
+      setShowErrors(true);
+      setSavedOnce(false);
+      toast.error(`Please complete ${problems.length} required item${problems.length !== 1 ? "s" : ""} before publishing.`);
+      return;
+    }
+    // Editing must not silently change whether the programme is live
+    const wasPublished = editingId ? (adminPrograms.find(x => x.id === editingId)?.published ?? true) : true;
+    const prog: AdminProgram = { ...draft, id: editingId ?? Date.now().toString(), name: draft.name.trim(), published: wasPublished };
+    if (editingId) {
+      onUpdateProgram(prog);
+      toast.success(wasPublished ? `"${prog.name}" updated successfully.` : `"${prog.name}" updated. It is still unpublished. Use Republish to put it back on the public page.`);
+    } else {
+      onCreateProgram(prog);
+      toast.success(`"${prog.name}" created and published!`);
+    }
+    setNewProg(emptyProg);
+    setCoverUrl("");
+    setTlEntries([]);
+    setSavedOnce(false);
+    setShowErrors(false);
+    setEditingId(null);
+    setAddOpen(false);
+    setAppTab("Overview");
+  };
+
+  const handleEdit = (p: AdminProgram) => {
+    setEditingId(p.id);
+    setNewProg({
+      name: p.name, sector: p.sector, description: p.description,
+      status: p.status, duration: p.duration, location: p.location,
+      format: p.format, overview: p.overview,
+      benefits: p.benefits, eligibility: p.eligibility,
+      startDate: p.startDate ?? "", deadline: p.deadline ?? "",
+      cohortSize: p.cohortSize ? String(p.cohortSize) : "", cohortId: p.cohortId != null ? String(p.cohortId) : "",
+    });
+    setCoverUrl(p.coverUrl);
+    setTlEntries(p.timelineEntries);
+    setSavedOnce(false);
+    setShowErrors(false);
+    setAddOpen(true);
+    setAppTab("Overview");
+  };
+
+  const handleCancelEdit = () => {
+    setNewProg(emptyProg);
+    setCoverUrl("");
+    setTlEntries([]);
+    setSavedOnce(false);
+    setShowErrors(false);
+    setEditingId(null);
+    setAddOpen(false);
+    setAppTab("Overview");
+  };
+
+  const handleRepublish = (prog: AdminProgram) => {
+    const probs = validateProgram(prog);
+    if (probs.length > 0) {
+      toast.error(`"${prog.name || "Untitled"}" can't go live yet: ${probs.slice(0, 3).map(x => x.message).join("; ")}${probs.length > 3 ? "; ..." : ""}. Click Edit to complete it.`);
+      return;
+    }
+    onUpdateProgram({ ...prog, published: true });
+    toast.success(`"${prog.name}" is live on the public page again.`);
+  };
+
+  const downloadInterest = () => {
+    const blob = new Blob([interestToCsv(interest)], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "notify-me-signups.csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const statusColor = PROG_STATUS_COLORS[newProg.status] ?? "#6b7280";
+  // Overview tab hidden per requirements — sourced from Program Description
+  const appTabs: SetupTab[] = ["Timeline", "Benefits", "Eligibility"];
+
+  const progBarColor = (pct: number) =>
+    pct === 100 ? "#16a34a" : pct >= 60 ? TEAL : pct >= 30 ? "#f59e0b" : "#ef4444";
+
+  return (
+    <div className="im-fade space-y-4" style={{ maxWidth: "100%" }}>
+
+      {/* ── Existing programs list ── */}
+      {adminPrograms.length > 0 && (
+        <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
+          <div className="px-6 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid #f0f0f0" }}>
+            <span className="text-xs font-black uppercase tracking-widest" style={{ color: NAVY }}>Created Programs</span>
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ background: NAVY, color: "#fff" }}>{adminPrograms.length} program{adminPrograms.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div className="divide-y divide-[#f0f0f0]">
+            {adminPrograms.map(p => (
+              <div key={p.id} className="flex items-center gap-4 px-6 py-3">
+                {p.coverUrl && <img src={p.coverUrl} alt="" className="w-12 h-8 object-cover rounded-md shrink-0" />}
+                {!p.coverUrl && <div className="w-12 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: `${TEAL}15` }}><FileText size={14} color={TEAL} /></div>}
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-xs truncate" style={{ color: NAVY }}>{p.name || "Untitled"}</div>
+                  <div className="text-[10px]" style={{ color: "#6b7280" }}>{p.sector || "—"} · {p.format}</div>
+                </div>
+                <span className="text-[9px] font-bold px-2 py-0.5 rounded-md shrink-0"
+                  style={{ background: p.published ? NAVY : "#9ca3af", color: "#fff" }}>
+                  {p.published ? p.status : "Unpublished"}
+                </span>
+                {interest.filter(x => x.programId === p.id).length > 0 && (
+                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-md shrink-0" style={{ background: "#fffbeb", color: "#b45309" }}>
+                    {interest.filter(x => x.programId === p.id).length} interested
+                  </span>
+                )}
+                <button
+                  onClick={() => handleEdit(p)}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all"
+                  style={{ background: TEAL, color: "#fff" }}>
+                  <Edit2 size={10} /> Edit
+                </button>
+                {p.published ? (
+                  <button
+                    onClick={() => setDeleteConfirm(p.id)}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all"
+                    style={{ background: TEAL, color: "#fff" }}>
+                    <EyeOff size={10} /> Unpublish
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleRepublish(p)}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all"
+                    style={{ background: "#16a34a", color: "#fff" }}>
+                    <CheckCircle size={10} /> Republish
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Notify-me sign-ups from Coming Soon programmes ── */}
+      {interest.length > 0 && (
+        <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
+          <div className="px-6 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid #f0f0f0" }}>
+            <span className="text-xs font-black uppercase tracking-widest" style={{ color: NAVY }}>Notify-me Sign-ups</span>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ background: NAVY, color: "#fff" }}>{interest.length} sign-up{interest.length !== 1 ? "s" : ""}</span>
+              <button onClick={downloadInterest} className="px-3 py-1.5 rounded-md text-[10px] font-bold" style={{ background: TEAL, color: "#fff" }}>Download CSV</button>
+            </div>
+          </div>
+          <div className="divide-y divide-[#f0f0f0]" style={{ maxHeight: 220, overflowY: "auto" }}>
+            {[...interest].reverse().map((x, i) => (
+              <div key={`${x.programId}-${x.email}-${i}`} className="flex items-center gap-4 px-6 py-2">
+                <span className="text-[11px] font-bold truncate flex-1" style={{ color: NAVY }}>{x.email}</span>
+                <span className="text-[10px] truncate" style={{ color: "#6b7280", maxWidth: 220 }}>{x.programName}</span>
+                <span className="text-[10px] shrink-0" style={{ color: "#9ca3af" }}>{x.date.slice(0, 10)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete confirm modal ── */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
+          <div className="bg-white rounded-md p-6 max-w-sm w-full mx-4 space-y-4" style={{ boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-md flex items-center justify-center" style={{ background: "#fef2f2" }}>
+                <TrashIcon size={18} color="#ef4444" />
+              </div>
+              <div>
+                <div className="font-black text-sm" style={{ color: NAVY }}>Unpublish Program?</div>
+                <div className="text-[10px]" style={{ color: "#6b7280" }}>This hides it from the public landing page</div>
+              </div>
+            </div>
+            <p className="text-xs leading-relaxed" style={{ color: "#374151" }}>
+              The program will be <strong>removed from the public Incubation Programs page</strong> but will remain in the admin dashboard for editing or republishing.
+            </p>
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => {
+                  const prog = adminPrograms.find(x => x.id === deleteConfirm);
+                  onDeleteProgram(deleteConfirm);
+                  toast.success(`"${prog?.name ?? "Program"}" unpublished from public view.`);
+                  setDeleteConfirm(null);
+                }}
+                className="flex-1 py-2.5 rounded-md text-xs font-bold text-white"
+                style={{ background: TEAL }}>
+                Yes, Unpublish
+              </button>
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="flex-1 py-2.5 rounded-md text-xs font-bold"
+                style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add / Edit Program accordion ── */}
+      <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
+
+        {/* Header toggle */}
+        <button
+          onClick={() => { if (!addOpen) { setAddOpen(true); } else { handleCancelEdit(); } }}
+          className="flex items-center justify-between w-full px-6 py-4 text-left transition-all"
+          style={{ background: addOpen ? `${TEAL}10` : "#fff", borderBottom: addOpen ? `1px solid ${TEAL}30` : "none" }}
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ background: addOpen ? TEAL : `${TEAL}20` }}>
+              {editingId ? <Edit2 size={14} color={addOpen ? "#fff" : TEAL} /> : <PlusCircle size={14} color={addOpen ? "#fff" : TEAL} />}
+            </div>
+            <span className="font-bold text-sm" style={{ color: NAVY }}>
+              {editingId ? "Edit Program" : "Add New Program"}
+            </span>
+          </div>
+          {addOpen ? <ChevronDown size={15} color={TEAL} /> : <ChevronRight size={15} color="#9ca3af" />}
+        </button>
+
+        {/* ── Expanded body: left form + right preview ── */}
+        {addOpen && (
+          <div className="im-fade flex gap-0" style={{ alignItems: "flex-start" }}>
+
+            {/* ══ LEFT: Program Profile form ══ */}
+            <div className="flex-1 min-w-0 px-6 py-6 space-y-5" style={{ borderRight: "1px solid #f0f0f0" }}>
+
+              {/* ── Program Profile progress bar ── */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: TEAL }}>Program Profile</span>
+                  <div className="flex items-center gap-2">
+                    {profilePct === 100 && (
+                      <span className="text-[9px] font-black px-2 py-0.5 rounded-md" style={{ background: "#f0fdf4", color: "#16a34a" }}>✓ Completed</span>
+                    )}
+                    <span className="text-[10px] font-bold" style={{ color: progBarColor(profilePct) }}>{profilePct}%</span>
+                  </div>
+                </div>
+                <div className="w-full rounded-full overflow-hidden" style={{ height: 5, background: "#f3f4f6" }}>
+                  <div
+                    className="h-full transition-all duration-500"
+                    style={{ width: `${profilePct}%`, background: progBarColor(profilePct), borderRadius: "9999px" }}
+                  />
+                </div>
+              </div>
+
+              {/* Row 1: Name + Sector */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Program Name</label>
+                  <input type="text" placeholder="Zantchito Incubation"
+                    value={newProg.name} onChange={e => setNewProg(p => ({ ...p, name: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("name")} />
+                  {fieldError("name")}
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Program Sector</label>
+                  <input type="text" placeholder="AgriTech, CleanEnergy"
+                    value={newProg.sector} onChange={e => setNewProg(p => ({ ...p, sector: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("sector")} />
+                  {fieldError("sector")}
+                </div>
+              </div>
+
+              {/* Program Description */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Program Description</label>
+                <textarea rows={3} placeholder="Briefly describe program goals, target beneficiaries and expected outcomes..."
+                  value={newProg.description} onChange={e => setNewProg(p => ({ ...p, description: e.target.value }))}
+                  className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none resize-none"
+                  style={fieldStyle("description")} />
+                {fieldError("description")}
+              </div>
+
+              {/* Row 2: Status + Format */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Program Status</label>
+                  <select value={newProg.status} onChange={e => setNewProg(p => ({ ...p, status: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }}>
+                    {["Accepting Applications", "Coming Soon", "Active", "Closed"].map(s => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Format</label>
+                  <select value={newProg.format} onChange={e => setNewProg(p => ({ ...p, format: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }}>
+                    {["Hybrid", "Virtual", "Physical", "Virtual & Physical"].map(s => <option key={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Row 3: Duration + Location */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Program Duration</label>
+                  <input type="text" placeholder="6 Months"
+                    value={newProg.duration} onChange={e => setNewProg(p => ({ ...p, duration: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("duration")} />
+                  {fieldError("duration")}
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Location</label>
+                  <input type="text" placeholder="Mzuzu, Malawi"
+                    value={newProg.location} onChange={e => setNewProg(p => ({ ...p, location: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("location")} />
+                  {fieldError("location")}
+                </div>
+              </div>
+
+              {/* Row 4: Start date + Application deadline */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Start Date <span style={{ color: "#9ca3af", fontWeight: 600 }}>(optional)</span></label>
+                  <input type="text" placeholder="6 October 2026"
+                    value={newProg.startDate} onChange={e => setNewProg(p => ({ ...p, startDate: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("startDate")} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Application Deadline</label>
+                  <input type="text" placeholder="31 August 2026"
+                    value={newProg.deadline} onChange={e => setNewProg(p => ({ ...p, deadline: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("deadline")} />
+                  {fieldError("deadline")}
+                </div>
+              </div>
+
+              {/* Row 5: Cohort size + linked cohort */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Cohort Size <span style={{ color: "#9ca3af", fontWeight: 600 }}>(places)</span></label>
+                  <input type="number" min={1} placeholder="30"
+                    value={newProg.cohortSize} onChange={e => setNewProg(p => ({ ...p, cohortSize: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("cohortSize")} />
+                  {fieldError("cohortSize")}
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Linked Cohort <span style={{ color: "#9ca3af", fontWeight: 600 }}>(optional)</span></label>
+                  <select value={newProg.cohortId} onChange={e => setNewProg(p => ({ ...p, cohortId: e.target.value }))}
+                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
+                    style={fieldStyle("cohortId")}>
+                    <option value="">Not linked</option>
+                    {programme.cohorts.map(c => <option key={c.id} value={String(c.id)}>{c.name} ({c.status})</option>)}
+                  </select>
+                  <p className="text-[9px]" style={{ color: "#9ca3af" }}>Shows live enrolment on the public card and links this program in Cohort Management.</p>
+                </div>
+              </div>
+
+              {/* Cover Photo upload */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Program Cover Photo</label>
+                <label className="flex flex-col items-center justify-center gap-2 rounded-md cursor-pointer transition-all"
+                  style={{ border: `2px dashed ${coverUrl ? TEAL : "#d1d5db"}`, background: coverUrl ? "#f0faf9" : "#f9fafb", minHeight: coverUrl ? "auto" : 90, overflow: "hidden" }}>
+                  {coverUrl ? (
+                    <img src={coverUrl} alt="Cover" className="w-full object-cover" style={{ height: 90 }} />
+                  ) : (
+                    <div className="flex flex-col items-center py-5 gap-1.5">
+                      <div className="w-8 h-8 rounded-md flex items-center justify-center" style={{ background: `${TEAL}15` }}><Camera size={16} color={TEAL} /></div>
+                      <span className="text-[10px] font-bold" style={{ color: TEAL }}>Click to upload cover photo</span>
+                      <span className="text-[9px]" style={{ color: "#9ca3af" }}>JPG, PNG — fits card banner exactly</span>
+                    </div>
+                  )}
+                  <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+                </label>
+                {coverUrl && <button onClick={() => setCoverUrl("")} className="text-[10px] font-semibold" style={{ color: "#ef4444" }}>× Remove photo</button>}
+              </div>
+
+              {/* ── Application Setup ── */}
+              <div className="rounded-md overflow-hidden" style={{ border: `1px solid ${TEAL}30` }}>
+                {/* App setup progress bar */}
+                <div className="px-4 py-2.5 space-y-1.5" style={{ background: `${TEAL}10`, borderBottom: `1px solid ${TEAL}20` }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase tracking-widest" style={{ color: TEAL }}>Application Setup</span>
+                    <div className="flex items-center gap-2">
+                      {appPct === 100 && <span className="text-[9px] font-black px-2 py-0.5 rounded-md" style={{ background: "#f0fdf4", color: "#16a34a" }}>✓ Completed</span>}
+                      <span className="text-[10px] font-bold" style={{ color: progBarColor(appPct) }}>{appPct}%</span>
+                    </div>
+                  </div>
+                  <div className="w-full rounded-full overflow-hidden" style={{ height: 4, background: "rgba(255,255,255,0.4)" }}>
+                    <div className="h-full transition-all duration-500" style={{ width: `${appPct}%`, background: progBarColor(appPct), borderRadius: "9999px" }} />
+                  </div>
+                  <div className="flex gap-1">
+                    {appTabs.map((t, i) => (
+                      <div key={t} className="flex-1 h-1 rounded-full" style={{ background: [tlEntries.length > 0, !!newProg.benefits, !!newProg.eligibility][i] ? progBarColor(100) : "rgba(255,255,255,0.3)" }} />
+                    ))}
+                  </div>
+                </div>
+                {/* Tab strip */}
+                <div className="flex" style={{ borderBottom: "1px solid #e5e7eb", background: "#fff" }}>
+                  {appTabs.map(t => (
+                    <button key={t} onClick={() => setAppTab(t)}
+                      className="flex-1 py-2.5 text-[11px] font-bold transition-all"
+                      style={{ color: appTab === t ? TEAL : "#6b7280", borderBottom: appTab === t ? `2px solid ${TEAL}` : "2px solid transparent", background: "transparent" }}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                {/* Auto-detected Application Deadline */}
+                <div className="px-4 py-2.5 flex items-center gap-3" style={{ background: "#fff", borderBottom: "1px solid #f0f0f0" }}>
+                  <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Application Deadline</span>
+                  <span className="text-[10px] font-black" style={{ color: effectiveDeadline ? NAVY : errors.deadline ? "#ef4444" : "#9ca3af" }}>
+                    {effectiveDeadline ? effectiveDeadline : "Set an Application Deadline above, or add an \"Applications Close\" timeline entry"}
+                  </span>
+                  {effectiveDeadline && !newProg.deadline.trim() && <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold" style={{ background: "#f0fdf4", color: "#16a34a" }}>From timeline</span>}
+                </div>
+                {/* Tab panels */}
+                <div className="p-4" style={{ background: "#fafafa" }}>
+                  {appTab === "Timeline" && (
+                    <div className="space-y-3">
+                      {/* Existing entries */}
+                      {tlEntries.length > 0 && (
+                        <div className="space-y-2">
+                          {tlEntries.map((entry, i) => (
+                            <div key={entry.id} className="flex gap-3 items-start">
+                              <div className="flex flex-col items-center">
+                                <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 text-white"
+                                  style={{ background: i === 0 ? TEAL : NAVY }}>{i + 1}</div>
+                                {i < tlEntries.length - 1 && <div className="w-px flex-1 my-1" style={{ background: `${NAVY}20`, minHeight: 12 }} />}
+                              </div>
+                              <div className="flex-1 pb-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-bold" style={{ color: NAVY }}>{entry.title}</span>
+                                  <button onClick={() => handleTlRemove(entry.id)} className="text-[9px] font-bold shrink-0" style={{ color: "#ef4444" }}>Remove</button>
+                                </div>
+                                <div className="text-[10px] font-semibold mb-0.5" style={{ color: TEAL }}>{entry.date}</div>
+                                <p className="text-[10px] leading-relaxed" style={{ color: "#6b7280" }}>{entry.description}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {/* Add Timeline button / form */}
+                      {!addingTl ? (
+                        <button onClick={() => setAddingTl(true)}
+                          className="flex items-center gap-2 px-4 py-2 rounded-md text-[11px] font-bold w-full justify-center transition-all"
+                          style={{ border: `1.5px dashed ${TEAL}`, color: TEAL, background: `${TEAL}05` }}>
+                          <Plus size={12} /> Add Timeline Entry
+                        </button>
+                      ) : (
+                        <div className="rounded-md p-4 space-y-3" style={{ border: `1px solid ${TEAL}30`, background: "#fff" }}>
+                          <p className="text-[10px] font-black uppercase tracking-wider" style={{ color: TEAL }}>New Timeline Entry</p>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Title</label>
+                              <input type="text" placeholder="Applications Open"
+                                value={tlForm.title} onChange={e => setTlForm(f => ({ ...f, title: e.target.value }))}
+                                className="w-full rounded-md px-2.5 py-2 text-xs focus:outline-none"
+                                style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }} />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Date</label>
+                              <input type="text" placeholder="1 July 2026"
+                                value={tlForm.date} onChange={e => setTlForm(f => ({ ...f, date: e.target.value }))}
+                                className="w-full rounded-md px-2.5 py-2 text-xs focus:outline-none"
+                                style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }} />
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Activity Description</label>
+                              <span className="text-[9px] font-bold" style={{ color: tlDescWords(tlForm.description) >= 18 ? "#ef4444" : "#9ca3af" }}>
+                                {tlDescWords(tlForm.description)} / 18 words
+                              </span>
+                            </div>
+                            <textarea rows={2} placeholder="Brief description of what happens on this date..."
+                              value={tlForm.description}
+                              onChange={e => {
+                                const words = e.target.value.trim() === "" ? [] : e.target.value.trim().split(/\s+/);
+                                if (words.length <= 18) setTlForm(f => ({ ...f, description: e.target.value }));
+                              }}
+                              className="w-full rounded-md px-2.5 py-2 text-xs focus:outline-none resize-none"
+                              style={{ background: "#f9fafb", border: `1px solid ${tlDescWords(tlForm.description) >= 18 ? "#ef4444" : "#e5e7eb"}`, color: "#111827" }} />
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={handleTlAdd}
+                              className="px-4 py-1.5 rounded-md text-[11px] font-bold text-white"
+                              style={{ background: TEAL }}>Add Entry</button>
+                            <button onClick={() => { setAddingTl(false); setTlForm({ title: "", date: "", description: "" }); }}
+                              className="px-4 py-1.5 rounded-md text-[11px] font-bold"
+                              style={{ background: "#f3f4f6", color: "#6b7280" }}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {appTab === "Benefits" && (
+                    <textarea rows={5} placeholder="Benefits participants will receive (one per line: seed funding, mentorship, certification)..."
+                      value={newProg.benefits} onChange={e => setNewProg(p => ({ ...p, benefits: e.target.value }))}
+                      className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none resize-none"
+                      style={fieldStyle("benefits", "#fff")} />
+                  )}
+                  {appTab === "Eligibility" && (
+                    <textarea rows={5} placeholder="Eligibility criteria (one per line: age range, business stage, residency)..."
+                      value={newProg.eligibility} onChange={e => setNewProg(p => ({ ...p, eligibility: e.target.value }))}
+                      className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none resize-none"
+                      style={fieldStyle("eligibility", "#fff")} />
+                  )}
+                </div>
+              </div>
+
+              {showErrors && problems.length > 0 && (
+                <div className="rounded-md p-3 space-y-1" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
+                  <p className="text-[10px] font-black uppercase tracking-wider" style={{ color: "#b91c1c" }}>Complete these before saving</p>
+                  <ul className="space-y-0.5">
+                    {problems.map(x => <li key={x.field} className="text-[10px] font-semibold" style={{ color: "#b91c1c" }}>- {x.message}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex gap-3 pt-1">
+                <button
+                  onClick={handleCreate}
+                  disabled={!savedOnce}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-md text-xs font-bold text-white transition-all"
+                  style={{ background: savedOnce ? TEAL : "#d1d5db", cursor: savedOnce ? "pointer" : "not-allowed" }}>
+                  <CheckCircle size={13} /> {editingId ? "Save Edits" : "Create Program"}
+                </button>
+                {!savedOnce && (
+                  <span className="text-[10px] self-center" style={{ color: "#9ca3af" }}>Click "Save Changes" in the preview first</span>
+                )}
+                <button onClick={handleCancelEdit}
+                  className="ml-auto px-5 py-2.5 rounded-md text-xs font-bold"
+                  style={{ background: "#f3f4f6", color: "#6b7280" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            {/* ══ RIGHT: Live Preview (mirrors IncubationPage ProgramCard) ══ */}
+            <div className="shrink-0 px-5 py-6 space-y-3" style={{ width: 290, background: "#f8f9fb" }}>
+              <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: "#9ca3af" }}>Live Preview</p>
+
+              <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid rgba(59,65,103,0.15)", boxShadow: "0 4px 24px rgba(59,65,103,0.10)" }}>
+                {/* Photo banner */}
+                <div className="relative overflow-hidden" style={{ height: 130 }}>
+                  {coverUrl ? (
+                    <img src={coverUrl} alt="Cover" className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, ${TEAL} 100%)` }}>
+                      <span style={{ fontSize: 28, opacity: 0.3 }}>🖼</span>
+                    </div>
+                  )}
+                  <div className="absolute inset-0" style={{ background: "linear-gradient(to bottom, rgba(30,35,64,0.35) 0%, rgba(30,35,64,0.65) 100%)" }} />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-3">
+                    <h3 className="text-white font-bold text-center drop-shadow-lg" style={{ fontSize: "0.85rem", textShadow: "0 2px 12px rgba(0,0,0,0.5)" }}>
+                      {newProg.name || <span style={{ opacity: 0.5 }}>Program Name</span>}
+                    </h3>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-md"
+                      style={{ background: statusColor + "dd", color: "#fff" }}>
+                      {newProg.status}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2×2 info tiles */}
+                <div className="p-3 space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { label: "Start Date", value: facts.startDate },
+                      { label: "Duration",   value: newProg.duration || "—" },
+                      { label: "Location",   value: newProg.location || "—" },
+                      { label: "Format",     value: newProg.format   || "—" },
+                      { label: "Sector",     value: newProg.sector   || "—" },
+                      ...(facts.cohort ? [{ label: "Cohort", value: facts.cohort }] : []),
+                    ].map(({ label, value }, idx, arr) => (
+                      <div key={label} className={`rounded-md p-2 ${arr.length % 2 === 1 && idx === arr.length - 1 ? "col-span-2" : ""}`} style={{ border: "1px solid rgba(59,65,103,0.12)", background: "#f8f9fb" }}>
+                        <div className="text-[9px] font-bold" style={{ color: NAVY }}>{label}</div>
+                        <div className="text-[9px] mt-0.5 truncate" style={{ color: "#6b7280" }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Description shown as overview (sourced from Program Description) */}
+                  {newProg.description && (
+                    <p className="text-[9px] leading-relaxed" style={{ color: "#6b7280" }}>
+                      {newProg.description.slice(0, 120)}{newProg.description.length > 120 ? "…" : ""}
+                    </p>
+                  )}
+                  {/* Auto deadline */}
+                  {effectiveDeadline && (
+                    <div className="flex items-center gap-1.5 rounded-md px-2 py-1" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
+                      <span className="text-[8px] font-bold" style={{ color: "#ef4444" }}>Deadline:</span>
+                      <span className="text-[8px] font-semibold" style={{ color: "#374151" }}>{effectiveDeadline}</span>
+                    </div>
+                  )}
+
+                  {/* Timeline preview — matches IncubationPage flex flex-col items-center structure */}
+                  {tlEntries.length > 0 && (
+                    <div className="space-y-2 pt-1 border-t" style={{ borderColor: "#f0f0f0" }}>
+                      <p className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "#9ca3af" }}>Timeline</p>
+                      {tlEntries.slice(0, 3).map((entry, i) => (
+                        <div key={entry.id} className="flex gap-2">
+                          <div className="flex flex-col items-center">
+                            <div className="w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold shrink-0 text-white"
+                              style={{ background: i === 0 ? TEAL : NAVY }}>{i + 1}</div>
+                            {i < Math.min(tlEntries.length, 3) - 1 && <div className="w-px flex-1 my-0.5" style={{ background: `${NAVY}20`, minHeight: 8 }} />}
+                          </div>
+                          <div className="pb-1.5 flex-1">
+                            <div className="text-[9px] font-bold" style={{ color: NAVY }}>{entry.title}</div>
+                            <div className="text-[8px] font-semibold" style={{ color: TEAL }}>{entry.date}</div>
+                            <p className="text-[8px] leading-relaxed" style={{ color: "#6b7280" }}>{entry.description}</p>
+                          </div>
+                        </div>
+                      ))}
+                      {tlEntries.length > 3 && (
+                        <p className="text-[8px]" style={{ color: "#9ca3af" }}>+{tlEntries.length - 3} more entries</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Application Setup completion pills */}
+                  <div className="flex flex-wrap gap-1">
+                    {([
+                      { label: "Timeline",    filled: tlEntries.length > 0 },
+                      { label: "Benefits",    filled: !!newProg.benefits },
+                      { label: "Eligibility", filled: !!newProg.eligibility },
+                    ]).map(({ label, filled }) => (
+                      <span key={label} className="rounded-md px-2 py-0.5 text-[8px] font-bold"
+                        style={{ background: filled ? `${TEAL}15` : "#f3f4f6", color: filled ? TEAL : "#9ca3af" }}>
+                        {filled ? "✓ " : ""}{label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Save Changes */}
+              <button
+                onClick={handleSaveChanges}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-md text-xs font-bold text-white transition-all"
+                style={{ background: TEAL, color: "#fff" }}>
+                <CheckCircle size={13} /> Save Changes
+              </button>
+              {savedOnce && (
+                <p className="text-[10px] text-center font-semibold" style={{ color: "#16a34a" }}>
+                  ✓ Changes saved — you can now create the program
+                </p>
+              )}
+            </div>
+
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── View: Settings ────────────────────────────────────────────────────────────
+function SettingsView() {
+  const [settings, setSettings] = useState({
+    emailNotifications: true,
+    smsAlerts: false,
+    twoFactorAuth: true,
+    publicReports: false,
+  });
+
+  const items: { key: keyof typeof settings; label: string; desc: string }[] = [
+    { key: "emailNotifications", label: "Email Notifications", desc: "Receive email alerts for new applications and updates" },
+    { key: "smsAlerts",          label: "SMS Alerts",          desc: "Get SMS alerts for critical programme milestones" },
+    { key: "twoFactorAuth",      label: "Two-Factor Auth",     desc: "Require 2FA for all programme manager logins" },
+    { key: "publicReports",      label: "Public Reports",      desc: "Allow stakeholders to view anonymised programme reports" },
+  ];
+
+  return (
+    <div className="im-fade space-y-4 max-w-2xl">
+      {items.map(s => {
+        const on = settings[s.key];
+        return (
+          <div key={s.key} className="flex items-center justify-between rounded-md px-5 py-4"
+            style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            <div>
+              <div className="font-bold text-xs" style={{ color: "#111827" }}>{s.label}</div>
+              <div className="text-[10px] text-gray-500 mt-0.5">{s.desc}</div>
+            </div>
+            <button
+              role="switch"
+              aria-checked={on}
+              onClick={() => setSettings(prev => ({ ...prev, [s.key]: !prev[s.key] }))}
+              className="relative cursor-pointer shrink-0 focus:outline-none"
+              style={{ width: 40, height: 22, borderRadius: 3, background: on ? TEAL : "#d1d5db", border: "none", padding: 0, transition: "background 0.2s" }}
+            >
+              <span
+                className="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-all"
+                style={{ left: on ? "calc(100% - 19px)" : 3, boxShadow: "0 1px 4px rgba(0,0,0,0.2)", transition: "left 0.2s" }}
+              />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Admin Panel View Components ───────────────────────────────────────────────
+
+/** Stable numeric id for table rows (the store uses string ids). */
+const numId = (s: string) => /^[pw]\d+$/.test(s) ? (s === "w1" ? 4 : Number(s.slice(1))) : 100000 + ([...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % 900000);
+
+// ── AI Matching Engine — Data & Algorithm ─────────────────────────────────────
+interface EntMatchProfile {
+  id: string; name: string; district: string; sector: string;
+  businessStage: string; businessNeeds: string[];
+  skillRatings: Record<string, number>;
+  languages: string[];
+  isYouth: boolean; isWoman: boolean; isRural: boolean;
+  mentoringMode: string;
+  motivation: string; businessDescription: string;
+}
+interface MentorMatchProfile {
+  id: string; name: string; district: string; expertise: string;
+  programmeInterest: string[];
+  stageExpertise: string[]; preferredStages: string[];
+  industryExpertise: string[]; preferredIndustries: string[];
+  functionalExpertise: string[];
+  hasEntrepreneurialExp: boolean; yearsExperience: number; startupsmentored: number;
+  preferredFounderTypes: string[];
+  languages: string[]; mentoringMode: string;
+  hoursPerMonth: number; currentMenteeCount: number; maxMenteeCount: number;
+  biography: string; personality: string;
+}
+interface MatchResult {
+  mentor: MentorMatchProfile; score: number; semanticBonus: number;
+  breakdown: { label: string; score: number; weight: number }[];
+  explanation: string;
+}
+
+const ENT_MATCH_PROFILES: EntMatchProfile[] = [
+  {
+    id: "APP-005", name: "Lusungu Nyirenda", district: "Kasungu", sector: "Services",
+    businessStage: "Idea",
+    businessNeeds: ["Business Planning", "Marketing", "Financial Management"],
+    skillRatings: { Leadership: 2, Sales: 2, Finance: 1, Marketing: 3, Operations: 3 },
+    languages: ["English", "Chichewa"],
+    isYouth: true, isWoman: false, isRural: true, mentoringMode: "Hybrid",
+    motivation: "I want to create affordable cleaning and hygiene services that serve rural communities who lack access to professional home services.",
+    businessDescription: "Community-based cleaning and hygiene services targeting low-income rural households in Kasungu, creating local youth employment.",
+  },
+  {
+    id: "APP-010", name: "Alinafe Gondwe", district: "Salima", sector: "Services",
+    businessStage: "Validation",
+    businessNeeds: ["Marketing", "Financial Management", "Legal"],
+    skillRatings: { Leadership: 3, Sales: 3, Finance: 2, Marketing: 2, Operations: 3, Legal: 1 },
+    languages: ["English", "Chichewa", "Tumbuka"],
+    isYouth: false, isWoman: true, isRural: true, mentoringMode: "Online",
+    motivation: "As a woman entrepreneur in a rural area, I am building a logistics service to connect small traders with larger markets, reducing the distribution challenge they face daily.",
+    businessDescription: "Last-mile logistics and distribution connecting smallholder traders in Salima and nearby districts with urban markets.",
+  },
+  {
+    id: "APP-015", name: "Tamara Kachingwe", district: "Blantyre", sector: "Financial Services",
+    businessStage: "Prototype-MVP",
+    businessNeeds: ["Investment Readiness", "Marketing", "Operations"],
+    skillRatings: { Leadership: 4, Sales: 3, Finance: 3, Marketing: 2, Operations: 2, Technology: 2 },
+    languages: ["English"],
+    isYouth: false, isWoman: true, isRural: false, mentoringMode: "Online",
+    motivation: "I have built a savings and micro-credit platform for market women. I need guidance on investor readiness and how to scale commercially.",
+    businessDescription: "Mobile-based savings and micro-credit platform tailored for informal market women in southern Malawi, with a working MVP and 120 active users.",
+  },
+];
+
+const KNOWN_ENT_PROFILES: Record<string, EntMatchProfile> = {
+  "APP-022": {
+    id: "APP-022",
+    name: "Dalitso Mvula",
+    district: "Lilongwe",
+    sector: "Agri-Business",
+    businessStage: "MVP",
+    businessNeeds: ["Agriculture", "Business Strategy", "Operations", "Financial Management"],
+    skillRatings: { Leadership: 3, Sales: 2, Finance: 2, Operations: 3, Agriculture: 4 },
+    languages: ["English", "Chichewa"],
+    isYouth: true,
+    isWoman: false,
+    isRural: false,
+    mentoringMode: "Hybrid",
+    motivation: "Expanding GreenSprout Hydroponics commercial greenhouse systems in Lilongwe to increase vegetable yields and create youth agribusiness employment.",
+    businessDescription: "GreenSprout Hydroponics builds climate-smart hydroponics and greenhouse systems supplying fresh quality produce across central Malawi.",
+  },
+  "APP-023": {
+    id: "APP-023",
+    name: "Brian Kumwenda",
+    district: "Mzuzu",
+    sector: "Technology",
+    businessStage: "MVP",
+    businessNeeds: ["Technology", "Business Strategy", "Marketing", "Investment Readiness"],
+    skillRatings: { Leadership: 3, Technology: 4, Sales: 2, Finance: 1, Marketing: 2 },
+    languages: ["English", "Tumbuka", "Chichewa"],
+    isYouth: true,
+    isWoman: false,
+    isRural: false,
+    mentoringMode: "Online",
+    motivation: "Empowering northern youth through tech skill incubation and delivering software solutions for regional SMEs.",
+    businessDescription: "Mzuzu Coders Hub provides software engineering services, tech talent incubation, and digital transformation for businesses in Northern Malawi.",
+  },
+  "APP-024": {
+    id: "APP-024",
+    name: "Enelesi Phiri",
+    district: "Zomba",
+    sector: "Creative Arts",
+    businessStage: "Early Traction",
+    businessNeeds: ["Marketing", "Financial Management", "Export Strategy", "Business Planning"],
+    skillRatings: { Leadership: 3, Operations: 4, Marketing: 2, Finance: 1, Sales: 3 },
+    languages: ["English", "Chichewa"],
+    isYouth: false,
+    isWoman: true,
+    isRural: true,
+    mentoringMode: "Hybrid",
+    motivation: "Uniting rural women artisans and weavers to preserve traditional craft while accessing urban and international craft markets.",
+    businessDescription: "Zomba Weavers Co-op produces high-quality artisanal textiles and woven goods, empowering over 45 rural women in Zomba district.",
+  },
+  "Grace Kamwendo": {
+    id: "APP-009",
+    name: "Grace Kamwendo",
+    district: "Lilongwe",
+    sector: "HealthTech",
+    businessStage: "MVP",
+    businessNeeds: ["Business Strategy", "Operations", "HealthTech Commercialization", "Marketing"],
+    skillRatings: { Leadership: 4, Sales: 2, Finance: 2, Operations: 3, Technology: 4 },
+    languages: ["English", "Chichewa"],
+    isYouth: true,
+    isWoman: true,
+    isRural: false,
+    mentoringMode: "Hybrid",
+    motivation: "Scaling HealthTrack digital health diagnostics for community health workers and rural clinics across Malawi.",
+    businessDescription: "HealthTrack develops mobile-enabled digital diagnostic and health records solutions for frontline clinics and healthcare workers.",
+  },
+};
+
+KNOWN_ENT_PROFILES["Dalitso Mvula"] = KNOWN_ENT_PROFILES["APP-022"];
+KNOWN_ENT_PROFILES["Brian Kumwenda"] = KNOWN_ENT_PROFILES["APP-023"];
+KNOWN_ENT_PROFILES["Enelesi Phiri"] = KNOWN_ENT_PROFILES["APP-024"];
+KNOWN_ENT_PROFILES["APP-009"] = KNOWN_ENT_PROFILES["Grace Kamwendo"];
+
+function getProfileForMentee(nameOrId: string, fallback?: Partial<EntMatchProfile>): EntMatchProfile {
+  if (KNOWN_ENT_PROFILES[nameOrId]) return KNOWN_ENT_PROFILES[nameOrId];
+  const all = [...ENT_MATCH_PROFILES, ...Object.values(KNOWN_ENT_PROFILES)];
+  const found = all.find(p => p.id === nameOrId || p.name.toLowerCase() === nameOrId.toLowerCase())
+    ?? (fallback?.name ? all.find(p => p.name.toLowerCase() === fallback.name!.toLowerCase()) : undefined);
+  if (found) return found;
+  return {
+    id: fallback?.id || `APP-${Date.now()}`,
+    name: fallback?.name || nameOrId,
+    district: fallback?.district || "Lilongwe",
+    sector: fallback?.sector || "Services",
+    businessStage: fallback?.businessStage || "MVP",
+    businessNeeds: fallback?.businessNeeds || ["Business Planning", "Marketing", "Financial Management"],
+    skillRatings: fallback?.skillRatings || { Leadership: 3, Sales: 2, Finance: 2, Operations: 3 },
+    languages: fallback?.languages || ["English", "Chichewa"],
+    isYouth: fallback?.isYouth ?? true,
+    isWoman: fallback?.isWoman ?? false,
+    isRural: fallback?.isRural ?? false,
+    mentoringMode: fallback?.mentoringMode || "Hybrid",
+    motivation: fallback?.motivation || `Entrepreneur developing venture seeking strategic mentorship.`,
+    businessDescription: fallback?.businessDescription || "Enterprise venture.",
+  };
+}
+
+const MENTOR_MATCH_PROFILES: MentorMatchProfile[] = [
+  {
+    id: "MNT-001", name: "Dr. Thoko Banda", district: "Lilongwe", expertise: "Business Strategy",
+    programmeInterest: ["Both"],
+    stageExpertise: ["Idea", "Validation", "Prototype-MVP", "MVP", "Early Startup"], preferredStages: ["Idea", "Validation", "Prototype-MVP", "MVP"],
+    industryExpertise: ["Services", "Trade", "Financial Services", "Health & Wellbeing", "HealthTech"], preferredIndustries: ["Services", "Financial Services", "Health & Wellbeing"],
+    functionalExpertise: ["Business Planning", "Marketing", "Strategy", "Operations", "HealthTech Commercialization", "Regulatory Compliance", "Scaling Strategy"],
+    hasEntrepreneurialExp: true, yearsExperience: 15, startupsmentored: 12,
+    preferredFounderTypes: ["Youth", "Women"],
+    languages: ["English", "Chichewa"], mentoringMode: "Hybrid",
+    hoursPerMonth: 12, currentMenteeCount: 2, maxMenteeCount: 4,
+    biography: "Former MD of a regional services firm with 15 years in SME strategy and health-tech business development across Malawi and East Africa.",
+    personality: "Patient and empathetic",
+  },
+  {
+    id: "MNT-002", name: "Mr. Chikumbe Phiri", district: "Blantyre", expertise: "Finance & Accounts",
+    programmeInterest: ["Incubation Programme", "Both"],
+    stageExpertise: ["Idea", "Validation", "Prototype-MVP", "MVP"], preferredStages: ["Idea", "Validation", "Prototype-MVP", "MVP"],
+    industryExpertise: ["Financial Services", "Services", "Trade", "Health & Wellbeing"], preferredIndustries: ["Financial Services", "Services", "Health & Wellbeing"],
+    functionalExpertise: ["Financial Management", "Business Planning", "Investment Readiness", "Legal", "Operations"],
+    hasEntrepreneurialExp: true, yearsExperience: 12, startupsmentored: 8,
+    preferredFounderTypes: ["Youth", "Rural", "Women"],
+    languages: ["English", "Chichewa"], mentoringMode: "Hybrid",
+    hoursPerMonth: 10, currentMenteeCount: 2, maxMenteeCount: 4,
+    biography: "Certified accountant and SME finance consultant with experience structuring financial models for early-stage and healthcare businesses in southern Malawi.",
+    personality: "Direct and honest",
+  },
+  {
+    id: "MNT-005", name: "Mrs. Faith Nyirenda", district: "Kasungu", expertise: "Marketing",
+    programmeInterest: ["Both"],
+    stageExpertise: ["Idea", "Validation", "Prototype-MVP", "MVP"], preferredStages: ["Idea", "Validation", "Prototype-MVP"],
+    industryExpertise: ["Services", "Trade", "Agriculture", "Agri-Business"], preferredIndustries: ["Services", "Trade", "Agriculture"],
+    functionalExpertise: ["Marketing", "Sales", "Business Planning", "Operations", "Market Expansion"],
+    hasEntrepreneurialExp: true, yearsExperience: 8, startupsmentored: 6,
+    preferredFounderTypes: ["Women", "Rural", "Youth"],
+    languages: ["English", "Chichewa", "Tumbuka"], mentoringMode: "Hybrid",
+    hoursPerMonth: 8, currentMenteeCount: 1, maxMenteeCount: 3,
+    biography: "Marketing director and founder of a trade enterprise in Kasungu. Expert in rural market development, brand building for small businesses and distribution strategy.",
+    personality: "Encouraging and enthusiastic",
+  },
+  {
+    id: "MNT-007", name: "Ms. Miriam Kamwana", district: "Lilongwe", expertise: "Social Enterprise",
+    programmeInterest: ["Both"],
+    stageExpertise: ["Idea", "Validation", "Prototype-MVP", "MVP"], preferredStages: ["Idea", "Prototype-MVP"],
+    industryExpertise: ["Health & Wellbeing", "Education & Training", "Services", "HealthTech"], preferredIndustries: ["Health & Wellbeing", "Education & Training", "Services"],
+    functionalExpertise: ["Leadership", "Marketing", "Operations", "Strategy", "Regulatory Compliance", "HealthTech Commercialization"],
+    hasEntrepreneurialExp: true, yearsExperience: 10, startupsmentored: 5,
+    preferredFounderTypes: ["Women", "Youth", "Rural"],
+    languages: ["English", "Chichewa", "Tumbuka"], mentoringMode: "Online",
+    hoursPerMonth: 10, currentMenteeCount: 2, maxMenteeCount: 4,
+    biography: "Social entrepreneur and women-in-business advocate with a decade growing healthcare and community enterprises across Malawi and Zambia.",
+    personality: "Patient and empathetic",
+  },
+  {
+    id: "MNT-010", name: "Mr. Charles Nkosi", district: "Mulanje", expertise: "Business Strategy",
+    programmeInterest: ["Incubation Programme", "Both"],
+    stageExpertise: ["Idea", "Validation", "Prototype-MVP", "MVP", "Early Startup"], preferredStages: ["Prototype-MVP", "MVP", "Early Startup"],
+    industryExpertise: ["Financial Services", "Technology", "Trade", "Services"], preferredIndustries: ["Financial Services", "Technology"],
+    functionalExpertise: ["Strategy", "Financial Management", "Investment Readiness", "Marketing", "Operations"],
+    hasEntrepreneurialExp: true, yearsExperience: 18, startupsmentored: 14,
+    preferredFounderTypes: ["Youth", "Women"],
+    languages: ["English", "Chichewa"], mentoringMode: "Online",
+    hoursPerMonth: 15, currentMenteeCount: 3, maxMenteeCount: 5,
+    biography: "Serial entrepreneur and investment advisor with 18 years in financial services and technology. Founded 3 businesses and advised 14 startups across sub-Saharan Africa.",
+    personality: "Structured and goal-oriented",
+  },
+  {
+    id: "MNT-012", name: "Dr. Felix Kaunda", district: "Blantyre", expertise: "Investment & VC",
+    programmeInterest: ["Both"],
+    stageExpertise: ["Prototype-MVP", "MVP", "Early Startup"], preferredStages: ["Prototype-MVP", "MVP", "Early Startup"],
+    industryExpertise: ["Financial Services", "Technology", "Services", "Health & Wellbeing"], preferredIndustries: ["Financial Services", "Technology", "Health & Wellbeing"],
+    functionalExpertise: ["Investment Readiness", "Financial Management", "Legal", "Operations", "Marketing", "Scaling Strategy"],
+    hasEntrepreneurialExp: true, yearsExperience: 20, startupsmentored: 20,
+    preferredFounderTypes: ["Women", "Youth"],
+    languages: ["English", "Chichewa"], mentoringMode: "Hybrid",
+    hoursPerMonth: 8, currentMenteeCount: 2, maxMenteeCount: 4,
+    biography: "Investment analyst, venture advisor and co-founder of a fintech company. Specialises in connecting female-led startups with impact investors across Africa.",
+    personality: "Direct and results-driven",
+  },
+];
+
+/** One mentor roster: every approved mentor in the pipeline is scorable. Detailed profiles are used where they exist; otherwise a profile is built from the application. */
+function profileFromMentorApp(m: MentorApplication): MentorMatchProfile {
+  const known = MENTOR_MATCH_PROFILES.find(x => x.id === m.id);
+  const capacity = m.capacity ?? known?.maxMenteeCount ?? 4;
+  if (known) return { ...known, name: m.name, district: m.district, expertise: m.expertise, maxMenteeCount: capacity };
+  return {
+    id: m.id, name: m.name, district: m.district, expertise: m.expertise,
+    programmeInterest: ["Both"],
+    stageExpertise: ["Idea", "Validation", "Prototype-MVP", "MVP", "Early Startup"], preferredStages: ["Idea", "Validation", "Prototype-MVP", "MVP"],
+    industryExpertise: [m.expertise, "Services"], preferredIndustries: [m.expertise],
+    functionalExpertise: [m.expertise, "Business Planning", "Operations"],
+    hasEntrepreneurialExp: true, yearsExperience: 8, startupsmentored: 4,
+    preferredFounderTypes: ["Youth", "Women"],
+    languages: ["English", "Chichewa"], mentoringMode: "Hybrid",
+    hoursPerMonth: 8, currentMenteeCount: 0, maxMenteeCount: capacity,
+    biography: `${m.title ?? "Mentor"}${m.employer ? ` at ${m.employer}` : ""}.`, personality: "Supportive",
+  };
+}
+
+function computeMatch(ent: EntMatchProfile, mentor: MentorMatchProfile): MatchResult | null {
+  if (!mentor.programmeInterest.some(p => p === "Incubation Programme" || p === "Both")) return null;
+  if (!ent.languages.some(l => mentor.languages.includes(l))) return null;
+  if (mentor.currentMenteeCount >= mentor.maxMenteeCount) return null;
+
+  const stageScore = mentor.stageExpertise.includes(ent.businessStage) && mentor.preferredStages.includes(ent.businessStage) ? 100
+    : mentor.stageExpertise.includes(ent.businessStage) ? 75
+    : mentor.preferredStages.includes(ent.businessStage) ? 60 : 15;
+
+  const sectorScore = mentor.industryExpertise.includes(ent.sector) && mentor.preferredIndustries.includes(ent.sector) ? 100
+    : mentor.industryExpertise.includes(ent.sector) ? 80
+    : mentor.preferredIndustries.includes(ent.sector) ? 60 : 10;
+
+  const matchedNeeds = ent.businessNeeds.filter(n =>
+    mentor.functionalExpertise.some(e => e.toLowerCase().includes(n.toLowerCase()) || n.toLowerCase().includes(e.toLowerCase()))
+  );
+  const needsScore = ent.businessNeeds.length > 0 ? Math.round((matchedNeeds.length / ent.businessNeeds.length) * 100) : 50;
+
+  const weakSkills = Object.entries(ent.skillRatings).filter(([, v]) => v <= 2).map(([k]) => k);
+  const coveredSkills = weakSkills.filter(s => mentor.functionalExpertise.some(e => e.toLowerCase().includes(s.toLowerCase())));
+  const skillsScore = weakSkills.length > 0 ? Math.round((coveredSkills.length / weakSkills.length) * 100) : 60;
+
+  const entTypes = ([ent.isYouth && "Youth", ent.isWoman && "Women", ent.isRural && "Rural"] as (string | false)[]).filter(Boolean) as string[];
+  const typeMatches = entTypes.filter(t => mentor.preferredFounderTypes.includes(t));
+  const founderScore = entTypes.length > 0 ? Math.round((typeMatches.length / entTypes.length) * 100) : 50;
+
+  const sharedLangs = ent.languages.filter(l => mentor.languages.includes(l)).length;
+  const langScore = Math.min(100, sharedLangs * 50);
+
+  const sameDistrict = ent.district === mentor.district;
+  const logisticsScore = sameDistrict ? 100 : mentor.mentoringMode !== "In-Person" ? 65 : 25;
+
+  const empathyScore = mentor.hasEntrepreneurialExp
+    ? (mentor.industryExpertise.includes(ent.sector) ? 100 : 65) : 20;
+
+  const trackScore = Math.min(100, mentor.startupsmentored * 5);
+
+  const weighted = Math.round(
+    0.25 * stageScore + 0.20 * sectorScore + 0.20 * needsScore +
+    0.10 * skillsScore + 0.08 * founderScore + 0.05 * langScore +
+    0.05 * logisticsScore + 0.04 * empathyScore + 0.03 * trackScore
+  );
+  const semanticBonus = Math.min(10, Math.round((stageScore + sectorScore + needsScore) / 300 * 10));
+  const score = Math.min(100, weighted + semanticBonus);
+
+  const reasons: string[] = [];
+  if (stageScore >= 75) reasons.push(`${ent.businessStage} stage expertise`);
+  if (sectorScore >= 60) reasons.push(`${ent.sector} sector alignment`);
+  if (matchedNeeds.length > 0) reasons.push(`covers ${matchedNeeds.length}/${ent.businessNeeds.length} stated needs (${matchedNeeds.join(", ")})`);
+  if (coveredSkills.length > 0) reasons.push(`addresses skills gaps in ${coveredSkills.slice(0, 2).join(", ")}`);
+  if (typeMatches.length > 0) reasons.push(`prefers mentoring ${typeMatches.join("/")} founders`);
+  if (sameDistrict) reasons.push("same district — in-person possible");
+  if (mentor.hasEntrepreneurialExp) reasons.push("lived entrepreneurial background");
+
+  return {
+    mentor, score, semanticBonus,
+    breakdown: [
+      { label: "Business Stage", score: stageScore, weight: 25 },
+      { label: "Sector Fit",     score: sectorScore, weight: 20 },
+      { label: "Needs Match",    score: needsScore,  weight: 20 },
+      { label: "Skills Gap",     score: skillsScore, weight: 10 },
+      { label: "Founder Type",   score: founderScore, weight: 8 },
+      { label: "Language",       score: langScore,   weight: 5  },
+      { label: "Logistics",      score: logisticsScore, weight: 5 },
+      { label: "Empathy",        score: empathyScore, weight: 4 },
+      { label: "Track Record",   score: trackScore,  weight: 3  },
+    ],
+    explanation: reasons.length > 0 ? reasons.join("; ") : "General compatibility across criteria",
+  };
+}
+
+// Helper to filter out specified badges
+export const isRemovedBadge = (val?: string) => {
+  if (!val) return false;
+  const clean = val.trim().toLowerCase().replace(/&/g, "and").replace(/\s+/g, " ");
+  return (
+    clean === "mvp" ||
+    clean === "prototype-mvp" ||
+    clean === "prototype - mvp" ||
+    clean === "prototype / mvp" ||
+    clean === "prototype" ||
+    clean === "edtech and curriculum" ||
+    clean === "strategy" ||
+    clean === "operations" ||
+    clean === "idea" ||
+    clean === "idea stage" ||
+    clean === "validation" ||
+    clean === "validation stage" ||
+    clean === "agritech and finance" ||
+    clean === "services" ||
+    clean === "youth" ||
+    clean === "woman" ||
+    clean === "women" ||
+    clean === "woman-led" ||
+    clean === "rural" ||
+    clean === "financial services" ||
+    clean === "early startup" ||
+    clean === "early startup stage" ||
+    clean === "early-startup" ||
+    clean === "early" ||
+    clean === "technology" ||
+    clean === "technology and ict" ||
+    clean === "software and technology" ||
+    clean === "tech" ||
+    clean === "trade" ||
+    clean === "general trade" ||
+    clean === "agri-trading" ||
+    clean === "financial management" ||
+    clean === "finance and accounts" ||
+    clean === "finance & accounts" ||
+    clean === "finance" ||
+    clean === "finance and accounting" ||
+    clean === "financial literacy" ||
+    clean === "investment readiness" ||
+    clean === "investment ready" ||
+    clean === "investment and vc" ||
+    clean === "investment & vc" ||
+    clean === "investment" ||
+    clean === "marketing" ||
+    clean === "marketing and sales" ||
+    clean === "marketing & sales" ||
+    clean === "marketing and branding" ||
+    clean === "marketing & branding" ||
+    clean === "digital marketing" ||
+    clean === "cleanenergy and hardware" ||
+    clean === "clean energy and hardware"
+  );
+};
+
+const isRemovedPersonality = (val?: string) => {
+  if (!val) return true;
+  const clean = val.trim().toLowerCase();
+  return (
+    clean === "strategic and supportive" ||
+    clean === "direct and honest" ||
+    clean === "encouraging and enthusiastic" ||
+    clean === "patient and empathetic" ||
+    clean === "structured and goal-oriented" ||
+    clean === "direct and results-driven"
+  );
+};
+
+// ── Mentor Profile Modal ───────────────────────────────────────────────────────
+function MentorProfileModal({
+  mentor,
+  matchContext,
+  onClose,
+}: {
+  mentor: MentorMatchProfile;
+  matchContext?: {
+    selectedEnt: EntMatchProfile;
+    result?: MatchResult;
+    onConfirm?: () => void;
+    isConfirmed?: boolean;
+  };
+  onClose: () => void;
+}) {
+  const { mntApps } = useContext(AppDataCtx);
+  const appData = mntApps.find(m => m.id === mentor.id || m.name.toLowerCase() === mentor.name.toLowerCase());
+
+  const email = appData?.email || `${mentor.name.toLowerCase().replace(/[^a-z]/g, "")}@brandplus.mw`;
+  const phone = appData?.phone || "+265 992 500 005";
+  const title = appData?.title || "Chief Marketing Strategist";
+  const employer = appData?.employer || "BrandPlus Malawi";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs im-fade"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          className="p-5 flex items-start justify-between relative"
+          style={{ background: `linear-gradient(135deg, ${NAVY}, ${TEAL})`, color: "#fff" }}
+        >
+          <div className="flex items-center gap-4">
+            <div
+              className="w-14 h-14 rounded-full flex items-center justify-center font-black text-xl shrink-0"
+              style={{ background: "rgba(255,255,255,0.18)", color: "#fff", border: "2px solid rgba(255,255,255,0.35)" }}
+            >
+              <User size={26} color="#fff" strokeWidth={1.8} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-black text-white leading-tight">{mentor.name}</h3>
+              </div>
+              <p className="text-xs text-white/80 mt-0.5 font-medium">{title} {employer}</p>
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                {mentor.expertise && (
+                  <span
+                    style={{ background: "#4C808A", color: "#ffffff", border: "1px solid rgba(255,255,255,0.25)" }}
+                    className="text-[10px] font-bold px-2.5 py-0.5 rounded-md shadow-xs"
+                  >
+                    {mentor.expertise.replace(/&/g, "and")}
+                  </span>
+                )}
+                {mentor.district && (
+                  <span
+                    style={{ background: "#4C808A", color: "#ffffff", border: "1px solid rgba(255,255,255,0.25)" }}
+                    className="text-[10px] font-medium px-2 py-0.5 rounded-md shadow-xs"
+                  >
+                    {mentor.district}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white transition-colors cursor-pointer"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Scrollable Content */}
+        <div className="p-5 overflow-y-auto space-y-4 text-xs">
+          {/* Match Context Recommendation banner if opened from AI match */}
+          {matchContext && (
+            <div className="p-3.5 rounded-lg flex flex-col gap-2" style={{ background: "#ffffff", border: "1.5px solid #4C808A" }}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Star size={14} style={{ color: "#4C808A", fill: "#4C808A" }} />
+                  <span className="font-bold uppercase tracking-wider text-[11px]" style={{ color: "#3B4167" }}>
+                    Recommendation for {matchContext.selectedEnt.name}
+                  </span>
+                </div>
+                {matchContext.result && (
+                  <span style={{ background: "#4C808A", color: "#ffffff", border: "none", padding: "3px 10px", borderRadius: 3, fontSize: 11, fontWeight: 800 }}>
+                    {matchContext.result.score}/100 Match
+                  </span>
+                )}
+              </div>
+              {matchContext.result?.explanation && (
+                <div style={{ background: "#4C808A", borderRadius: 3, padding: "8px 12px", border: "1px solid #4C808A" }}>
+                  <p className="text-white text-[11px] leading-relaxed m-0">
+                    <strong className="text-white font-bold">Why this match: </strong>
+                    {matchContext.result.explanation.replace(/\.$/, "")}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-3 gap-2.5">
+            <div className="p-2.5 rounded-lg border text-center shadow-xs" style={{ background: "#4C808A", borderColor: "#4C808A" }}>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-white/85 block mb-0.5">Experience</span>
+              <span className="text-sm font-black text-white">{mentor.yearsExperience} Years</span>
+            </div>
+            <div className="p-2.5 rounded-lg border text-center shadow-xs" style={{ background: "#4C808A", borderColor: "#4C808A" }}>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-white/85 block mb-0.5">Startups Mentored</span>
+              <span className="text-sm font-black text-white">{mentor.startupsmentored} Startups</span>
+            </div>
+            <div className="p-2.5 rounded-lg border text-center shadow-xs" style={{ background: "#4C808A", borderColor: "#4C808A" }}>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-white/85 block mb-0.5">Active Capacity</span>
+              <span className="text-sm font-black text-white">{mentor.currentMenteeCount} / {mentor.maxMenteeCount} Mentees</span>
+            </div>
+          </div>
+
+          {/* Professional Summary */}
+          <div className="rounded-lg border border-gray-200 overflow-hidden">
+            <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 font-bold text-gray-700 uppercase tracking-wider text-[10px]">
+              Mentor Biography & Style
+            </div>
+            <div className="p-3.5 space-y-2">
+              <p className="text-gray-700 leading-relaxed text-xs">{mentor.biography}</p>
+              {mentor.personality && !isRemovedPersonality(mentor.personality) && (
+                <div className="flex items-center gap-2 pt-1 flex-wrap">
+                  <span className="text-[10px] font-bold text-gray-500">Mentoring Approach:</span>
+                  <span className="text-[11px] font-semibold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-200 italic">
+                    "{mentor.personality}"
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Mentorship Focus */}
+          <div className="rounded-lg border border-gray-200 overflow-hidden">
+            <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 font-bold text-gray-700 uppercase tracking-wider text-[10px]">
+              Mentorship Focus and Criteria
+            </div>
+            <div className="p-3.5 space-y-2.5">
+              {mentor.stageExpertise.filter(st => !isRemovedBadge(st)).length > 0 && (
+                <div>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Target Business Stages</span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {mentor.stageExpertise.filter(st => !isRemovedBadge(st)).map(st => (
+                      <span key={st} className="px-2 py-0.5 rounded-md bg-teal-50 text-teal-700 border border-teal-200 font-medium text-[10px]">
+                        {st}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {mentor.industryExpertise.filter(ind => !isRemovedBadge(ind)).length > 0 && (
+                <div>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Industry Expertise</span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {mentor.industryExpertise.filter(ind => !isRemovedBadge(ind)).map(ind => (
+                      <span key={ind} className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 font-medium text-[10px]">
+                        {ind.replace(/&/g, "and")}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {mentor.functionalExpertise.filter(fx => !isRemovedBadge(fx)).length > 0 && (
+                <div>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Functional Expertise</span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {mentor.functionalExpertise.filter(fx => !isRemovedBadge(fx)).map(fx => (
+                      <span key={fx} className="px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200 font-medium text-[10px]">
+                        {fx}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-gray-100">
+                <div>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-0.5">Preferred Founders</span>
+                  <span className="text-gray-800 font-semibold">{mentor.preferredFounderTypes.join(", ")}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-0.5">Languages Spoken</span>
+                  <span className="text-gray-800 font-semibold">{mentor.languages.join(", ")}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Contact Details */}
+          <div className="rounded-lg border border-gray-200 overflow-hidden">
+            <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 font-bold text-gray-700 uppercase tracking-wider text-[10px]">
+              Contact Details
+            </div>
+            <div className="p-3.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div className="flex items-center gap-2 text-gray-700">
+                <Mail size={13} className="text-gray-400" />
+                <span>{email}</span>
+              </div>
+              <div className="flex items-center gap-2 text-gray-700">
+                <Phone size={13} className="text-gray-400" />
+                <span>{phone}</span>
+              </div>
+              <div className="flex items-center gap-2 text-gray-700 sm:col-span-2">
+                <MapPin size={13} className="text-gray-400" />
+                <span>{mentor.district} District Malawi</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-md border border-gray-300 text-gray-700 text-xs font-bold hover:bg-gray-100 transition-colors cursor-pointer"
+          >
+            Close
+          </button>
+          {matchContext && matchContext.onConfirm && (
+            <button
+              onClick={() => {
+                if (!matchContext.isConfirmed) {
+                  matchContext.onConfirm?.();
+                }
+              }}
+              disabled={matchContext.isConfirmed}
+              className="px-5 py-2 rounded-md text-xs font-bold transition-all flex items-center gap-2 shadow-xs cursor-pointer"
+              style={{
+                background: matchContext.isConfirmed ? "#f0fdf4" : TEAL,
+                color: matchContext.isConfirmed ? "#059669" : "#fff",
+                border: matchContext.isConfirmed ? "1px solid #bbf7d0" : "none",
+                cursor: matchContext.isConfirmed ? "default" : "pointer",
+              }}
+            >
+              <CheckCircle size={14} />
+              {matchContext.isConfirmed ? "Pairing Confirmed" : `Confirm Pairing with ${matchContext.selectedEnt.name}`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Splits a match explanation ("a; b; covers 1/4 stated needs (x)") into checklist rows
+function parseMatchReasons(explanation: string): { text: string; warn: boolean }[] {
+  return explanation.replace(/\.$/, "").split(";").map(t => t.trim()).filter(Boolean).map(t => {
+    const m = /^covers (\d+)\/(\d+) stated needs \((.*)\)$/i.exec(t);
+    if (m) {
+      const partial = m[1] !== m[2];
+      return { warn: partial, text: partial ? `Covers only ${m[1]} of ${m[2]} stated needs (${m[3].toLowerCase()})` : `Covers all ${m[2]} stated needs (${m[3].toLowerCase()})` };
+    }
+    return { warn: false, text: t.charAt(0).toUpperCase() + t.slice(1) };
+  });
+}
+
+function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSelectedEntId?: string | null; initialMentorId?: string | null }) {
+  const { matchPairs, confirmPairing, entApps, mntApps } = useContext(AppDataCtx);
+  const [selectedEntId, setSelectedEntId] = useState<string | null>(initialSelectedEntId || null);
+  const [running, setRunning] = useState(false);
+  const [showResults, setShowResults] = useState(false);
+  const [expandedBreakdown, setExpandedBreakdown] = useState<string | null>(null);
+  const [viewingMentorModal, setViewingMentorModal] = useState<{
+    mentor: MentorMatchProfile;
+    result?: MatchResult;
+  } | null>(null);
+
+  // Candidates are the entrepreneurs in the Matching section (same rows as the Entrepreneurs table), linked by application id.
+  const candidates: EntMatchProfile[] = useMemo(() =>
+    entApps.filter(a => a.status === "Matching").map(a => ({
+      ...getProfileForMentee(a.id, { id: a.id, name: a.name, district: a.district, sector: a.sector, businessStage: a.stage, isWoman: a.gender === "Female" }),
+      id: a.id,
+    })),
+  [entApps]);
+
+  useEffect(() => {
+    if (initialSelectedEntId) {
+      setSelectedEntId(initialSelectedEntId);
+      setRunning(true);
+      setShowResults(false);
+      const timer = setTimeout(() => { setRunning(false); setShowResults(true); }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [initialSelectedEntId]);
+
+  const selectedEnt = candidates.find(e => e.id === selectedEntId || e.name.toLowerCase() === selectedEntId?.toLowerCase()) || null;
+
+  // Capacity follows the programme store; the current mentor is never re-suggested.
+  const programme = useProgramme();
+  // "Confirmed" = has a live pair and no open re-match. A re-match request unlocks the mentee again.
+  const isDone = (ent: { name: string }) => {
+    const p = programme.pairs.find(x => x.menteeId === (ent as any).id) ?? programme.pairs.find(x => !x.menteeId && x.mentee.toLowerCase() === ent.name.toLowerCase());
+    return !!p && !programme.rematches.some(r => r.pairId === p.id && r.status === "open");
+  };
+  const currentMentor = selectedEnt ? (programme.pairs.find(p => p.menteeId === selectedEnt.id) ?? programme.pairs.find(p => !p.menteeId && p.mentee.toLowerCase() === selectedEnt.name.toLowerCase()))?.mentor : undefined;
+  // One roster: every approved mentor from the pipeline; load comes from the store's live pairs (by id).
+  const livePool: MentorMatchProfile[] = mntApps
+    .filter(m => ["Matching", "Approved", "Selected"].includes(m.status))
+    .map(m => {
+      const base = profileFromMentorApp(m);
+      const load = programme.pairs.filter(p => p.mentorId === m.id || (!p.mentorId && p.mentor === m.name)).length;
+      return { ...base, currentMenteeCount: load };
+    });
+  const focusMentor = initialMentorId ? livePool.find(m => m.id === initialMentorId) ?? null : null;
+  const focusResults: { ent: EntMatchProfile; result: MatchResult }[] = focusMentor
+    ? candidates
+        .filter(e => !isDone(e))
+        .map(e => ({ ent: e, result: computeMatch(e, focusMentor) }))
+        .filter((x): x is { ent: EntMatchProfile; result: MatchResult } => x.result !== null)
+        .sort((a, b) => b.result.score - a.result.score)
+    : [];
+  const recommendations: MatchResult[] = selectedEnt
+    ? livePool
+        .filter(m => m.name !== currentMentor)
+        .map(m => computeMatch(selectedEnt, m))
+        .filter((r): r is MatchResult => r !== null)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+    : [];
+
+  const handleRun = (entId: string) => {
+    if (selectedEntId === entId && showResults) return;
+    setSelectedEntId(entId);
+    setRunning(true);
+    setShowResults(false);
+    setExpandedBreakdown(null);
+    setTimeout(() => { setRunning(false); setShowResults(true); }, 600);
+  };
+
+  // When a pairing is confirmed, keep the list that was on screen so the chosen card stays "Confirmed" and the others are disabled.
+  const [frozen, setFrozen] = useState<{ entId: string; results: MatchResult[]; chosenId: string } | null>(null);
+  // Unlocked again (e.g. a new re-match request): drop the frozen list and score fresh.
+  useEffect(() => { if (frozen && selectedEnt && !isDone(selectedEnt)) setFrozen(null); }, [frozen, selectedEnt, programme.pairs, programme.rematches]);
+
+  const handleConfirm = (result: MatchResult) => {
+    if (!selectedEnt) return;
+    setFrozen({ entId: selectedEnt.id, results: recommendations, chosenId: result.mentor.id });
+    confirmPairing(
+      selectedEnt.id,
+      result.mentor.id,
+      result.mentor.name,
+      result.mentor.expertise,
+      result.score,
+      selectedEnt.name,
+      selectedEnt.sector
+    );
+  };
+
+  const scoreColor = (s: number) => s >= 80 ? "#059669" : s >= 60 ? "#f59e0b" : "#ef4444";
+  const rankLabel = ["#1 Best Match", "#2 Strong Match", "#3 Good Match"];
+
+  return (
+    <div style={{ display: "grid", gap: 18 }}>
+      {/* Header */}
+      <div style={{ background: "#4C808A", borderRadius: 3, padding: "14px 18px", border: "1px solid #4C808A" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <GitMerge size={16} color="#ffffff" />
+          <span style={{ color: "#ffffff", fontWeight: 800, fontSize: 13 }}>Matching Engine</span>
+        </div>
+        <p style={{ color: "rgba(255, 255, 255, 0.95)", fontSize: 11, margin: 0, lineHeight: 1.5 }}>
+          Select an entrepreneur below to generate ranked mentor recommendations. The engine applies hard eligibility filters, then scores on 9 weighted criteria. Review and confirm the final pairing to update Active Pairs.
+        </p>
+      </div>
+
+      {/* Mentor-side start: rank the waiting entrepreneurs for ONE mentor */}
+      {focusMentor && (
+        <div style={{ background: "#fff", border: "2px solid #e8e8e8", borderRadius: 3, padding: "14px 16px" }}>
+          <p style={{ color: NAVY, fontWeight: 800, fontSize: 13, margin: "0 0 2px" }}>
+            Assign a mentee to {focusMentor.name} <span style={{ color: "#6b7280", fontWeight: 600 }}>({focusMentor.currentMenteeCount}/{focusMentor.maxMenteeCount} mentees)</span>
+          </p>
+          <p style={{ color: "#6b7280", fontSize: 11, margin: "0 0 10px" }}>Entrepreneurs still awaiting a mentor (or with an open re-match), ranked by fit with this mentor. Pairs that fail the hard filters are not shown.</p>
+          {focusMentor.currentMenteeCount >= focusMentor.maxMenteeCount ? (
+            <p style={{ color: "#7c3aed", fontSize: 12, fontWeight: 700, margin: 0 }}>This mentor is at capacity.</p>
+          ) : focusResults.length === 0 ? (
+            <p style={{ color: "#6b7280", fontSize: 12, margin: 0 }}>No eligible entrepreneurs are waiting for a mentor.</p>
+          ) : (
+            <div style={{ display: "grid", gap: 8 }}>
+              {focusResults.map(({ ent, result }) => (
+                <div key={ent.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, border: "1px solid #e8e8e8", borderRadius: 3, padding: "8px 12px" }}>
+                  <div>
+                    <div style={{ color: NAVY, fontWeight: 700, fontSize: 12 }}>{ent.name} <span style={{ color: "#6b7280", fontWeight: 500, marginLeft: 8 }}>{ent.sector}</span> <span style={{ color: "#6b7280", fontWeight: 500, marginLeft: 8 }}>{ent.businessStage}</span></div>
+                    <div style={{ color: "#6b7280", fontSize: 10, marginTop: 2 }}>{result.explanation}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                    <span style={{ color: scoreColor(result.score), fontWeight: 800, fontSize: 13 }}>{result.score}%</span>
+                    <button onClick={() => confirmPairing(ent.id, focusMentor.id, focusMentor.name, focusMentor.expertise, result.score, ent.name, ent.sector)}
+                      style={{ background: TEAL, color: "#fff", border: "none", borderRadius: 3, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Assign</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Entrepreneur cards */}
+      <div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+          {candidates.map(ent => {
+            const isSelected = selectedEntId === ent.id || selectedEnt?.id === ent.id;
+            const isConfirmed = isDone(ent);
+            const weakSkills = Object.entries(ent.skillRatings).filter(([, v]) => v <= 2).map(([k]) => k);
+            const isRematchCandidate = entApps.some(a => a.id === ent.id && (a as any).matchState === "Re-match requested");
+
+            return (
+              <div
+                key={ent.id}
+                style={{
+                  background: "#fff",
+                  borderRadius: 3,
+                  overflow: "hidden",
+                  border: `1px solid ${isSelected ? "#4c808a" : "#e8e8e8"}`,
+                  cursor: isConfirmed ? "default" : "pointer",
+                  transition: "border-color 0.2s",
+                }}
+                onClick={() => !isConfirmed && handleRun(ent.id)}
+              >
+                {/* Header band: profile photo, name + district, confirmed check */}
+                <div style={{ background: "#ffffff", borderBottom: "1px solid #e8e8e8", display: "flex", alignItems: "center", gap: 14, padding: "16px 18px" }}>
+                  {(ent as any).photoUrl ? (
+                    <img src={(ent as any).photoUrl} alt={ent.name} style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "2px solid #e8e8e8" }} />
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46" role="img" aria-label={`${ent.name} profile photo`} style={{ flexShrink: 0 }}>
+                      <defs><clipPath id={`pp-${ent.id}`}><circle cx="23" cy="23" r="23" /></clipPath></defs>
+                      <circle cx="23" cy="23" r="23" fill="#4c808a" />
+                      <g clipPath={`url(#pp-${ent.id})`} fill="#ffffff">
+                        <circle cx="23" cy="17.5" r="7.5" />
+                        <ellipse cx="23" cy="42" rx="14" ry="11.5" />
+                      </g>
+                    </svg>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <p style={{ color: "#4c808a", fontWeight: 600, fontSize: 15, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ent.name}</p>
+                    </div>
+                    <p style={{ color: "#4c808a", fontWeight: 500, fontSize: 12, margin: "2px 0 0" }}>{ent.district}</p>
+                  </div>
+                  {isRematchCandidate && !isConfirmed && (
+                    <span style={{ color: "#ef4444", fontSize: 10, fontWeight: 700, flexShrink: 0, letterSpacing: "0.03em" }}>
+                      RE-MATCH
+                    </span>
+                  )}
+                  {isConfirmed && (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4c808a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="Pairing confirmed" style={{ flexShrink: 0 }}>
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M8 12.5l3 3 5-6" />
+                    </svg>
+                  )}
+                </div>
+
+                {/* Body */}
+                <div style={{ padding: "14px 18px 16px" }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                    {ent.businessStage && !isRemovedBadge(ent.businessStage) && (
+                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>{ent.businessStage}</span>
+                    )}
+                    {ent.sector && !isRemovedBadge(ent.sector) && (
+                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>{ent.sector}</span>
+                    )}
+                    {ent.isYouth && !isRemovedBadge("Youth") && (
+                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>Youth</span>
+                    )}
+                    {ent.isWoman && !isRemovedBadge("Woman") && (
+                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>Woman</span>
+                    )}
+                    {ent.isRural && !isRemovedBadge("Rural") && (
+                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>Rural</span>
+                    )}
+                  </div>
+
+                  <p style={{ color: "#52514e", fontSize: 13, margin: "0 0 6px", lineHeight: 1.45 }}>
+                    <strong style={{ color: "#3b4167", fontWeight: 600 }}>Needs:</strong> {ent.businessNeeds.join(", ")}
+                  </p>
+
+                  {weakSkills.length > 0 && (
+                    <p style={{ color: "#52514e", fontSize: 13, margin: "0 0 6px", lineHeight: 1.45 }}>
+                      <strong style={{ color: "#8e2626", fontWeight: 600 }}>Gaps:</strong> {weakSkills.join(", ")}
+                    </p>
+                  )}
+
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Results */}
+      {selectedEnt && (
+        <div>
+          {running ? (
+            <div style={{ background: "#fff", borderRadius: 3, padding: "32px", textAlign: "center", border: "1px solid #e8e8e8" }}>
+              <div style={{ width: 40, height: 40, borderRadius: "50%", border: `3px solid ${TEAL}30`, borderTop: `3px solid ${TEAL}`, margin: "0 auto 14px", animation: "im-spin 0.9s linear infinite" }} />
+              <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 4px" }}>Running Matching Engine...</p>
+              <p style={{ color: "#888", fontSize: 11, margin: 0 }}>Applying eligibility filters → weighted scoring → semantic alignment</p>
+            </div>
+          ) : showResults && (
+            <div style={{ display: "grid", gap: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <p style={{ color: "#3B4167", fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", margin: 0 }}>
+                  TOP RECOMMENDATIONS FOR {selectedEnt.name.toUpperCase()}
+                </p>
+                <span style={{ color: "#888", fontSize: 10 }}>{livePool.length} mentors scored, {recommendations.length} shown</span>
+              </div>
+              {(frozen && frozen.entId === selectedEnt.id ? frozen.results : recommendations).map((result, idx) => {
+                const isExpanded = expandedBreakdown === result.mentor.id;
+                const isConfirmed = isDone(selectedEnt);
+                const isChosen = isConfirmed && frozen?.entId === selectedEnt.id && frozen.chosenId === result.mentor.id;
+                const isDisabledOption = isConfirmed && !isChosen;
+                return (
+                  <div key={result.mentor.id} style={{
+                    opacity: isDisabledOption ? 0.55 : 1, transition: "opacity 0.2s",
+                    background: "#fff", borderRadius: 3, overflow: "hidden",
+                    border: "1px solid #e8e8e8",
+                  }}>
+                    <div style={{ padding: "20px 22px" }}>
+                      {/* Header: score ring + rank tag, name, details */}
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 16 }}>
+                        <svg width="64" height="64" viewBox="0 0 64 64" style={{ flexShrink: 0 }} role="img" aria-label={`Match score ${result.score} out of 100`}>
+                          <circle cx="32" cy="32" r="27" fill="none" stroke="#f0f0f0" strokeWidth="6" />
+                          <circle cx="32" cy="32" r="27" fill="none" stroke={scoreColor(result.score)} strokeWidth="6" strokeLinecap="round"
+                            strokeDasharray={`${(result.score / 100) * 2 * Math.PI * 27} ${2 * Math.PI * 27}`} transform="rotate(-90 32 32)" />
+                          <text x="32" y="38" textAnchor="middle" fontSize="19" fontWeight="600" fill="#3b4167">{result.score}</text>
+                        </svg>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ display: "inline-block", background: "#3b4167", color: "#ffffff", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 6 }}>{rankLabel[idx]}</span>
+                          <p style={{ color: "#3b4167", fontWeight: 600, fontSize: 16, margin: "0 0 3px" }}>{result.mentor.name}</p>
+                          <p style={{ color: "#6b6b68", fontSize: 12, margin: 0, lineHeight: 1.4, display: "flex", flexWrap: "wrap", columnGap: 12, rowGap: 2 }}>
+                            <span>{result.mentor.expertise.replace(/&/g, "and")}</span>
+                            <span>{result.mentor.district}</span>
+                            <span>{result.mentor.yearsExperience} yrs exp</span>
+                            <span>{result.mentor.startupsmentored} startups mentored</span>
+                            <span>{result.mentor.mentoringMode}</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Why this match: check / warning list */}
+                      <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+                        {parseMatchReasons(result.explanation).map((r, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, color: "#1f1f1e", fontSize: 13 }}>
+                            {r.warn ? (
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a5a00" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                <path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /><path d="M12 9v4" /><path d="M12 17h.01" />
+                              </svg>
+                            ) : (
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#006300" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                                <path d="M20 6L9 17l-5-5" />
+                              </svg>
+                            )}
+                            <span>{r.text}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Capacity, languages, hours */}
+                      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+                        {[
+                          `${result.mentor.currentMenteeCount}/${result.mentor.maxMenteeCount} mentees`,
+                          result.mentor.languages.join(", "),
+                          `${result.mentor.hoursPerMonth} hrs/month`,
+                        ].map(txt => (
+                          <span key={txt} style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999 }}>{txt}</span>
+                        ))}
+                      </div>
+
+                      {isExpanded && (
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
+                          {result.breakdown.map(b => (
+                            <div key={b.label} style={{ background: "#f8f9fb", borderRadius: 3, padding: "6px 10px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                                <span style={{ color: "#666", fontSize: 10, fontWeight: 600 }}>{b.label}</span>
+                                <span style={{ color: scoreColor(b.score), fontSize: 10, fontWeight: 800 }}>{b.score}%</span>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <div style={{ flex: 1, height: 4, background: "#e5e7eb", borderRadius: 3 }}>
+                                  <div style={{ height: "100%", width: `${b.score}%`, background: scoreColor(b.score), borderRadius: 3, transition: "width 0.5s ease" }} />
+                                </div>
+                                <span style={{ color: "#bbb", fontSize: 9 }}>×{b.weight}%</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Footer: breakdown toggle + actions */}
+                      <div style={{ borderTop: "1px solid #e8e8e8", paddingTop: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                        <button onClick={() => setExpandedBreakdown(isExpanded ? null : result.mentor.id)}
+                          style={{ background: "none", border: "none", padding: 0, color: "#4c808a", fontSize: 12, cursor: "pointer", fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}>
+                          {isExpanded ? "Hide" : "View"} score breakdown (9 criteria)
+                          <ChevronRight size={13} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+                        </button>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            onClick={() => setViewingMentorModal({ mentor: result.mentor, result })}
+                            style={{ background: "#4c808a", border: "1px solid #4c808a", borderRadius: 3, padding: "8px 16px", fontSize: 12, color: "#ffffff", cursor: "pointer", fontWeight: 500 }}
+                          >
+                            View profile
+                          </button>
+                          <button
+                            onClick={() => !isConfirmed && handleConfirm(result)}
+                            disabled={isConfirmed}
+                            title={isDisabledOption ? "Another mentor was confirmed for this entrepreneur" : undefined}
+                            style={{
+                              background: isDisabledOption ? "#f3f4f6" : "#4c808a",
+                              border: `1px solid ${isDisabledOption ? "#e8e8e8" : "#4c808a"}`,
+                              borderRadius: 3,
+                              padding: "8px 16px",
+                              fontSize: 12,
+                              color: isDisabledOption ? "#9ca3af" : "#ffffff",
+                              cursor: isConfirmed ? "not-allowed" : "pointer",
+                              fontWeight: 500,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                            }}
+                          >
+                            {isDisabledOption ? (
+                              <>{frozen?.entId === selectedEnt.id ? "Not selected" : "Already paired"}</>
+                            ) : (
+                              <>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                                {isChosen ? "Confirmed" : "Confirm pairing"}
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Mentor Profile Modal */}
+      {viewingMentorModal && (
+        <MentorProfileModal
+          mentor={viewingMentorModal.mentor}
+          matchContext={selectedEnt ? {
+            selectedEnt,
+            result: viewingMentorModal.result,
+            isConfirmed: isDone(selectedEnt),
+            onConfirm: () => {
+              if (viewingMentorModal.result) {
+                handleConfirm(viewingMentorModal.result);
+              }
+            },
+          } : undefined}
+          onClose={() => setViewingMentorModal(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function AdminPairingView() {
+  const { matchPairs, entApps, mntApps, engineTarget, clearEngineTarget } = useContext(AppDataCtx);
+  const programme = useProgramme();
+  const [mentorFocus, setMentorFocus] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [showReMatchOnly, setShowReMatchOnly] = useState(false);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [pairingTab, setPairingTab] = useState<"pairs" | "ai-engine">("pairs");
+  const [selectedEntId, setSelectedEntId] = useState<string | null>(null);
+  const [viewingMentorModal, setViewingMentorModal] = useState<{ mentor: MentorMatchProfile } | null>(null);
+  // Launched from a Matching table row (entrepreneur or mentor side)
+  useEffect(() => {
+    if (!engineTarget) return;
+    setSelectedEntId(engineTarget.entId ?? null);
+    setMentorFocus(engineTarget.mentorId ?? null);
+    setPairingTab("ai-engine");
+    clearEngineTarget();
+  }, [engineTarget]);
+
+  const filtered = matchPairs.filter(p =>
+    (!showReMatchOnly || p.reMatchReq) &&
+    (p.mentee.toLowerCase().includes(search.toLowerCase()) || p.mentor.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  const scored = matchPairs.filter(p => p.status !== "Terminated" && p.matchScore > 0);
+  const activePairsCount = matchPairs.filter(p => p.status === "Active").length;
+  const pendingPairsCount = matchPairs.filter(p => p.status === "Pending").length;
+  const rematchCount = matchPairs.filter(p => p.reMatchReq).length;
+  const avgScore = scored.length > 0 ? Math.round(scored.reduce((acc, p) => acc + p.matchScore, 0) / scored.length) : 0;
+
+  return (
+    <div className="im-fade" style={{ display: "grid", gap: 16 }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: "0 0 4px" }}>Pairing and Matching Management</h2>
+          <p style={{ color: "#888", fontSize: 12, margin: 0 }}>View and manage mentor–mentee pairs, approve re-match requests and track match quality</p>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #e8e8e8" }}>
+        {([
+          { key: "pairs",     label: "Active Pairs",    icon: Users },
+          { key: "ai-engine", label: "Matching Engine", icon: GitMerge },
+        ] as { key: typeof pairingTab; label: string; icon: React.ElementType }[]).map(tab => (
+          <button key={tab.key} onClick={() => { if (tab.key === "ai-engine" && pairingTab !== "ai-engine") { setSelectedEntId(null); setMentorFocus(null); } setPairingTab(tab.key); }}
+            style={{
+              background: "none", border: "none", padding: "10px 18px",
+              fontSize: 12, fontWeight: pairingTab === tab.key ? 700 : 400,
+              color: pairingTab === tab.key ? TEAL : "#888",
+              borderBottom: pairingTab === tab.key ? `2px solid ${TEAL}` : "2px solid transparent",
+              cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
+              marginBottom: -2, transition: "all 0.15s",
+            }}>
+            <tab.icon size={13} /> {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {pairingTab === "ai-engine" && <AIMatchingEngine key={`${selectedEntId}|${mentorFocus}`} initialSelectedEntId={selectedEntId} initialMentorId={mentorFocus} />}
+      {pairingTab === "pairs" && (<>
+
+      {/* Stats row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        {[
+          { label: "Active Pairs", val: `${activePairsCount}` },
+          { label: "Pending Match", val: `${pendingPairsCount}` },
+          { label: "Re-match Requests", val: `${rematchCount}` },
+          { label: "Avg Match Score", val: `${avgScore}%` },
+        ].map(s => (
+          <div
+            key={s.label}
+            style={{
+              background: "#4C808A",
+              borderRadius: 3,
+              padding: "12px 16px",
+              boxShadow: "0 2px 8px rgba(76,128,138,0.25)",
+              border: "1px solid #4C808A",
+            }}
+          >
+            <p style={{ color: "rgba(255,255,255,0.85)", fontSize: 10, fontWeight: 700, margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.04em" }}>{s.label}</p>
+            <p style={{ color: "#ffffff", fontSize: 24, fontWeight: 800, margin: 0 }}>{s.val}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ flex: 1, position: "relative" }}>
+          <Search size={13} color="#bbb" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search mentee or mentor..."
+            style={{ width: "100%", paddingLeft: 34, padding: "9px 12px 9px 34px", border: "1px solid #e8e8e8", borderRadius: 3, fontSize: 12, outline: "none", background: "#fff", boxSizing: "border-box" }} />
+        </div>
+        <button onClick={() => setShowReMatchOnly(r => !r)}
+          style={{ padding: "9px 14px", borderRadius: 3, border: `1px solid ${showReMatchOnly ? "#ef4444" : "#e8e8e8"}`, background: showReMatchOnly ? "#fef2f2" : "#fff", color: showReMatchOnly ? "#ef4444" : "#666", fontSize: 11, cursor: "pointer", fontWeight: showReMatchOnly ? 700 : 400 }}>
+          Re-match Requests {rematchCount > 0 ? `(${rematchCount})` : ""} {showReMatchOnly ? "✕" : ""}
+        </button>
+      </div>
+
+      {/* Table */}
+      <div style={{ background: "#fff", borderRadius: 3, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: "#f8f9fb" }}>
+                {["Mentee", "Venture", "Mentor", "Stage", "Match Score", "Status", "Sessions", "Last Session", "Actions"].map(h => (
+                  <th key={h} style={{ padding: "10px 14px", textAlign: "left", color: "#888", fontSize: 10, fontWeight: 700, borderBottom: "1px solid #f0f0f0", whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(p => (
+                <Fragment key={p.id}>
+                  <tr className="im-row" style={{ cursor: "pointer" }} onClick={() => setSelected(selected === p.id ? null : p.id)}>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", whiteSpace: "nowrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap" }}>
+                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: PANEL_BG, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>
+                          <User size={12} color="#fff" strokeWidth={1.8} />
+                        </div>
+                        <span style={{ color: NAVY, fontWeight: 600, whiteSpace: "nowrap" }}>{p.mentee}</span>
+                        {p.reMatchReq && <span style={{ color: "#ef4444", fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", flexShrink: 0 }}>RE-MATCH</span>}
+                      </div>
+                    </td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.menteeVenture}</td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: p.mentor === "Unmatched" ? "#bbb" : NAVY, fontStyle: p.mentor === "Unmatched" ? "italic" : "normal" }}>{p.mentor}</td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
+                      {p.stage && !isRemovedBadge(p.stage) ? (
+                        <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>{p.stage}</span>
+                      ) : (
+                        <span style={{ color: "#bbb", fontSize: 10 }}>—</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
+                      {p.matchScore > 0 ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ width: 50, height: 5, background: "#f0f0f0", borderRadius: 3 }}>
+                            <div style={{ height: "100%", width: `${p.matchScore}%`, background: "#059669", borderRadius: 3 }} />
+                          </div>
+                          <span style={{ color: NAVY, fontWeight: 700, fontSize: 10 }}>{p.matchScore}%</span>
+                        </div>
+                      ) : <span style={{ color: "#bbb", fontSize: 10 }}>—</span>}
+                    </td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
+                      <span title={p.note} style={{ background: p.status === "Active" ? "#f0fdf4" : p.status === "Terminated" ? "#f3f4f6" : "#fffbeb", color: p.status === "Active" ? "#059669" : p.status === "Terminated" ? "#6b7280" : "#f59e0b", fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 700 }}>{p.status}</span>
+                    </td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.sessions}</td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.lastSession}</td>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", whiteSpace: "nowrap" }}>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "nowrap", alignItems: "center" }}>
+                        {p.reMatchReq && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const entApp = entApps.find(e => e.name.toLowerCase() === p.mentee.toLowerCase());
+                              const entId = entApp ? entApp.id : (KNOWN_ENT_PROFILES[p.mentee]?.id || `APP-${p.id}`);
+                              setSelectedEntId(entId);
+                              setPairingTab("ai-engine");
+                            }}
+                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                          >
+                            Review Re-match
+                          </button>
+                        )}
+                        {p.reMatchReq && p.rematchId && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); programme.declineRematch(p.rematchId!); toast.info(`Re-match request for ${p.mentee} declined. They stay with ${p.mentor}.`); }}
+                            style={{ background: "#fff", border: "1px solid #d1d5db", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#555", cursor: "pointer", fontWeight: 700 }}
+                          >
+                            Keep Mentor
+                          </button>
+                        )}
+                        {p.status === "Pending" && !p.reMatchReq && p.mentor === "Unmatched" && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const entApp = entApps.find(x => x.name.toLowerCase() === p.mentee.toLowerCase());
+                              setSelectedEntId(entApp ? entApp.id : `APP-${p.id}`);
+                              setPairingTab("ai-engine");
+                            }}
+                            style={{ background: "#059669", border: "1px solid #059669", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                          >
+                            Find Mentor
+                          </button>
+                        )}
+                        {p.status === "Active" && !p.reMatchReq && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const found = MENTOR_MATCH_PROFILES.find(m => m.name.toLowerCase().includes(p.mentor.toLowerCase())) || {
+                                id: "",
+                                name: p.mentor,
+                                district: "Lilongwe",
+                                expertise: p.expertise,
+                                programmeInterest: ["Mentorship Programme"],
+                                stageExpertise: isRemovedBadge(p.stage) ? [] : [p.stage],
+                                preferredStages: isRemovedBadge(p.stage) ? [] : [p.stage],
+                                industryExpertise: isRemovedBadge(p.expertise) ? [] : [p.expertise],
+                                preferredIndustries: isRemovedBadge(p.expertise) ? [] : [p.expertise],
+                                functionalExpertise: [],
+                                hasEntrepreneurialExp: false,
+                                yearsExperience: 10,
+                                startupsmentored: 8,
+                                preferredFounderTypes: ["Youth"],
+                                languages: ["English", "Chichewa"],
+                                mentoringMode: "Hybrid",
+                                hoursPerMonth: 8,
+                                currentMenteeCount: 1,
+                                maxMenteeCount: 3,
+                                biography: `Experienced mentor specializing in ${p.expertise}.`,
+                                personality: "",
+                              };
+                              setViewingMentorModal({ mentor: found });
+                            }}
+                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                          >
+                            View Full Profile
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {selected === p.id && (
+                    <tr key={`${p.id}-exp`}>
+                      <td colSpan={9} style={{ padding: "12px 14px", background: "#f8f9fb", borderBottom: "1px solid #f0f0f0" }}>
+                        {(() => {
+                          // Real criteria from the Matching Engine for this pair (capacity ignored: the pair already exists)
+                          const sp = p.pairId ? programme.pairs.find(x => x.id === p.pairId) : undefined;
+                          const mApp = sp ? mntApps.find(m => m.id === sp.mentorId || (!sp.mentorId && m.name === sp.mentor)) : undefined;
+                          const eApp = sp ? entApps.find(a => a.id === sp.menteeId || (!sp.menteeId && a.name === sp.mentee)) : undefined;
+                          const res = sp && mApp && eApp
+                            ? computeMatch(getProfileForMentee(eApp.id, { id: eApp.id, name: eApp.name, district: eApp.district, sector: eApp.sector, businessStage: eApp.stage, isWoman: eApp.gender === "Female" }), { ...profileFromMentorApp(mApp), currentMenteeCount: 0 })
+                            : null;
+                          if (!res) return <p style={{ color: "#888", fontSize: 11, margin: 0 }}>{p.mentor === "Unmatched" ? "No pair yet, so there is no match breakdown." : "No engine breakdown is available for this pair."}</p>;
+                          return (
+                            <>
+                              <p style={{ color: "#888", fontSize: 10, margin: "0 0 8px" }}>Engine criteria for this pair, computed from the current profiles. The pair score shown in the list is the score at the time it was confirmed.</p>
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12 }}>
+                                {res.breakdown.map(f => (
+                                  <div key={f.label} style={{ background: "#fff", borderRadius: 3, padding: "10px 12px" }}>
+                                    <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{f.label} {f.weight}%</p>
+                                    <p style={{ color: TEAL, fontSize: 16, fontWeight: 800, margin: 0 }}>{Math.round(f.score)}%</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      </>)}
+
+      {viewingMentorModal && (
+        <MentorProfileModal
+          mentor={viewingMentorModal.mentor}
+          onClose={() => setViewingMentorModal(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// (NavKey moved to top of file)
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+export function IncubationManagementPage({
+  onBack, onSignOut,
+  adminPrograms = [],
+  onCreateProgram = () => {},
+  onUpdateProgram = () => {},
+  onDeleteProgram = () => {},
+  liveApplications = [],
+  liveMentorApplications = [],
+}: {
+  onBack: () => void;
+  onSignOut?: () => void;
+  adminPrograms?: AdminProgram[];
+  onCreateProgram?: (p: AdminProgram) => void;
+  onUpdateProgram?: (p: AdminProgram) => void;
+  onDeleteProgram?: (id: string) => void;
+  liveApplications?: EntrepreneurApplication[];
+  liveMentorApplications?: MentorApplication[];
+}) {
+  const handleSignOut = onSignOut ?? onBack;
+  const [active, setActive] = useState<NavKey>("Applications");
+  const [mgmtOpen, setMgmtOpen] = useState(true);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  // Admin-side workflow state is saved so a refresh doesn't undo confirmed matches in the Matching section
+  const savedAdmin = useMemo(() => { try { return JSON.parse(localStorage.getItem(ADMIN_KEY) ?? "{}"); } catch { return {}; } }, []);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, { status: string; reason?: string; date?: string }>>(savedAdmin.statusOverrides ?? {});
+  const [engineTarget, setEngineTarget] = useState<{ entId?: string; mentorId?: string } | null>(null);
+  const [notifications, setNotifications] = useState<IncubationNotification[]>(INITIAL_NOTIFICATIONS);
+
+  const addNotification = (
+    notif: Omit<IncubationNotification, "id" | "createdAt" | "read" | "timestamp"> & { timestamp?: string }
+  ) => {
+    const newNotif: IncubationNotification = {
+      ...notif,
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: Date.now(),
+      timestamp: notif.timestamp || "Just now",
+      read: false,
+    };
+    setNotifications(prev => [newNotif, ...prev]);
+  };
+
+  const markNotificationAsRead = (id: string) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+  };
+
+  const markAllNotificationsAsRead = () => {
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    toast.success("All notifications marked as read.");
+  };
+
+  const clearNotifications = () => {
+    setNotifications([]);
+    toast.info("Notifications cleared.");
+  };
+
+  const removeNotification = (id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  };
+
+  // Track live incoming submissions
+  const prevLiveCount = useRef(liveApplications.length);
+  useEffect(() => {
+    if (liveApplications.length > prevLiveCount.current) {
+      const latest = liveApplications[liveApplications.length - 1];
+      // Acceleration applications share this list (for the public tracker) but aren't reviewed on this page
+      if (latest && latest.program === "Incubation") {
+        addNotification({
+          section: "Applications",
+          title: "New Application Received",
+          message: `${latest.name} submitted an Incubation application for ${latest.businessName || latest.sector || "Venture"}.`,
+          candidateName: latest.name,
+          candidateId: latest.id,
+          type: "info",
+          actionTarget: "Applications",
+        });
+      }
+    }
+    prevLiveCount.current = liveApplications.length;
+  }, [liveApplications]);
+
+  const setStatusOverride = (id: string, status: string, reason?: string) => {
+    const today = new Date().toISOString().split("T")[0];
+    setStatusOverrides(prev => ({ ...prev, [id]: { status, reason, date: today } }));
+    // The status change above is what the admin and the public tracker rely on; side effects below must never block it
+    try {
+
+    const app = [...liveApplications, ...liveMentorApplications, ...MOCK_ENT_APPS, ...MOCK_MNT_APPS].find(a => a.id === id);
+    const candidateName = app?.name || id;
+
+    // Anyone leaving the Matching pool must not leave an orphaned pair behind in the store.
+    if (status !== "Matching") {
+      const isMentorApp = id.startsWith("MNT") || liveMentorApplications.some(m => m.id === id);
+      const mine = programme.pairs.filter(pr => (isMentorApp ? pr.mentorId === id || (!pr.mentorId && pr.mentor === candidateName) : pr.menteeId === id || (!pr.menteeId && pr.mentee === candidateName)));
+      const why = status === "Rejected" ? `${candidateName} was rejected by the programme team.` : status === "Dropouts" ? `${candidateName} dropped out of the programme.` : `${candidateName} left the matching pool.`;
+      mine.forEach(pr => programme.endPair(pr.id, why, { requeue: isMentorApp }));
+      if (!isMentorApp) programme.removeWaiting(candidateName);
+    }
+
+    if (status === "Selected") {
+      addNotification({
+        section: "Selection",
+        title: "Candidate Selected",
+        message: `${candidateName} (${id}) has been selected and approved for Incubation shortlisting.${reason ? ` Notes: ${reason}` : ""}`,
+        candidateName,
+        candidateId: id,
+        type: "success",
+        actionTarget: "Selection",
+      });
+    } else if (status === "Rejected") {
+      addNotification({
+        section: "Rejected",
+        title: "Application Disqualified",
+        message: `${candidateName} (${id}) was disqualified by the evaluation committee.${reason ? ` Reason: ${reason}` : ""}`,
+        candidateName,
+        candidateId: id,
+        type: "danger",
+        actionTarget: "Rejected",
+      });
+    } else if (status === "Matching") {
+      // Entrepreneurs enter the store's waiting list; there is no separate pairing record any more
+      if ((app as any)?.sector !== undefined && !(app as any)?.expertise)
+        programme.addWaiting({ menteeId: id, mentee: candidateName, venture: (app as any).businessName || candidateName, sector: (app as any).sector || "Services", stage: (app as any).stage || "Idea" });
+      addNotification({
+        section: "Matching",
+        title: "Candidate Moved to Matching",
+        message: `${candidateName} (${id}) moved to Mentor Matching section. Ready for pairing assignment.`,
+        candidateName,
+        candidateId: id,
+        type: "info",
+        actionTarget: "Matching",
+      });
+    } else if (status === "Dropouts") {
+      addNotification({
+        section: "Dropouts",
+        title: "Candidate Dropout Recorded",
+        message: `${candidateName} (${id}) recorded as Dropout.${reason ? ` Reason: ${reason}` : ""}`,
+        candidateName,
+        candidateId: id,
+        type: "warning",
+        actionTarget: "Dropouts",
+      });
+    } else if (status === "Applications" || status === "Pending") {
+      addNotification({
+        section: "Applications",
+        title: "Candidate Reinstated",
+        message: `${candidateName} (${id}) was reinstated to the active Applications queue.`,
+        candidateName,
+        candidateId: id,
+        type: "info",
+        actionTarget: "Applications",
+      });
+    }
+    } catch (err) {
+      console.error("Status change saved, but a follow-up step failed:", err);
+    }
+  };
+
+  const programme = useProgramme();
+  useEffect(() => {
+    try { localStorage.setItem(ADMIN_KEY, JSON.stringify({ statusOverrides })); } catch { /* storage blocked */ }
+  }, [statusOverrides]);
+
+  // Pairing & Matching rows are a VIEW of the programme store: live pairs, waiting mentees, archived (re-matched) pairs.
+  const matchPairs: MentorPair[] = useMemo(() => {
+    const openRematch = (pairId: string) => programme.rematches.find(r => r.pairId === pairId && r.status === "open");
+    const live: MentorPair[] = programme.pairs.map(p => {
+      const st = programme.stats[p.id], rm = openRematch(p.id);
+      return {
+        id: numId(p.id), pairId: p.id, mentee: p.mentee, menteeVenture: p.venture, sector: p.sector, mentor: p.mentor, expertise: p.expertise,
+        stage: p.stage, matchScore: p.matchScore, status: rm ? "Pending" : "Active", sessions: st?.sessionsTotal ?? 0,
+        lastSession: st?.lastSession ? fmtDate(st.lastSession) : "None yet", reMatchReq: !!rm, rematchId: rm?.id,
+        note: p.predecessorId ? "Re-matched" : undefined,
+      };
+    });
+    const waiting: MentorPair[] = programme.waiting.map(w => ({
+      id: numId(w.id), mentee: w.mentee, menteeVenture: w.venture, sector: w.sector, mentor: "Unmatched", expertise: "—", stage: w.stage,
+      matchScore: 0, status: "Pending", sessions: 0, lastSession: "—", reMatchReq: false,
+    }));
+    const ended: MentorPair[] = programme.pastPairs.map(p => ({
+      id: numId(p.id), pairId: p.id, mentee: p.mentee, menteeVenture: p.venture, sector: p.sector, mentor: p.mentor, expertise: p.expertise,
+      stage: p.stage, matchScore: p.matchScore, status: "Terminated", sessions: programme.sessions.filter(s => s.pairId === p.id).length,
+      lastSession: p.endedAt ? `Ended ${fmtDate(p.endedAt)}` : "Ended", reMatchReq: false, note: p.endReason,
+    }));
+    return [...live, ...waiting, ...ended];
+  }, [programme.pairs, programme.waiting, programme.pastPairs, programme.rematches, programme.stats, programme.sessions]);
+  const confirmPairing = (
+    entId: string,
+    mentorId: string,
+    mentorName: string,
+    mentorExpertise: string,
+    matchScore: number,
+    entName: string,
+    entSector: string
+  ) => {
+    const today = new Date().toISOString().split("T")[0];
+    const actualEnt = entApps.find(e => e.id === entId) ?? entApps.find(e => e.name.toLowerCase() === entName.toLowerCase());
+    const actualMentor = mntApps.find(m => m.id === mentorId) ?? mntApps.find(m => m.name.toLowerCase() === mentorName.toLowerCase());
+    const resolvedEntId = actualEnt ? actualEnt.id : entId;
+    const resolvedMentorId = actualMentor ? actualMentor.id : mentorId;
+    const existing = programme.pairs.find(p => p.menteeId === resolvedEntId || (!p.menteeId && p.mentee.toLowerCase() === entName.toLowerCase()));
+    if (existing && (existing.mentorId === resolvedMentorId || existing.mentor === mentorName)) { toast.info(`${entName} is already paired with ${mentorName}.`); return; }
+
+    // The programme store owns pairs. A re-match keeps venture, stage, goals, open tasks, courses and milestones.
+    programme.addPair({ menteeId: resolvedEntId, mentorId: resolvedMentorId, mentee: entName, mentor: mentorName, venture: (actualEnt as any)?.businessName ?? entName, sector: entSector, expertise: mentorExpertise, matchScore, stage: (actualEnt as any)?.stage });
+    setStatusOverrides(prev => ({ ...prev, [resolvedEntId]: { status: "Matching", date: today }, [resolvedMentorId]: { status: "Matching", date: today } }));
+
+    addNotification({
+      section: "Matching",
+      title: existing ? "Re-match Confirmed" : "Mentor Match Confirmed",
+      message: existing
+        ? `${entName} re-matched from ${existing.mentor} to ${mentorName} (${matchScore}% compatibility). Goals, open tasks and courses moved with the mentee.`
+        : `Pair match confirmed: ${entName} paired with ${mentorName} (${mentorExpertise}) with ${matchScore}% compatibility score.`,
+      candidateName: entName,
+      candidateId: resolvedEntId,
+      type: "success",
+      actionTarget: "Matching",
+    });
+
+    toast.success(existing ? `${entName} re-matched to ${mentorName}. Their goals and courses moved with them.` : `Pair match confirmed for ${entName} → ${mentorName}.`);
+  };
+
+  /** Opens a re-match review for ONE pair (the store owns the request; both tables read it back). */
+  const requestPairRematch = (pairId: string) => {
+    const pr = programme.pairs.find(x => x.id === pairId); if (!pr) return;
+    programme.requestRematch(pairId, "Requested by the programme team", "admin");
+    addNotification({
+      section: "Matching",
+      title: "Re-match Requested",
+      message: `Re-match review opened for ${pr.mentee} and ${pr.mentor}. Use the Matching Engine to choose a new mentor.`,
+      candidateName: pr.mentee,
+      candidateId: pr.menteeId ?? pr.id,
+      type: "warning",
+      actionTarget: "Pairing & Matching",
+    });
+    toast.info(`Re-match requested for ${pr.mentee} (currently with ${pr.mentor}).`);
+  };
+
+  const openEngine = (target: { entId?: string; mentorId?: string }) => { setEngineTarget(target); setActive("Pairing & Matching"); };
+
+  // Match state is DERIVED from the programme store (pairs are linked by application id; name is only a fallback for legacy records)
+  const mentorPairs = (m: { id: string; name: string }) => programme.pairs.filter(pr => pr.mentorId === m.id || (!pr.mentorId && pr.mentor.toLowerCase() === m.name.toLowerCase()));
+  const menteePair = (a: { id: string; name: string }) => programme.pairs.find(pr => pr.menteeId === a.id) ?? programme.pairs.find(pr => !pr.menteeId && pr.mentee.toLowerCase() === a.name.toLowerCase());
+  const hasOpenRematch = (pairId: string) => programme.rematches.some(r => r.pairId === pairId && r.status === "open");
+
+  // Merge mockup data with live submissions (filter to Incubation only), apply overrides and derive match state from the programme store
+  const entApps = useMemo(() =>
+    [...MOCK_ENT_APPS, ...liveApplications.filter(a => a.program === "Incubation")]
+      .map(a => {
+        let item = { ...a };
+        const ov = statusOverrides[a.id];
+        if (ov) {
+          if (ov.status === "Rejected") {
+            item = {
+              ...item,
+              status: "Rejected",
+              rejectionReason: ov.reason !== undefined ? ov.reason : item.rejectionReason,
+              rejectedDate: ov.date || item.rejectedDate || new Date().toISOString().split("T")[0],
+            };
+          } else if (ov.status === "Selected") {
+            item = {
+              ...item,
+              status: "Selected",
+              selectionReason: ov.reason !== undefined ? ov.reason : item.selectionReason,
+              selectedDate: ov.date || item.selectedDate || new Date().toISOString().split("T")[0],
+            };
+          } else {
+            item = { ...item, status: ov.status };
+          }
+        }
+        if (item.status === "Matching") {
+          const pr = menteePair(a);
+          item = {
+            ...item,
+            pairId: pr?.id, matchedMentor: pr?.mentor, matchedMentorId: pr?.mentorId, matchScore: pr?.matchScore, introDate: pr?.introDate,
+            matchState: !pr ? "Awaiting mentor" : hasOpenRematch(pr.id) ? "Re-match requested" : "Paired",
+          };
+        }
+        return item;
+      }),
+    [liveApplications, statusOverrides, programme.pairs, programme.rematches]
+  );
+  const mntApps = useMemo(() =>
+    [...MOCK_MNT_APPS, ...liveMentorApplications.filter(a => a.program === "Incubation")]
+      .map(a => {
+        let item = { ...a };
+        const ov = statusOverrides[a.id];
+        if (ov) {
+          if (ov.status === "Rejected") {
+            item = {
+              ...item,
+              status: "Rejected",
+              rejectionReason: ov.reason !== undefined ? ov.reason : item.rejectionReason,
+              rejectedDate: ov.date || item.rejectedDate || new Date().toISOString().split("T")[0],
+            };
+          } else if (ov.status === "Selected") {
+            item = {
+              ...item,
+              status: "Selected",
+              selectionReason: ov.reason !== undefined ? ov.reason : item.selectionReason,
+              selectedDate: ov.date || item.selectedDate || new Date().toISOString().split("T")[0],
+            };
+          } else {
+            item = { ...item, status: ov.status };
+          }
+        }
+        if (item.status === "Matching") {
+          const mine = mentorPairs(a);
+          const capacity = a.capacity ?? MENTOR_MATCH_PROFILES.find(x => x.id === a.id)?.maxMenteeCount ?? 4;
+          const scores = mine.map(x => x.matchScore);
+          item = {
+            ...item, capacity, load: mine.length,
+            mentees: mine.map(x => ({ pairId: x.id, menteeId: x.menteeId, name: x.mentee, sector: x.sector, score: x.matchScore, rematch: hasOpenRematch(x.id), introDate: x.introDate })),
+            // An open re-match on any of this mentor's pairs puts the mentor back to "Awaiting mentee"
+            matchState: (mine.length === 0 || mine.some(x => hasOpenRematch(x.id))) ? "Awaiting mentee" : mine.length >= capacity ? "At capacity" : "Mentoring",
+          };
+        }
+        return item;
+      }),
+    [liveMentorApplications, statusOverrides, programme.pairs, programme.rematches]
+  );
+
+  // Entrepreneurs in the Matching section with no mentor wait in the store, so Pairing & Matching lists them as unmatched.
+  useEffect(() => {
+    entApps.filter(a => a.status === "Matching" && !menteePair(a)).forEach(a => {
+      if (!programme.waiting.some(w => w.menteeId === a.id || w.mentee.toLowerCase() === a.name.toLowerCase()))
+        programme.addWaiting({ menteeId: a.id, mentee: a.name, venture: (a as any).businessName || a.name, sector: (a as any).sector || "Services", stage: (a as any).stage || "Idea" });
+    });
+  }, [programme.pairs, programme.waiting, entApps]);
+
+  const entStatusCounts = useMemo(() =>
+    entApps.reduce((acc, a) => { acc[a.status] = (acc[a.status] || 0) + 1; return acc; }, {} as Record<string, number>),
+    [entApps]
+  );
+
+  const matchingEntCount = entApps.filter(a => a.status === "Matching").length;
+
+  const mgmtItems: { key: NavKey; icon: React.ElementType; count?: number }[] = [
+    { key: "Applications", icon: FileText,    count: entApps.length },
+    { key: "Selection",    icon: CheckCircle, count: entStatusCounts["Selected"]  || 0 },
+    { key: "Rejected",     icon: XCircle,     count: entStatusCounts["Rejected"]  || 0 },
+    { key: "Matching",     icon: GitMerge,    count: matchingEntCount },
+    { key: "Dropouts",     icon: UserMinus,      count: entStatusCounts["Dropouts"]  || 0 },
+  ];
+
+  const adminItems: { key: NavKey; icon: React.ElementType; label?: string }[] = [
+    { key: "Pairing & Matching",  icon: GitMerge,  label: "Pairing and Matching" },
+    { key: "Relationship Health", icon: Activity },
+    { key: "Cohort Management",   icon: Users },
+    { key: "Reports & Analytics", icon: TrendingUp },
+    { key: "Integration Hub",     icon: Sliders },
+  ];
+
+  const statusForView: Partial<Record<NavKey, string>> = {
+    Applications: "",
+    Selection:    "Selected",
+    Rejected:     "Rejected",
+    Matching:     "Matching",
+    Dropouts:     "Dropouts",
+  };
+
+  function renderContent() {
+    if (active in statusForView) {
+      return <ApplicationsView filterStatus={statusForView[active] || null} />;
+    }
+    if (active === "Email Dashboard")    return <EmailDashboardView />;
+    if (active === "Program Health")     return <ProgramHealthView />;
+    if (active === "Alumni")             return <AlumniView />;
+    if (active === "Program Setup")      return <ProgramSetupView adminPrograms={adminPrograms} onCreateProgram={onCreateProgram} onUpdateProgram={onUpdateProgram} onDeleteProgram={onDeleteProgram} />;
+    if (active === "Pairing & Matching") return <AdminPairingView />;
+    if (active === "Relationship Health") return <AdminRelHealthView />;
+    if (active === "Cohort Management")  return <AdminCohortView programmeByCohort={Object.fromEntries(adminPrograms.filter(p => p.cohortId != null).map(p => [p.cohortId as number, p.name]))} />;
+    if (active === "Reports & Analytics") return <AdminReportingView />;
+    if (active === "Integration Hub")    return <AdminIntegrationView />;
+    if (active === "Settings")           return <SettingsView />;
+    return null;
+  }
+
+  // Sidebar contents (shared mobile + desktop)
+  function SidebarBody({ onSelect }: { onSelect: () => void }) {
+    return (
+      <>
+        {/* Management section */}
+        <div className="mb-1">
+          <button
+            onClick={() => setMgmtOpen(o => !o)}
+            className="flex items-center gap-2 w-full px-3 py-2 rounded-md transition-all"
+            style={{ color: "rgba(255,255,255,0.9)", fontWeight: 700, fontSize: 12 }}
+            onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.07)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+          >
+            <LayoutGrid size={14} color="rgba(255,255,255,0.7)" />
+            <span className="flex-1 text-left">Management</span>
+            {mgmtOpen ? <ChevronDown size={11} color="rgba(255,255,255,0.5)" /> : <ChevronRight size={11} color="rgba(255,255,255,0.5)" />}
+          </button>
+          {mgmtOpen && (
+            <div className="mt-1 space-y-0.5">
+              {mgmtItems.map(({ key, icon: Icon, count }) => (
+                <NavItem key={key} icon={Icon} label={key} active={active === key} count={count}
+                  indent onClick={() => { setActive(key); onSelect(); }} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Programme Admin section */}
+        <div className="mb-1">
+          <button
+            onClick={() => setAdminOpen(o => !o)}
+            className="flex items-center gap-2 w-full px-3 py-2 rounded-md transition-all"
+            style={{ color: "rgba(255,255,255,0.9)", fontWeight: 700, fontSize: 12 }}
+            onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.07)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+          >
+            <Award size={14} color="rgba(255,255,255,0.7)" />
+            <span className="flex-1 text-left">Programme Admin</span>
+            {adminOpen ? <ChevronDown size={11} color="rgba(255,255,255,0.5)" /> : <ChevronRight size={11} color="rgba(255,255,255,0.5)" />}
+          </button>
+          {adminOpen && (
+            <div className="mt-1 space-y-0.5">
+              {adminItems.map(({ key, icon: Icon, label }) => (
+                <NavItem key={key} icon={Icon} label={label || key} active={active === key}
+                  indent onClick={() => { setActive(key); onSelect(); }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-1 space-y-0.5">
+          <NavItem icon={Mail}     label="Email Dashboard" active={active === "Email Dashboard"} onClick={() => { setActive("Email Dashboard"); onSelect(); }} />
+          <NavItem icon={Activity} label="Program Health"  active={active === "Program Health"}  onClick={() => { setActive("Program Health");  onSelect(); }} />
+          <NavItem icon={Users}    label="Alumni"          active={active === "Alumni"}           onClick={() => { setActive("Alumni");           onSelect(); }} />
+          <NavItem icon={Sliders}  label="Program Setup"  active={active === "Program Setup"}    onClick={() => { setActive("Program Setup");   onSelect(); }} />
+        </div>
+
+        {/* Bottom */}
+        <div className="mt-auto pt-4 space-y-0.5" style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+          <NavItem icon={Settings} label="Settings" active={active === "Settings"} onClick={() => { setActive("Settings"); onSelect(); }} />
+          <button
+            onClick={handleSignOut}
+            className="flex items-center gap-2.5 w-full text-left rounded-md px-3 py-2.5 transition-all text-[12px] font-medium"
+            style={{ color: "#f87171" }}
+            onMouseEnter={e => (e.currentTarget.style.background = "rgba(248,113,113,0.1)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+          >
+            <LogOut size={14} color="#f87171" />
+            Sign out
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <AppDataCtx.Provider value={{
+      entApps,
+      mntApps,
+      setStatusOverride,
+      confirmPairing,
+      setActiveNav: setActive,
+      matchPairs,
+      requestPairRematch,
+      openEngine,
+      engineTarget,
+      clearEngineTarget: () => setEngineTarget(null),
+      notifications,
+      addNotification,
+      markNotificationAsRead,
+      markAllNotificationsAsRead,
+      clearNotifications,
+      removeNotification,
+    }}>
+    <div className="min-h-screen flex" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif", background: "#f5f5f5" }}>
+      <style>{css}</style>
+
+      {/* ── Mobile sidebar overlay ── */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 flex md:hidden">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
+          <aside className="im-slide relative flex flex-col w-64 h-full z-10 py-5 px-2"
+            style={{ background: PANEL_BG, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
+            <div className="relative z-10 flex flex-col h-full">
+              <SidebarBody onSelect={() => setMobileOpen(false)} />
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* ── Desktop sidebar (sticky) ── */}
+      <aside className="hidden md:flex flex-col sticky top-0 h-screen shrink-0 py-5 px-2 relative overflow-hidden"
+        style={{ width: 236, background: PANEL_BG, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
+        <div className="relative z-10 flex flex-col h-full im-sidebar">
+          <SidebarBody onSelect={() => {}} />
+        </div>
+      </aside>
+
+      {/* ── Right column ── */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen">
+
+        {/* ── Sticky navbar ── */}
+        <header className="sticky top-0 z-30 flex items-center gap-3 px-4 sm:px-6 py-3.5 shrink-0 relative"
+          style={{ background: PANEL_BG, borderBottom: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 2px 16px rgba(0,0,0,0.3)" }}>
+          {/* Mobile hamburger */}
+          <button className="md:hidden w-8 h-8 rounded-md flex items-center justify-center shrink-0 relative z-10"
+            style={{ background: "rgba(255,255,255,0.12)" }}
+            onClick={() => setMobileOpen(true)}>
+            <LayoutGrid size={14} color="#fff" />
+          </button>
+
+          {/* Logo */}
+          <div className="shrink-0 relative z-10">
+            <img src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
+              alt="Emerge Livelihoods" className="h-7 brightness-0 invert" />
+          </div>
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Right: search + bell + profile */}
+          <div className="flex items-center gap-2 relative z-10">
+            <div className="hidden sm:flex items-center gap-2 rounded-md px-3 py-2"
+              style={{ background: "rgba(255,255,255,0.1)" }}>
+              <Search size={11} color="rgba(255,255,255,0.7)" />
+              <input placeholder="Search…" className="bg-transparent text-white text-[11px] w-24 focus:outline-none placeholder-white/50" />
+            </div>
+            <NotificationBellDropdown
+              notifications={notifications}
+              onMarkRead={markNotificationAsRead}
+              onMarkAllRead={markAllNotificationsAsRead}
+              onClearAll={clearNotifications}
+              onRemove={removeNotification}
+              onNavigate={(target) => {
+                setActive(target);
+              }}
+            />
+            <ProfileDropdown onSignOut={handleSignOut} />
+          </div>
+        </header>
+
+        {/* ── Page content ── */}
+        <main className="im-main flex-1 px-3 sm:px-4 py-5">
+          {/* Breadcrumb + title */}
+          {active !== "Pairing & Matching" && (
+            <div className="mb-6">
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold mb-1" style={{ color: "#9ca3af" }}>
+                <span>Incubation</span>
+                <ChevronRight size={10} />
+                <span style={{ color: TEAL }}>{active}</span>
+              </div>
+              {active !== "Matching" && (
+                <h1 className="font-black text-xl flex items-center gap-2" style={{ color: NAVY }}>
+                  {active}
+                </h1>
+              )}
+            </div>
+          )}
+
+          {renderContent()}
+        </main>
+      </div>
+    </div>
+    </AppDataCtx.Provider>
+  );
+}
