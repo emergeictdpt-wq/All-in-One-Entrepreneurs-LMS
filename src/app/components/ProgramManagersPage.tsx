@@ -3,12 +3,28 @@ import {
   LayoutDashboard, Users, MapPin, FileText, Award,
   Globe, Zap, Bell, Settings, Search, RefreshCw,
   ChevronRight, X, BarChart2, Briefcase, Filter,
-  CheckCircle, UserCheck, User, GitMerge, Layers, GraduationCap,
+  CheckCircle, UserCheck, GitMerge, Layers, GraduationCap,
   Rocket, UserPlus, Shield, ChevronDown, TrendingUp, PieChart,
 } from "lucide-react";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
+// Chart palette (bars & donuts)
+const CHART_PALETTE = [
+  "#F2EC32", // 1 Yellow
+  "#FAC833", // 2 Gold / Amber
+  "#F38629", // 3 Orange
+  "#FF0101", // 4 Red
+  "#F70252", // 5 Magenta
+  "#DB457A", // 6 Rose / Deep Pink
+  "#1D6CBF", // 7 Royal Blue
+  "#3999BF", // 8 Teal
+  "#46975D", // 9 Green
+  "#78C41A", // 10 Lime
+];
+const GENDER_FEMALE = "#FF0101"; // Red
+const GENDER_MALE   = "#1D6CBF"; // Royal Blue
+const GENDER_YOUTH  = "#F2EC32"; // Yellow
 
 // ── CSS ─────────────────────────────────────────────────────────────────────
 const css = `
@@ -398,7 +414,7 @@ function ProjectDropdown({ projects, value, onChange }: {
             style={{borderBottom:"1px solid rgba(255,255,255,0.18)"}}>
             <div className="flex items-center gap-2">
               <Search size={11} color="rgba(255,255,255,0.7)"/>
-              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-white"
+              <span className="px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white"
                 style={{background: TEAL, border: "1px solid rgba(255,255,255,0.3)"}}>
                 Select Project
               </span>
@@ -552,7 +568,7 @@ function ProfileMenu() {
           {/* Menu items */}
           <div className="py-1.5">
             {[
-              { icon: User, label: "My Profile" },
+              { icon: UserCheck, label: "My Profile" },
               { icon: Settings,  label: "Settings" },
             ].map(({ icon: Icon, label }) => (
               <button key={label}
@@ -619,7 +635,7 @@ function GenderDonutCard({ female, male, youth, project }: {
       label: "Female",
       count: female,
       pct: femPct,
-      color: TEAL,
+      color: GENDER_FEMALE,
       theta: thetaF,
       len: fLen,
       offset: 0,
@@ -629,7 +645,7 @@ function GenderDonutCard({ female, male, youth, project }: {
       label: "Male",
       count: male,
       pct: malPct,
-      color: NAVY,
+      color: GENDER_MALE,
       theta: thetaM,
       len: mLen,
       offset: -(fLen + gap),
@@ -639,7 +655,7 @@ function GenderDonutCard({ female, male, youth, project }: {
       label: "Youth",
       count: youth,
       pct: ythPct,
-      color: "#D97706",
+      color: GENDER_YOUTH,
       theta: thetaY,
       len: yLen,
       offset: -(fLen + gap + mLen + gap),
@@ -650,7 +666,7 @@ function GenderDonutCard({ female, male, youth, project }: {
   const activeLabel = hovered === "female" ? "Female" : hovered === "male" ? "Male" : hovered === "youth" ? "Youth" : "";
   const activeCount = hovered === "female" ? female : hovered === "male" ? male : hovered === "youth" ? youth : total;
   const activePct = hovered === "female" ? `${femPct}%` : hovered === "male" ? `${malPct}%` : hovered === "youth" ? `${ythPct}%` : `${femPct}% Female`;
-  const activeColor = hovered === "female" ? TEAL : hovered === "male" ? NAVY : hovered === "youth" ? "#D97706" : TEAL;
+  const activeColor = hovered === "female" ? GENDER_FEMALE : hovered === "male" ? GENDER_MALE : hovered === "youth" ? GENDER_YOUTH : GENDER_FEMALE;
 
   return (
     <div className="pm-up rounded-md p-6 flex flex-col justify-between" style={{
@@ -824,10 +840,10 @@ function GenderDonutCard({ female, male, youth, project }: {
           onMouseLeave={() => setHovered(null)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all cursor-pointer"
           style={{
-            background: hovered === "female" ? "rgba(76,128,138,0.12)" : "transparent",
+            background: hovered === "female" ? "rgba(255,1,1,0.12)" : "transparent",
           }}
         >
-          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: TEAL }} />
+          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: GENDER_FEMALE }} />
           <span className="text-xs font-bold text-gray-700">Female</span>
         </button>
 
@@ -838,10 +854,10 @@ function GenderDonutCard({ female, male, youth, project }: {
           onMouseLeave={() => setHovered(null)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all cursor-pointer"
           style={{
-            background: hovered === "male" ? "rgba(59,65,103,0.12)" : "transparent",
+            background: hovered === "male" ? "rgba(29,108,191,0.12)" : "transparent",
           }}
         >
-          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: NAVY }} />
+          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: GENDER_MALE }} />
           <span className="text-xs font-bold text-gray-700">Male</span>
         </button>
 
@@ -852,10 +868,10 @@ function GenderDonutCard({ female, male, youth, project }: {
           onMouseLeave={() => setHovered(null)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all cursor-pointer"
           style={{
-            background: hovered === "youth" ? "rgba(217,119,6,0.12)" : "transparent",
+            background: hovered === "youth" ? "rgba(242,236,50,0.18)" : "transparent",
           }}
         >
-          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: "#D97706" }} />
+          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: GENDER_YOUTH }} />
           <span className="text-xs font-bold text-gray-700">Youth</span>
         </button>
       </div>
@@ -884,15 +900,7 @@ function SectorDistrictCard({ sectors, districts, project }: {
 
   const topDistrict = districts[0] ?? { name: "Lilongwe", count: 0, pct: 0 };
 
-  const barColors = [
-    TEAL,
-    NAVY,
-    "#5A949E",
-    "#4A517E",
-    "#D97706",
-    "#7C3AED",
-    "#059669",
-  ];
+  const barColors = CHART_PALETTE;
 
   return (
     <div className="pm-up rounded-md p-6 flex flex-col justify-between" style={{
@@ -922,7 +930,7 @@ function SectorDistrictCard({ sectors, districts, project }: {
         <div className="flex items-center bg-gray-100 p-0.5 rounded-md self-start sm:self-auto">
           <button
             onClick={() => setView("sectors")}
-            className="px-3 py-1 rounded-md text-xs font-bold transition-all"
+            className="px-3 py-1 rounded text-xs font-bold transition-all"
             style={{
               background: view === "sectors" ? TEAL : "transparent",
               color: view === "sectors" ? "#fff" : "#4b5563",
@@ -933,7 +941,7 @@ function SectorDistrictCard({ sectors, districts, project }: {
           </button>
           <button
             onClick={() => setView("districts")}
-            className="px-3 py-1 rounded-md text-xs font-bold transition-all"
+            className="px-3 py-1 rounded text-xs font-bold transition-all"
             style={{
               background: view === "districts" ? TEAL : "transparent",
               color: view === "districts" ? "#fff" : "#4b5563",

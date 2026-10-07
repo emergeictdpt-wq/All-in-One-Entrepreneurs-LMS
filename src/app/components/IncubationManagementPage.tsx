@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect, useMemo, createContext, useContext, Fragment } from "react";
+import { useState, useRef, useEffect, useMemo, createContext, useContext } from "react";
 import { toast } from "sonner";
 import {
   LayoutGrid, FileText, CheckCircle, ThumbsUp, GitMerge,
   XCircle, LogOut, Settings, Mail, Activity, Users,
   ChevronDown, ChevronRight, ChevronLeft, Bell, Search, User,
-  Eye, EyeOff, UserMinus, UserPlus, Download, MoreHorizontal, Share2,
+  Eye, Download, MoreHorizontal, Share2,
   PlusCircle, MapPin, Edit2, Trash2 as TrashIcon,
   TrendingUp, AlertCircle, Clock,
   Send, Inbox, Star, Trash2, Sliders,
@@ -12,13 +12,33 @@ import {
   Calendar, Video, Cloud, Link2, MessageSquare, ClipboardList, Image as ImageIcon, Camera,
   Filter, X, Layers, FileCheck, Lightbulb, RotateCcw, FileX, Phone, Sparkles, CheckCheck, BellRing,
 } from "lucide-react";
-import { AdminRelHealthView, AdminCohortView, AdminReportingView, AdminIntegrationView } from "./AdminProgrammeViews";
-import { useProgramme, fmtDate, cohortEnrolled, AS_OF } from "../data/programmeStore";
-import { validateProgram, programFacts, loadInterest, interestToCsv, INTEREST_KEY, type Interest } from "../data/programUtils";
 import type { AdminProgram, TimelineEntry, EntrepreneurApplication, MentorApplication } from "../types";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
+// ── Chart palette (bars & donuts) ────────────────────────────────────────────
+const CHART_PALETTE = [
+  "#F2EC32", // 1 Yellow
+  "#FAC833", // 2 Gold / Amber
+  "#F38629", // 3 Orange
+  "#FF0101", // 4 Red
+  "#F70252", // 5 Magenta
+  "#DB457A", // 6 Rose / Deep Pink
+  "#1D6CBF", // 7 Royal Blue
+  "#3999BF", // 8 Teal
+  "#46975D", // 9 Green
+  "#78C41A", // 10 Lime
+];
+const GENDER_MALE   = "#1D6CBF"; // Royal Blue
+const GENDER_FEMALE = "#FF0101"; // Red
+const BAR_TOTAL     = "#46975D"; // Green
+// Pick readable label colour (dark on light fills like yellow/lime/amber)
+const labelOn = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? "#1f2937" : "#ffffff";
+};
+
 const PANEL_BG = "linear-gradient(155deg, #2a3054 0%, #3B4167 45%, #456f78 80%, #4C808A 100%)";
 
 // ── CSS ─────────────────────────────────────────────────────────────────────
@@ -41,21 +61,19 @@ const css = `
 
 /* Table row hover */
 .im-row:hover td { background: rgba(76,128,138,0.06); }
-.im-row td.im-sticky-act { position: sticky; right: 0; z-index: 4; background: #fff; box-shadow: -6px 0 8px -6px rgba(0,0,0,0.15); }
-.im-row:hover td.im-sticky-act { background: #f1f6f7; }
 
 /* sidebar scroll */
 .im-sidebar { overflow-y: auto; overflow-x: hidden; }
 .im-sidebar::-webkit-scrollbar { width: 3px; }
-.im-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius:3px; }
+.im-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
 
 /* main scroll */
 .im-main { overflow-y: auto; }
 .im-main::-webkit-scrollbar { width: 5px; }
-.im-main::-webkit-scrollbar-thumb { background: rgba(76,128,138,0.3); border-radius:3px; }
+.im-main::-webkit-scrollbar-thumb { background: rgba(76,128,138,0.3); border-radius: 4px; }
 
 /* status badge */
-.im-badge { display:inline-flex; align-items:center; padding:2px 10px; border-radius:3px; font-size:10px; font-weight:700; }
+.im-badge { display:inline-flex; align-items:center; padding:2px 10px; border-radius:20px; font-size:10px; font-weight:700; }
 
 @keyframes im-spin {
   to { transform: rotate(360deg); }
@@ -81,11 +99,6 @@ export interface MentorPair {
   sessions: number;
   lastSession: string;
   reMatchReq: boolean;
-  /** derived from the programme store */
-  pairId?: string;
-  rematchId?: string;
-  sector?: string;
-  note?: string;
 }
 
 export interface IncubationNotification {
@@ -103,18 +116,6 @@ export interface IncubationNotification {
 }
 
 // ── Application data context ──────────────────────────────────────────────────
-import { ADMIN_KEY, decisionMailto } from "../data/applicationTracker";
-/** Introductory call: a real date plus a status, never free text. */
-const introLabel = (iso: string | undefined, paired: boolean): string => {
-  if (!paired) return "—";
-  if (!iso) return "Not scheduled";
-  const d = fmtDate(iso);
-  return iso > AS_OF ? `${d} · Scheduled` : `${d} · Completed`;
-};
-const MATCH_STATUS_COLOR: Record<string, string> = {
-  "Paired": "#059669", "Mentoring": "#059669", "Awaiting mentor": "#d97706", "Awaiting mentee": "#d97706",
-  "Re-match requested": "#dc2626", "At capacity": "#7c3aed",
-};
 const AppDataCtx = createContext<{
   entApps: EntrepreneurApplication[];
   mntApps: MentorApplication[];
@@ -129,14 +130,16 @@ const AppDataCtx = createContext<{
     entSector: string
   ) => void;
   setActiveNav?: (key: NavKey) => void;
-  /** Read-only view built from the programme store (single source of truth for pairs) */
   matchPairs: MentorPair[];
-  /** Ask for a re-match of one live pair (by store pair id). */
-  requestPairRematch: (pairId: string) => void;
-  /** Jump to the Matching Engine, started from an entrepreneur or from a mentor. */
-  openEngine: (target: { entId?: string; mentorId?: string }) => void;
-  engineTarget: { entId?: string; mentorId?: string } | null;
-  clearEngineTarget: () => void;
+  setMatchPairs: React.Dispatch<React.SetStateAction<MentorPair[]>>;
+  pairings?: Record<string, {
+    partnerName: string;
+    matchScore: number;
+    matchingStage: string;
+    introSession: string;
+    approvalStatus: "Approved" | "Pending Approval" | "Re-match Requested";
+  }>;
+  reassignPartner: (app: EntrepreneurApplication | MentorApplication, isEnt: boolean) => void;
   notifications: IncubationNotification[];
   addNotification: (notif: Omit<IncubationNotification, "id" | "createdAt" | "read" | "timestamp"> & { timestamp?: string }) => void;
   markNotificationAsRead: (id: string) => void;
@@ -149,10 +152,9 @@ const AppDataCtx = createContext<{
   setStatusOverride: () => {},
   confirmPairing: () => {},
   matchPairs: [],
-  requestPairRematch: () => {},
-  openEngine: () => {},
-  engineTarget: null,
-  clearEngineTarget: () => {},
+  setMatchPairs: () => {},
+  pairings: {},
+  reassignPartner: () => {},
   notifications: [],
   addNotification: () => {},
   markNotificationAsRead: () => {},
@@ -163,59 +165,50 @@ const AppDataCtx = createContext<{
 
 
 // ── Sample data (MOCKUP — replace with backend data when ready) ───────────────
-export const MOCK_MNT_APPS: MentorApplication[] = [
+const MOCK_MNT_APPS: MentorApplication[] = [
   { id: "MNT-001", name: "Dr. Thoko Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 100 001", expertise: "Business Strategy",  date: "2026-01-06", status: "Approved",  score: 95, program: "Incubation", isMockup: true, email: "t.banda@univ.ac.mw", title: "Senior Business Advisor", employer: "Banda Strategy Partners" },
-  { id: "MNT-002", name: "Mr. Chikumbe Phiri",    gender: "Male",   district: "Blantyre",   phone: "+265 888 200 002", expertise: "Finance & Accounts", date: "2026-01-07", status: "Matching",  score: 88, program: "Incubation", isMockup: true, email: "cphiri@fincorp.mw", title: "Chartered Accountant & CFO", employer: "Apex Financial Advisory" },
-  { id: "MNT-003", name: "Ms. Rejoice Mwale",     gender: "Female", district: "Mzuzu",      phone: "+265 993 300 003", expertise: "Agriculture",        date: "2026-01-09", status: "Matching",  score: 80, program: "Incubation", isMockup: true, email: "rmwale@agridev.org", title: "Agri-Tech Consultant", employer: "Malawi AgriDev Hub", selectionReason: "High expertise in Agri-Tech value chains and exemplary mentorship capability", selectedDate: "2026-01-16" },
-  { id: "MNT-004", name: "Mr. Patrick Tembo",     gender: "Male",   district: "Zomba",      phone: "+265 881 400 004", expertise: "Technology",         date: "2026-01-10", status: "Matching",   score: 72, program: "Incubation", isMockup: true, email: "ptembo@techmw.com", title: "Software Architect", employer: "InnoTech Solutions" },
-  { id: "MNT-005", name: "Mrs. Faith Nyirenda",   gender: "Female", district: "Kasungu",    phone: "+265 992 500 005", expertise: "Marketing",          date: "2026-01-11", status: "Matching",  score: 91, program: "Incubation", isMockup: true, email: "fnyirenda@brandplus.mw", title: "Chief Marketing Strategist", employer: "BrandPlus Malawi" },
+  { id: "MNT-002", name: "Mr. Chikumbe Phiri",    gender: "Male",   district: "Blantyre",   phone: "+265 888 200 002", expertise: "Finance & Accounts", date: "2026-01-07", status: "Matching",  score: 88, program: "Incubation", isMockup: true, email: "cphiri@fincorp.mw", title: "Chartered Accountant & CFO", employer: "Apex Financial Advisory", matchedMentee: "Tamara Kachingwe (Financial Services)", matchScore: 91, matchingStage: "Awaiting Confirmation", introSession: "Pending Mentor Acceptance", approvalStatus: "Pending Approval" },
+  { id: "MNT-003", name: "Ms. Rejoice Mwale",     gender: "Female", district: "Mzuzu",      phone: "+265 993 300 003", expertise: "Agriculture",        date: "2026-01-09", status: "Selected",  score: 80, program: "Incubation", isMockup: true, email: "rmwale@agridev.org", title: "Agri-Tech Consultant", employer: "Malawi AgriDev Hub", selectionReason: "High expertise in Agri-Tech value chains and exemplary mentorship capability", selectedDate: "2026-01-16" },
+  { id: "MNT-004", name: "Mr. Patrick Tembo",     gender: "Male",   district: "Zomba",      phone: "+265 881 400 004", expertise: "Technology",         date: "2026-01-10", status: "Pending",   score: 72, program: "Incubation", isMockup: true, email: "ptembo@techmw.com", title: "Software Architect", employer: "InnoTech Solutions" },
+  { id: "MNT-005", name: "Mrs. Faith Nyirenda",   gender: "Female", district: "Kasungu",    phone: "+265 992 500 005", expertise: "Marketing",          date: "2026-01-11", status: "Approved",  score: 91, program: "Incubation", isMockup: true, email: "fnyirenda@brandplus.mw", title: "Chief Marketing Strategist", employer: "BrandPlus Malawi" },
   { id: "MNT-006", name: "Dr. Samuel Chirwa",     gender: "Male",   district: "Dedza",      phone: "+265 889 600 006", expertise: "Legal & Compliance", date: "2026-01-12", status: "Rejected",  score: 45, program: "Incubation", isMockup: true, email: "schirwa@lawchamber.mw", title: "Corporate Counsel", employer: "Chirwa & Co Advocates", rejectionReason: "Weekly availability below required 4 hours/month minimum threshold", rejectedDate: "2026-01-18", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
-  { id: "MNT-007", name: "Ms. Miriam Kamwana",    gender: "Female", district: "Lilongwe",   phone: "+265 994 700 007", expertise: "Social Enterprise",  date: "2026-01-13", status: "Matching",  score: 85, program: "Incubation", isMockup: true, email: "mkamwana@impactmw.org", title: "Executive Director", employer: "Social Enterprise Alliance" },
+  { id: "MNT-007", name: "Ms. Miriam Kamwana",    gender: "Female", district: "Lilongwe",   phone: "+265 994 700 007", expertise: "Social Enterprise",  date: "2026-01-13", status: "Matching",  score: 85, program: "Incubation", isMockup: true, email: "mkamwana@impactmw.org", title: "Executive Director", employer: "Social Enterprise Alliance", matchedMentee: "Alinafe Gondwe (Services)", matchScore: 89, matchingStage: "—", introSession: "Monday 2:00 PM" },
   { id: "MNT-008", name: "Mr. Joseph Mkandawire", gender: "Male",   district: "Nkhotakota", phone: "+265 882 800 008", expertise: "Manufacturing",      date: "2026-01-14", status: "Dropouts",  score: 60, program: "Incubation", isMockup: true, email: "jmkandawire@mfg.mw", title: "Operations Director", employer: "Lakeside Industrial" },
   { id: "MNT-009", name: "Mrs. Grace Gondwe",     gender: "Female", district: "Salima",     phone: "+265 995 900 009", expertise: "Export & Trade",     date: "2026-01-15", status: "Selected",  score: 78, program: "Incubation", isMockup: true, email: "ggondwe@exportmw.com", title: "Trade Specialist", employer: "Malawi Export Bureau", selectionReason: "Regional cross-border trade leadership and proven business advisory experience", selectedDate: "2026-01-20" },
-  { id: "MNT-010", name: "Mr. Charles Nkosi",     gender: "Male",   district: "Mulanje",    phone: "+265 883 010 010", expertise: "Business Strategy",  date: "2026-01-16", status: "Matching",  score: 93, program: "Incubation", isMockup: true, email: "cnkosi@nkosigroup.mw", title: "Managing Partner", employer: "Nkosi Group" },
+  { id: "MNT-010", name: "Mr. Charles Nkosi",     gender: "Male",   district: "Mulanje",    phone: "+265 883 010 010", expertise: "Business Strategy",  date: "2026-01-16", status: "Approved",  score: 93, program: "Incubation", isMockup: true, email: "cnkosi@nkosigroup.mw", title: "Managing Partner", employer: "Nkosi Group" },
   { id: "MNT-011", name: "Ms. Chimwemwe Banda",   gender: "Female", district: "Lilongwe",   phone: "+265 997 110 011", expertise: "Digital Marketing",  date: "2026-02-03", status: "Pending",   score: 74, program: "Incubation", isMockup: true, email: "cbanda@digitalscope.mw", title: "Growth Marketing Lead", employer: "DigitalScope" },
   { id: "MNT-012", name: "Dr. Felix Kaunda",      gender: "Male",   district: "Blantyre",   phone: "+265 885 220 012", expertise: "Investment & VC",    date: "2026-02-10", status: "Approved",  score: 97, program: "Incubation", isMockup: true, email: "fkaunda@seedfund.mw", title: "Principal Partner", employer: "SeedFund Capital" },
   { id: "MNT-013", name: "Ellen Chimwaza",        gender: "Female", district: "Blantyre",   phone: "+265 887 330 013", expertise: "General Management", date: "2026-02-04", status: "Rejected",  score: 47, program: "Incubation", isMockup: true, email: "echimwaza@mwmg.org", title: "Operations Supervisor", employer: "Southern Logistics", rejectionReason: "Mentorship track record and executive governance documentation incomplete", rejectedDate: "2026-02-14", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
   { id: "MNT-014", name: "Andrew Mkuzi",          gender: "Male",   district: "Lilongwe",   phone: "+265 998 440 014", expertise: "Energy & Environment",date: "2026-02-06", status: "Rejected", score: 41, program: "Incubation", isMockup: true, email: "amkuzi@solarmw.com", title: "Renewables Engineer", employer: "EcoPower Malawi", rejectionReason: "Institutional conflict of interest with participating agribusiness incubatee", rejectedDate: "2026-02-16", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Remediation Required" },
-  { id: "MNT-015", name: "Grace Manda",           gender: "Female", district: "Mzuzu",      phone: "+265 884 550 015", expertise: "Agri-Business",       date: "2026-02-09", status: "Matching",  score: 89, program: "Incubation", isMockup: true, email: "gmanda@agrilink.mw", title: "Commercial Agribusiness Director", employer: "Northern Agrilink" },
-  { id: "MNT-016", name: "Frank Kalua",           gender: "Male",   district: "Zomba",      phone: "+265 993 660 016", expertise: "Creative Arts",       date: "2026-02-12", status: "Matching",  score: 82, program: "Incubation", isMockup: true, email: "fkalua@creativemedia.mw", title: "Creative Director", employer: "Zomba Media Lab" },
-  { id: "MNT-017", name: "Dr. Tiwonge Banda",      gender: "Male",   district: "Lilongwe",   phone: "+265 991 170 017", expertise: "AgriTech and Finance",       date: "2026-01-05", status: "Matching",  score: 91, program: "Incubation", isMockup: true, email: "tbanda@agritech.mw", title: "AgriTech Consultant", employer: "AgroFinance Malawi", capacity: 4 },
-  { id: "MNT-018", name: "Prof. Patrick Likoswe",  gender: "Male",   district: "Zomba",      phone: "+265 881 180 018", expertise: "EdTech & Curriculum",         date: "2026-01-06", status: "Matching",  score: 90, program: "Incubation", isMockup: true, email: "plikoswe@unima.mw", title: "Professor of Education", employer: "University of Malawi", capacity: 4 },
-  { id: "MNT-019", name: "Limbani Gondwe",         gender: "Male",   district: "Blantyre",   phone: "+265 882 190 019", expertise: "CleanEnergy and Hardware",    date: "2026-01-08", status: "Matching",  score: 84, program: "Incubation", isMockup: true, email: "lgondwe@solarco.mw", title: "Renewable Energy Engineer", employer: "SolarCo Malawi", capacity: 3 },
-  { id: "MNT-020", name: "Dr. Chimwemwe Phiri",    gender: "Female", district: "Lilongwe",   phone: "+265 999 200 020", expertise: "HealthTech & UX",             date: "2026-01-09", status: "Matching",  score: 87, program: "Incubation", isMockup: true, email: "cphiri@healthlab.mw", title: "Health Informatics Lead", employer: "Kamuzu Health Lab", capacity: 3 },
+  { id: "MNT-015", name: "Grace Manda",           gender: "Female", district: "Mzuzu",      phone: "+265 884 550 015", expertise: "Agri-Business",       date: "2026-02-09", status: "Matching",  score: 89, program: "Incubation", isMockup: true, email: "gmanda@agrilink.mw", title: "Commercial Agribusiness Director", employer: "Northern Agrilink", matchedMentee: "Dalitso Mvula (Agri-Business)", matchScore: 95, matchingStage: "Pairing Confirmed", introSession: "Wednesday 11:00 AM" },
+  { id: "MNT-016", name: "Frank Kalua",           gender: "Male",   district: "Zomba",      phone: "+265 993 660 016", expertise: "Creative Arts",       date: "2026-02-12", status: "Matching",  score: 82, program: "Incubation", isMockup: true, email: "fkalua@creativemedia.mw", title: "Creative Director", employer: "Zomba Media Lab", matchedMentee: "Enelesi Phiri (Creative Arts)", matchScore: 86, matchingStage: "Pairing Confirmed", introSession: "Thursday 3:00 PM" },
 ];
 
-export const MOCK_ENT_APPS: EntrepreneurApplication[] = [
-  { id: "APP-001", name: "Chisomo Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 234 567", sector: "Agri-Business",          date: "2026-01-08", status: "Matching",   score: 82, program: "Incubation", isMockup: true, businessName: "Banda Agri-Hub", stage: "Growth", email: "chisomo.banda@gmail.com" },
+const MOCK_ENT_APPS: EntrepreneurApplication[] = [
+  { id: "APP-001", name: "Chisomo Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 234 567", sector: "Agri-Business",          date: "2026-01-08", status: "Pending",   score: 82, program: "Incubation", isMockup: true, businessName: "Banda Agri-Hub", stage: "Growth", email: "chisomo.banda@gmail.com" },
   { id: "APP-002", name: "Grace Phiri",         gender: "Female", district: "Blantyre",   phone: "+265 888 345 678", sector: "Technology",             date: "2026-01-09", status: "Approved",  score: 91, program: "Incubation", isMockup: true, businessName: "TechHub Malawi", stage: "Early Traction", email: "grace.phiri@outlook.com" },
   { id: "APP-003", name: "Takondwa Mwale",      gender: "Male",   district: "Mzuzu",      phone: "+265 993 456 789", sector: "Manufacturing",          date: "2026-01-10", status: "Selected",  score: 76, program: "Incubation", isMockup: true, businessName: "Mwale Processing", stage: "Idea Stage", email: "takondwa.mwale@gmail.com", selectionReason: "High manufacturing feasibility and robust local import-substitution value proposition", selectedDate: "2026-01-18" },
   { id: "APP-004", name: "Kondwani Tembo",      gender: "Male",   district: "Zomba",      phone: "+265 881 567 890", sector: "Trade",                  date: "2026-01-11", status: "Rejected",  score: 48, program: "Incubation", isMockup: true, businessName: "Tembo General Supplies", stage: "Idea Stage", email: "kondwani.tembo@yahoo.com", rejectionReason: "Evaluation score below 50-point cutoff threshold", rejectedDate: "2026-01-18", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
-  { id: "APP-005", name: "Lusungu Nyirenda",    gender: "Female", district: "Kasungu",    phone: "+265 992 678 901", sector: "Services",               date: "2026-01-12", status: "Matching",  score: 87, program: "Incubation", isMockup: true, businessName: "Nyirenda Logistics", stage: "MVP / Prototype", email: "lusungu.nyirenda@gmail.com" },
+  { id: "APP-005", name: "Lusungu Nyirenda",    gender: "Female", district: "Kasungu",    phone: "+265 992 678 901", sector: "Services",               date: "2026-01-12", status: "Matching",  score: 87, program: "Incubation", isMockup: true, businessName: "Nyirenda Logistics", stage: "MVP / Prototype", email: "lusungu.nyirenda@gmail.com", matchedMentor: "Mrs. Faith Nyirenda (Marketing)", matchScore: 94, matchingStage: "Pairing Confirmed", introSession: "Friday 10:00 AM" },
   { id: "APP-006", name: "Thandiwe Chirwa",     gender: "Female", district: "Lilongwe",   phone: "+265 889 789 012", sector: "Agri-Business",          date: "2026-01-13", status: "Pending",   score: 71, program: "Incubation", isMockup: true, businessName: "Chirwa Poultry Farm", stage: "Idea Stage", email: "thandiwe.chirwa@gmail.com" },
   { id: "APP-007", name: "Blessings Kamwana",   gender: "Male",   district: "Blantyre",   phone: "+265 994 890 123", sector: "Technology",             date: "2026-01-14", status: "Approved",  score: 88, program: "Incubation", isMockup: true, businessName: "CloudSolv Malawi", stage: "Early Traction", email: "bkamwana@cloudsolv.mw" },
   { id: "APP-008", name: "Esther Chikaonda",    gender: "Female", district: "Mzuzu",      phone: "+265 882 901 234", sector: "Creative Arts",          date: "2026-01-15", status: "Dropouts",  score: 62, program: "Incubation", isMockup: true, businessName: "Chikaonda Textiles", stage: "Idea Stage", email: "esther.chikaonda@gmail.com" },
   { id: "APP-009", name: "Moses Mkandawire",    gender: "Male",   district: "Dedza",      phone: "+265 995 012 345", sector: "Trade",                  date: "2026-01-16", status: "Selected",  score: 79, program: "Incubation", isMockup: true, businessName: "Dedza Agri-Trading", stage: "Growth", email: "moses.mkandawire@gmail.com", selectionReason: "Demonstrated local trade traction and strong job creation potential in Dedza", selectedDate: "2026-01-22" },
-  { id: "APP-010", name: "Alinafe Gondwe",      gender: "Female", district: "Salima",     phone: "+265 883 123 456", sector: "Services",               date: "2026-01-17", status: "Matching",  score: 84, program: "Incubation", isMockup: true, businessName: "Lakeside Hospitality Solutions", stage: "Early Traction", email: "alinafe.gondwe@gmail.com" },
+  { id: "APP-010", name: "Alinafe Gondwe",      gender: "Female", district: "Salima",     phone: "+265 883 123 456", sector: "Services",               date: "2026-01-17", status: "Matching",  score: 84, program: "Incubation", isMockup: true, businessName: "Lakeside Hospitality Solutions", stage: "Early Traction", email: "alinafe.gondwe@gmail.com", matchedMentor: "Ms. Miriam Kamwana (Social Enterprise)", matchScore: 89, matchingStage: "—", introSession: "Monday 2:00 PM" },
   { id: "APP-011", name: "Innocent Phiri",      gender: "Male",   district: "Nkhotakota", phone: "+265 996 234 567", sector: "Agri-Business",          date: "2026-01-18", status: "Pending",   score: 68, program: "Incubation", isMockup: true, businessName: "RicePro Malawi", stage: "Idea Stage", email: "innocent.phiri@gmail.com" },
   { id: "APP-012", name: "Vitumbiko Nkosi",     gender: "Male",   district: "Mulanje",    phone: "+265 884 345 678", sector: "Manufacturing",          date: "2026-01-19", status: "Approved",  score: 93, program: "Incubation", isMockup: true, businessName: "TeaCraft Agro", stage: "Growth", email: "vitumbiko.nkosi@gmail.com" },
   { id: "APP-013", name: "Patricia Nnensa",     gender: "Female", district: "Chiradzulu", phone: "+265 997 456 789", sector: "Health & Wellbeing",     date: "2026-02-02", status: "Pending",   score: 70, program: "Incubation", isMockup: true, businessName: "CarePlus Wellness", stage: "Idea Stage", email: "patricia.nnensa@gmail.com" },
   { id: "APP-014", name: "Daniel Chizala",      gender: "Male",   district: "Lilongwe",   phone: "+265 885 567 890", sector: "Energy & Environment",   date: "2026-02-05", status: "Approved",  score: 89, program: "Incubation", isMockup: true, businessName: "EcoBreeze Energy", stage: "Early Traction", email: "daniel.chizala@gmail.com" },
-  { id: "APP-015", name: "Tamara Kachingwe",    gender: "Female", district: "Blantyre",   phone: "+265 992 678 012", sector: "Financial Services",     date: "2026-02-08", status: "Matching",  score: 77, program: "Incubation", isMockup: true, businessName: "FinLit Mobile", stage: "MVP / Prototype", email: "tamara.kachingwe@gmail.com" },
+  { id: "APP-015", name: "Tamara Kachingwe",    gender: "Female", district: "Blantyre",   phone: "+265 992 678 012", sector: "Financial Services",     date: "2026-02-08", status: "Matching",  score: 77, program: "Incubation", isMockup: true, businessName: "FinLit Mobile", stage: "MVP / Prototype", email: "tamara.kachingwe@gmail.com", matchedMentor: "Mr. Chikumbe Phiri (Finance & Accounts)", matchScore: 91, matchingStage: "Awaiting Confirmation", introSession: "Pending Mentor Acceptance", approvalStatus: "Pending Approval" },
   { id: "APP-016", name: "Wisdom Chilambe",     gender: "Male",   district: "Mzuzu",      phone: "+265 883 789 123", sector: "Education & Training",   date: "2026-02-11", status: "Rejected",  score: 42, program: "Incubation", isMockup: true, businessName: "SkillBridge Edu", stage: "Idea Stage", email: "wisdom.chilambe@gmail.com", rejectionReason: "Early concept stage lacking proof-of-concept and market validation", rejectedDate: "2026-02-16", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
   { id: "APP-017", name: "Olivia Gondwe",       gender: "Female", district: "Zomba",      phone: "+265 998 890 234", sector: "Tourism & Hospitality",  date: "2026-02-14", status: "Selected",  score: 81, program: "Incubation", isMockup: true, businessName: "Zomba Plateau Eco-Tours", stage: "Early Traction", email: "olivia.gondwe@gmail.com", selectionReason: "Sustainable eco-tourism business model with clear community socio-economic impact", selectedDate: "2026-02-19" },
   { id: "APP-018", name: "Elliot Phiri",        gender: "Male",   district: "Kasungu",    phone: "+265 886 901 345", sector: "Agri-Business",          date: "2026-02-17", status: "Pending",   score: 65, program: "Incubation", isMockup: true, businessName: "Kasungu Seedlings", stage: "Idea Stage", email: "elliot.phiri@gmail.com" },
   { id: "APP-019", name: "Mphatso Kazembe",     gender: "Female", district: "Lilongwe",   phone: "+265 995 789 012", sector: "Agri-Business",          date: "2026-02-18", status: "Rejected",  score: 46, program: "Incubation", isMockup: true, businessName: "Kazembe Agro Processors", stage: "Idea Stage", email: "mphatso.kazembe@gmail.com", rejectionReason: "Incomplete financial model canvas and market traction data", rejectedDate: "2026-02-22", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
   { id: "APP-020", name: "Yamikani Banda",      gender: "Male",   district: "Blantyre",   phone: "+265 882 123 789", sector: "Manufacturing",          date: "2026-02-20", status: "Rejected",  score: 38, program: "Incubation", isMockup: true, businessName: "Banda Brickworks", stage: "Idea Stage", email: "yamikani.banda@gmail.com", rejectionReason: "Did not meet core incubation eligibility requirements (<40 score)", rejectedDate: "2026-02-24", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Remediation Required" },
   { id: "APP-021", name: "Chisomo Matenje",     gender: "Female", district: "Kasungu",    phone: "+265 994 456 012", sector: "Technology",             date: "2026-02-22", status: "Rejected",  score: 47, program: "Incubation", isMockup: true, businessName: "Kasungu Mobile Tech", stage: "Idea Stage", email: "cmatenje@techmw.com", rejectionReason: "Working prototype unavailable during technical evaluation session", rejectedDate: "2026-02-26", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
-  { id: "APP-022", name: "Dalitso Mvula",       gender: "Male",   district: "Lilongwe",   phone: "+265 888 654 321", sector: "Agri-Business",          date: "2026-02-23", status: "Matching",  score: 86, program: "Incubation", isMockup: true, businessName: "GreenSprout Hydroponics", stage: "MVP / Prototype", email: "dalitso.mvula@greensprout.mw" },
-  { id: "APP-023", name: "Brian Kumwenda",      gender: "Male",   district: "Mzuzu",      phone: "+265 991 765 432", sector: "Technology",             date: "2026-02-25", status: "Matching",  score: 82, program: "Incubation", isMockup: true, businessName: "Mzuzu Coders Hub", stage: "MVP / Prototype", email: "bkumwenda@codershub.mw" },
-  { id: "APP-024", name: "Enelesi Phiri",       gender: "Female", district: "Zomba",      phone: "+265 884 876 543", sector: "Creative Arts",          date: "2026-02-26", status: "Matching",  score: 80, program: "Incubation", isMockup: true, businessName: "Zomba Weavers Co-op", stage: "Early Traction", email: "enelesi.phiri@gmail.com" },
-  { id: "APP-025", name: "Kondwani Phiri",      gender: "Male",   district: "Zomba",      phone: "+265 881 250 025", sector: "EdTech",         date: "2026-01-14", status: "Matching",  score: 85, program: "Incubation", isMockup: true, businessName: "EduBridge", stage: "MVP / Prototype", email: "kondwani.phiri@gmail.com" },
-  { id: "APP-026", name: "Tadala Chirwa",       gender: "Female", district: "Mzuzu",      phone: "+265 992 260 026", sector: "CleanEnergy",    date: "2026-01-14", status: "Matching",  score: 79, program: "Incubation", isMockup: true, businessName: "CleanHeat", stage: "Idea", email: "tadala.chirwa@gmail.com" },
-  { id: "APP-027", name: "Yamikani Mwale",      gender: "Female", district: "Blantyre",   phone: "+265 883 270 027", sector: "EdTech",         date: "2026-01-15", status: "Matching",  score: 74, program: "Incubation", isMockup: true, businessName: "LearnLoop", stage: "Idea", email: "yamikani.mwale@gmail.com" },
-  { id: "APP-028", name: "Grace Kamwendo",      gender: "Female", district: "Lilongwe",   phone: "+265 994 280 028", sector: "HealthTech",     date: "2026-01-16", status: "Matching",  score: 88, program: "Incubation", isMockup: true, businessName: "HealthTrack", stage: "MVP / Prototype", email: "grace.kamwendo@gmail.com" },
-  { id: "APP-029", name: "Madalitso Chiumia",   gender: "Male",   district: "Lilongwe",   phone: "+265 995 290 029", sector: "AgriTech",       date: "2026-01-17", status: "Matching",  score: 76, program: "Incubation", isMockup: true, businessName: "FarmLink", stage: "Idea", email: "madalitso.chiumia@gmail.com" },
+  { id: "APP-022", name: "Dalitso Mvula",       gender: "Male",   district: "Lilongwe",   phone: "+265 888 654 321", sector: "Agri-Business",          date: "2026-02-23", status: "Matching",  score: 86, program: "Incubation", isMockup: true, businessName: "GreenSprout Hydroponics", stage: "MVP / Prototype", email: "dalitso.mvula@greensprout.mw", matchedMentor: "Ms. Rejoice Mwale (Agriculture)", matchScore: 95, matchingStage: "Pairing Confirmed", introSession: "Wednesday 11:00 AM" },
+  { id: "APP-023", name: "Brian Kumwenda",      gender: "Male",   district: "Mzuzu",      phone: "+265 991 765 432", sector: "Technology",             date: "2026-02-25", status: "Matching",  score: 82, program: "Incubation", isMockup: true, businessName: "Mzuzu Coders Hub", stage: "MVP / Prototype", email: "bkumwenda@codershub.mw", matchedMentor: "Mr. Patrick Tembo (Technology)", matchScore: 88, matchingStage: "Pairing Proposed", introSession: "Reviewing Profile" },
+  { id: "APP-024", name: "Enelesi Phiri",       gender: "Female", district: "Zomba",      phone: "+265 884 876 543", sector: "Creative Arts",          date: "2026-02-26", status: "Matching",  score: 80, program: "Incubation", isMockup: true, businessName: "Zomba Weavers Co-op", stage: "Early Traction", email: "enelesi.phiri@gmail.com", matchedMentor: "Mr. Charles Nkosi (Business Strategy)", matchScore: 86, matchingStage: "Pairing Confirmed", introSession: "Thursday 3:00 PM" },
 ];
 
 const EMAILS = [
@@ -406,7 +399,7 @@ function NotificationBellDropdown({
               {unreadCount > 0 && (
                 <button
                   onClick={() => onMarkAllRead()}
-                  className="px-2 py-1 rounded-md bg-white hover:bg-gray-100 text-[10px] font-bold text-[#4C808A] shadow-xs transition-colors cursor-pointer flex items-center gap-1"
+                  className="px-2 py-1 rounded bg-white hover:bg-gray-100 text-[10px] font-bold text-[#4C808A] shadow-xs transition-colors cursor-pointer flex items-center gap-1"
                   title="Mark all as read"
                 >
                   <CheckCheck size={11} color="#4C808A" /> Read all
@@ -457,7 +450,7 @@ function NotificationBellDropdown({
                           e.stopPropagation();
                           onRemove(notif.id);
                         }}
-                        className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded-md bg-white hover:bg-gray-100 border border-gray-200 shadow-xs transition-all cursor-pointer flex items-center justify-center"
+                        className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded bg-white hover:bg-gray-100 border border-gray-200 shadow-xs transition-all cursor-pointer flex items-center justify-center"
                         title="Dismiss"
                       >
                         <X size={10} color="#4C808A" />
@@ -652,9 +645,9 @@ function CustomBarChart({
   const CHART_H = 112, PAD_T = 6, PAD_B = 22;
   const Y_AXIS_W = 26;
   const SERIES: { key: "male" | "female" | "total"; color: string }[] = [
-    { key: "male",   color: NAVY },
-    { key: "female", color: TEAL },
-    { key: "total",  color: "url(#barDistrictTotalGrad)" },
+    { key: "male",   color: GENDER_MALE },
+    { key: "female", color: GENDER_FEMALE },
+    { key: "total",  color: BAR_TOTAL },
   ];
   const groupW = 3 * BAR_W + 2 * BAR_GAP;
   const totalW = data.length * (groupW + GROUP_GAP) + 16;
@@ -733,12 +726,6 @@ function CustomBarChart({
             paddingBottom: 2,
           }}>
           <svg width={totalW} height={svgH} style={{ display: "block" }}>
-            <defs>
-              <linearGradient id="barDistrictTotalGrad" x1="0" y1="1" x2="0" y2="0">
-                <stop offset="0%" stopColor={NAVY} />
-                <stop offset="100%" stopColor={TEAL} />
-              </linearGradient>
-            </defs>
             {yTicks.map(v => {
               const y = toY(v);
               return (
@@ -763,7 +750,7 @@ function CustomBarChart({
                         <rect x={x} y={y} width={BAR_W} height={h} fill={s.color} rx={2} ry={2}
                           opacity={dim ? 0.3 : 1} />
                         {h > 14 && !dim && (
-                          <text x={x + BAR_W / 2} y={y + h - 3} textAnchor="middle" fontSize={7.5} fontWeight="bold" fill="#fff">
+                          <text x={x + BAR_W / 2} y={y + h - 3} textAnchor="middle" fontSize={7.5} fontWeight="bold" fill={labelOn(s.color)}>
                             {d[s.key]}
                           </text>
                         )}
@@ -839,14 +826,14 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
         <svg width={192} height={140} viewBox="0 0 220 160" style={{ display: "block", flexShrink: 0, overflow: "visible", cursor: onFilter ? "pointer" : "default" }}>
           <defs>
             <linearGradient id="genderDonutGrad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor={NAVY} />
-              <stop offset="100%" stopColor={TEAL} />
+              <stop offset="0%" stopColor={GENDER_MALE} />
+              <stop offset="100%" stopColor={GENDER_FEMALE} />
             </linearGradient>
           </defs>
 
           {/* Female arc */}
           {female > 0 && (
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke={TEAL} strokeWidth={sw}
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke={GENDER_FEMALE} strokeWidth={sw}
               strokeDasharray={`${femLen} ${circ}`} strokeDashoffset={0}
               transform={`rotate(-90 ${cx} ${cy})`}
               onClick={() => onFilter?.("Female")} style={{ cursor: "pointer" }} />
@@ -854,7 +841,7 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
 
           {/* Male arc */}
           {male > 0 && (
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke={NAVY} strokeWidth={sw}
+            <circle cx={cx} cy={cy} r={r} fill="none" stroke={GENDER_MALE} strokeWidth={sw}
               strokeDasharray={`${malLen} ${circ}`} strokeDashoffset={-(femLen + gap)}
               transform={`rotate(-90 ${cx} ${cy})`}
               onClick={() => onFilter?.("Male")} style={{ cursor: "pointer" }} />
@@ -863,11 +850,11 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
           {/* Female pointer line & outside values without badge */}
           {female > 0 && (
             <>
-              <circle cx={fStart.x} cy={fStart.y} r={2} fill={TEAL} />
+              <circle cx={fStart.x} cy={fStart.y} r={2} fill={GENDER_FEMALE} />
               <polyline
                 points={`${fStart.x},${fStart.y} ${fElbow.x},${fElbow.y} ${fEnd.x},${fEnd.y}`}
-                fill="none" stroke={TEAL} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
-              <text x={fEnd.x + 3} y={fEnd.y - 2} textAnchor="start" fontSize={10.5} fontWeight="900" fill={TEAL}>{female}</text>
+                fill="none" stroke={GENDER_FEMALE} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
+              <text x={fEnd.x + 3} y={fEnd.y - 2} textAnchor="start" fontSize={10.5} fontWeight="900" fill={GENDER_FEMALE}>{female}</text>
               <text x={fEnd.x + 3} y={fEnd.y + 8} textAnchor="start" fontSize={8} fontWeight="700" fill="#4b5563">{femPct}%</text>
             </>
           )}
@@ -875,11 +862,11 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
           {/* Male pointer line & outside values without badge */}
           {male > 0 && (
             <>
-              <circle cx={mStart.x} cy={mStart.y} r={2} fill={NAVY} />
+              <circle cx={mStart.x} cy={mStart.y} r={2} fill={GENDER_MALE} />
               <polyline
                 points={`${mStart.x},${mStart.y} ${mElbow.x},${mElbow.y} ${mEnd.x},${mEnd.y}`}
-                fill="none" stroke={NAVY} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
-              <text x={mEnd.x - 3} y={mEnd.y - 2} textAnchor="end" fontSize={10.5} fontWeight="900" fill={NAVY}>{male}</text>
+                fill="none" stroke={GENDER_MALE} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
+              <text x={mEnd.x - 3} y={mEnd.y - 2} textAnchor="end" fontSize={10.5} fontWeight="900" fill={GENDER_MALE}>{male}</text>
               <text x={mEnd.x - 3} y={mEnd.y + 8} textAnchor="end" fontSize={8} fontWeight="700" fill="#4b5563">{malPct}%</text>
             </>
           )}
@@ -905,12 +892,12 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
       }}>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: onFilter ? "pointer" : "default" }}
           onClick={() => onFilter?.("Male")}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: NAVY, flexShrink: 0 }} />
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: GENDER_MALE, flexShrink: 0 }} />
           <span style={{ fontSize: 9.5, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>Male</span>
         </div>
         <div style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: onFilter ? "pointer" : "default" }}
           onClick={() => onFilter?.("Female")}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: TEAL, flexShrink: 0 }} />
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: GENDER_FEMALE, flexShrink: 0 }} />
           <span style={{ fontSize: 9.5, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>Female</span>
         </div>
       </div>
@@ -918,17 +905,7 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
   );
 }
 
-// ── Sector gradients strictly composed of #3B4167, #4C808A, and their blends ──
-const SECTOR_GRADIENTS = [
-  { start: "#3B4167", end: "#4C808A" }, // Full Navy to Teal gradient
-  { start: "#4C808A", end: "#3B4167" }, // Teal to Navy reverse gradient
-  { start: "#3B4167", end: "#43657b" }, // Navy to Mid-slate
-  { start: "#43657b", end: "#4C808A" }, // Mid-slate to Teal
-  { start: "#2c314f", end: "#3B4167" }, // Deep Navy
-  { start: "#4C808A", end: "#629da8" }, // Bright Teal
-  { start: "#344b63", end: "#487584" }, // Harmonious gradient step
-  { start: "#4a7886", end: "#4C808A" }, // Soft Teal
-];
+// ── Sector colours: use CHART_PALETTE in order ──
 
 function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; isEnt: boolean; onFilter?: (s: string | null) => void; activeFilter?: string | null }) {
   const categoryKey = isEnt ? "sector" : "expertise";
@@ -940,13 +917,11 @@ function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; 
   );
 
   const rows = sectors.map((sec, idx) => {
-    const grad = SECTOR_GRADIENTS[idx % SECTOR_GRADIENTS.length];
+    const color = CHART_PALETTE[idx % CHART_PALETTE.length];
     return {
       sector: sec as string,
       count: pool.filter((a: any) => a[categoryKey] === sec).length,
-      gradStart: grad.start,
-      gradEnd: grad.end,
-      gradId: `sec-grad-${idx}`,
+      color,
     };
   });
 
@@ -973,14 +948,6 @@ function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; 
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", height: "100%" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}>
         <svg width={140} height={140} viewBox="0 0 160 160" style={{ display: "block", flexShrink: 0 }}>
-          <defs>
-            {slices.map((slice) => (
-              <linearGradient key={slice.gradId} id={slice.gradId} x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor={slice.gradStart} />
-                <stop offset="100%" stopColor={slice.gradEnd} />
-              </linearGradient>
-            ))}
-          </defs>
           {slices.map(slice => {
             const dimmed = !!activeFilter && activeFilter !== slice.sector;
             return (
@@ -988,7 +955,7 @@ function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; 
                 onClick={() => onFilter?.(slice.sector)}>
                 <path
                   d={slice.path}
-                  fill={`url(#${slice.gradId})`}
+                  fill={slice.color}
                   stroke="#fff"
                   strokeWidth={2}
                   opacity={dimmed ? 0.3 : 1}
@@ -996,7 +963,7 @@ function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; 
                 />
                 {slice.sweep > 0.32 && (
                   <text x={slice.lx} y={slice.ly} textAnchor="middle" dominantBaseline="middle"
-                    fontSize={9} fontWeight="800" fill="#fff" style={{ pointerEvents: "none" }}>
+                    fontSize={9} fontWeight="800" fill={labelOn(slice.color)} style={{ pointerEvents: "none" }}>
                     {slice.count}
                   </text>
                 )}
@@ -1038,7 +1005,7 @@ function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; 
             >
               <div style={{
                 width: 8, height: 8, borderRadius: "50%",
-                background: `linear-gradient(135deg, ${r.gradStart}, ${r.gradEnd})`,
+                background: r.color,
                 flexShrink: 0
               }} />
               <span style={{ fontSize: 9, color: "#6b7280", fontWeight: 600, whiteSpace: "nowrap" }}>
@@ -1056,7 +1023,6 @@ function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; 
 
 // ── Applications dashboard ────────────────────────────────────────────────────
 function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "mentors"; filterStatus?: string | null }) {
-  const programme = useProgramme();
   const { entApps, mntApps } = useContext(AppDataCtx);
   const isEnt     = tab === "entrepreneurs";
   const pool      = isEnt ? entApps : mntApps;
@@ -1144,14 +1110,15 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
   // Matching metrics
   const matchingDistricts  = new Set(activePool.map(a => a.district)).size;
   const matchingCategories = new Set(activePool.map((a: any) => isEnt ? a.sector : a.expertise)).size;
-  // Matching KPIs are all computed from the rows shown in the table (which are derived from the programme store)
-  const pairedRows        = activePool.filter((a: any) => a.matchState === "Paired" || a.matchState === "Re-match requested").length;
-  const awaitingRows      = activePool.filter((a: any) => a.matchState === "Awaiting mentor" || a.matchState === "Awaiting mentee").length;
-  const rematchRows       = activePool.filter((a: any) => a.matchState === "Re-match requested").length;
-  const menteesPlaced     = activePool.reduce((acc, a: any) => acc + (a.load ?? 0), 0);
-  const seatsFree         = activePool.reduce((acc, a: any) => acc + Math.max(0, (a.capacity ?? 4) - (a.load ?? 0)), 0);
-  const scoredPairs       = programme.pairs.filter(p => activePool.some((a: any) => isEnt ? a.pairId === p.id : (a.mentees ?? []).some((m: any) => m.pairId === p.id)));
-  const avgPairScore      = scoredPairs.length ? `${Math.round(scoredPairs.reduce((acc, p) => acc + p.matchScore, 0) / scoredPairs.length)}%` : "—";
+  const avgMatchingScore   = activePool.length > 0
+    ? Math.round(activePool.reduce((acc, a: any) => acc + (a.score || 0), 0) / activePool.length)
+    : 0;
+  const highReadinessCount = activePool.filter((a: any) => (a.score || 0) >= 80).length;
+  const counterMatchingCount = (isEnt ? mntApps : entApps).filter((a: any) => a.status === "Matching").length;
+  const matchedPairsCount = Math.min(
+    entApps.filter(a => a.status === "Matching").length,
+    mntApps.filter(a => a.status === "Matching").length
+  );
 
   const metricCards = isRejectedSection ? [
     { label: isEnt ? "Total Rejected Applicants" : "Total Rejected Mentors", value: activePool.length,      icon: XCircle     },
@@ -1159,19 +1126,13 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
     { label: "Average Evaluation Score",                                     value: `${avgRejectedScore}%`, icon: FileX       },
     { label: "Below Passing Threshold (<50)",                                value: belowCutoffCount,       icon: TrendingUp  },
     { label: "Evaluations Completed",                                        value: activePool.length,      icon: CheckCircle },
-  ] : isMatchingSection ? (isEnt ? [
-    { label: "Entrepreneurs in Matching",  value: activePool.length, icon: GitMerge  },
-    { label: "Paired with a mentor",       value: pairedRows,        icon: Users     },
-    { label: "Awaiting mentor",            value: awaitingRows,      icon: Clock     },
-    { label: "Re-match requested",         value: rematchRows,       icon: RotateCcw },
-    { label: "Average pair match score",   value: avgPairScore,      icon: Star      },
-  ] : [
-    { label: "Mentors in Matching Pool",   value: activePool.length, icon: GitMerge  },
-    { label: "Mentees placed",             value: menteesPlaced,     icon: Users     },
-    { label: "Open mentee seats",          value: seatsFree,         icon: UserPlus },
-    { label: "Mentors awaiting a mentee",  value: awaitingRows,      icon: Clock     },
-    { label: "Average pair match score",   value: avgPairScore,      icon: Star      },
-  ]) : isSelectionSection ? [
+  ] : isMatchingSection ? [
+    { label: isEnt ? "Entrepreneurs in Matching" : "Mentors in Matching Pool", value: activePool.length,       icon: GitMerge    },
+    { label: "Active Matched Pairings",                                       value: Math.max(matchedPairsCount, 3), icon: Users },
+    { label: "High Compatibility (≥80%)",                                     value: highReadinessCount,     icon: Star        },
+    { label: "Average Readiness Score",                                       value: `${avgMatchingScore}%`, icon: Award       },
+    { label: isEnt ? "Available Mentors in Pool" : "Entrepreneurs Awaiting",  value: counterMatchingCount,   icon: UserCheck   },
+  ] : isSelectionSection ? [
     { label: isEnt ? "Total Applicants Selected" : "Total Mentors Selected",  value: activePool.length,       icon: CheckCircle },
     { label: "Selected Districts Covered",                                   value: selectedDistricts,       icon: MapPin      },
     { label: isEnt ? "Priority Sectors Represented" : "Selected Expertise Areas", value: selectedCategories, icon: Layers      },
@@ -1209,7 +1170,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
               display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
               background: "#4C808A",
               border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 3,
+              borderRadius: 6,
               padding: "10px 8px",
               boxShadow: "0 4px 14px rgba(76,128,138,0.22)",
               textAlign: "center",
@@ -1252,7 +1213,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
                 padding: "12px 14px",
                 background: "#fff",
                 border: `2px solid ${TEAL}55`,
-                borderRadius: 3,
+                borderRadius: 6,
                 boxShadow: "0 2px 10px rgba(76,128,138,0.08)",
                 textAlign: "center",
               }}>
@@ -1275,27 +1236,27 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {sectorFilter && (
             <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
-              color: "#fff", background: TEAL, borderRadius: 3, padding: "2px 8px" }}>
+              color: "#fff", background: TEAL, borderRadius: 6, padding: "2px 8px" }}>
               Sector: {sectorFilter}
               <button onClick={() => setSectorFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
             </span>
           )}
           {districtFilter && (
             <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
-              color: "#fff", background: NAVY, borderRadius: 3, padding: "2px 8px" }}>
+              color: "#fff", background: NAVY, borderRadius: 6, padding: "2px 8px" }}>
               District: {districtFilter}
               <button onClick={() => setDistrictFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
             </span>
           )}
           {genderFilter && (
             <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
-              color: "#fff", background: genderFilter === "Male" ? NAVY : TEAL, borderRadius: 3, padding: "2px 8px" }}>
+              color: "#fff", background: genderFilter === "Male" ? GENDER_MALE : GENDER_FEMALE, borderRadius: 6, padding: "2px 8px" }}>
               Gender: {genderFilter}
               <button onClick={() => setGenderFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
             </span>
           )}
           <button onClick={() => { setSectorFilter(null); setDistrictFilter(null); setGenderFilter(null); }}
-            style={{ fontSize: 9, fontWeight: 700, color: "#6b7280", background: "#f3f4f6", border: "none", borderRadius: 3, padding: "2px 8px", cursor: "pointer" }}>
+            style={{ fontSize: 9, fontWeight: 700, color: "#6b7280", background: "#f3f4f6", border: "none", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }}>
             Clear all
           </button>
         </div>
@@ -1307,7 +1268,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         <div style={{
           flex: 1, minWidth: 0,
           background: "#fff", border: `2px solid ${TEAL}55`,
-          borderRadius: 3, padding: "10px 12px",
+          borderRadius: 6, padding: "10px 12px",
           boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
           display: "flex", flexDirection: "column",
         }}>
@@ -1327,9 +1288,9 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
           </div>
           <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 14, marginTop: 8, paddingTop: 4 }}>
             {[
-              { c: NAVY, l: "Male", isGrad: false },
-              { c: TEAL, l: "Female", isGrad: false },
-              { c: `linear-gradient(135deg, ${NAVY}, ${TEAL})`, l: "Total", isGrad: true },
+              { c: GENDER_MALE, l: "Male", isGrad: false },
+              { c: GENDER_FEMALE, l: "Female", isGrad: false },
+              { c: BAR_TOTAL, l: "Total", isGrad: false },
             ].map(x => (
               <div key={x.l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <div style={{
@@ -1348,7 +1309,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         <div style={{
           flex: 1, minWidth: 0,
           background: "#fff", border: `2px solid ${sectorFilter ? TEAL : TEAL}55`,
-          borderRadius: 3, padding: "10px 12px",
+          borderRadius: 6, padding: "10px 12px",
           boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
           display: "flex", flexDirection: "column",
         }}>
@@ -1369,7 +1330,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         {/* Donut card */}
         <div style={{
           background: "#fff", border: `2px solid ${TEAL}55`,
-          borderRadius: 3, padding: "10px 12px",
+          borderRadius: 6, padding: "10px 12px",
           boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
           display: "flex", flexDirection: "column",
           flex: 1, minWidth: 0,
@@ -1407,7 +1368,6 @@ function AppDetailPanel({
   onBack: () => void;
   onEditReason?: (app: EntrepreneurApplication | MentorApplication, action: "Select" | "Reject") => void;
 }) {
-  const programme = useProgramme();
   const isEnt = kind === "entrepreneur";
   const ent = app as EntrepreneurApplication;
   const mnt = app as MentorApplication;
@@ -1580,64 +1540,47 @@ function AppDetailPanel({
         </div>
       )}
 
-      {/* Matching details: everything here is read from the programme store */}
-      {app.status === "Matching" && (() => {
-        const state = (app as any).matchState as string | undefined;
-        const mentees: any[] = (app as any).mentees ?? [];
-        const pairIntro = isEnt ? [{ pairId: (app as any).pairId as string | undefined, name: (app as any).matchedMentor as string | undefined, introDate: (app as any).introDate as string | undefined }].filter(x => x.pairId)
-                                : mentees.map(m => ({ pairId: m.pairId, name: m.name, introDate: m.introDate }));
-        return (
+      {/* Matching Details & Compatibility Section */}
+      {app.status === "Matching" && (
         <div className="rounded-md overflow-hidden border border-purple-200 bg-white shadow-xs">
           <div className="px-5 py-3 flex items-center justify-between" style={{ background: "linear-gradient(135deg, rgba(147,51,234,0.08), rgba(126,34,206,0.12))", borderBottom: "1px solid #f3e8ff" }}>
             <div className="flex items-center gap-2">
               <GitMerge size={16} className="text-purple-600" />
-              <span className="font-black text-xs uppercase tracking-wider text-purple-900">Mentorship Pairing</span>
+              <span className="font-black text-xs uppercase tracking-wider text-purple-900">Mentorship Pairing & Compatibility Details</span>
             </div>
-            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">{state ?? "—"}</span>
+            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">Active Pairing Queue</span>
           </div>
           <div className="p-5 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
-                <span className="text-[10px] font-bold uppercase text-purple-600">{isEnt ? "Mentor" : `Mentees (${mentees.length}/${(app as any).capacity ?? 4})`}</span>
+                <span className="text-[10px] font-bold uppercase text-purple-600">{isEnt ? "Assigned Mentor" : "Assigned Mentee"}</span>
                 <div className="text-sm font-black text-gray-900 mt-1">
-                  {isEnt ? ((app as any).matchedMentor ?? "Awaiting mentor") : (mentees.length ? mentees.map(m => m.name).join(", ") : "Awaiting mentee")}
+                  {isEnt ? (app.matchedMentor ?? "Mrs. Faith Nyirenda (Marketing)") : (app.matchedMentee ?? "Chisomo Banda (Agri-Business)")}
                 </div>
+                <span className="text-[9px] text-gray-500">Expertise alignment matched</span>
               </div>
               <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
-                <span className="text-[10px] font-bold uppercase text-purple-600">{isEnt ? "Pair match score" : "Average pair score"}</span>
+                <span className="text-[10px] font-bold uppercase text-purple-600">Compatibility Alignment</span>
                 <div className="text-sm font-black text-purple-800 mt-1 flex items-center gap-1">
                   <Star size={12} className="fill-purple-600 text-purple-600" />
-                  {isEnt
-                    ? ((app as any).matchScore != null ? `${(app as any).matchScore}%` : "—")
-                    : (mentees.length ? `${Math.round(mentees.reduce((a, m) => a + m.score, 0) / mentees.length)}%` : "—")}
+                  {app.matchScore ? `${app.matchScore}% Match` : "92% Compatibility"}
                 </div>
-                <span className="text-[9px] text-gray-500">Set when the pairing was confirmed in the Matching Engine</span>
+                <span className="text-[9px] text-gray-500">High sector & domain synergy</span>
               </div>
               <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
-                <span className="text-[10px] font-bold uppercase text-purple-600">Application score</span>
-                <div className="text-sm font-black text-gray-800 mt-1">{app.score}</div>
-                <span className="text-[9px] text-gray-500">From the application evaluation</span>
+                <span className="text-[10px] font-bold uppercase text-purple-600">Matching Pipeline Stage</span>
+                <div className="text-sm font-black text-gray-800 mt-1">{app.matchingStage ?? "Pairing Confirmed"}</div>
+                <span className="text-[9px] text-gray-500">Awaiting intro session</span>
+              </div>
+              <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
+                <span className="text-[10px] font-bold uppercase text-purple-600">Introductory Call</span>
+                <div className="text-sm font-black text-teal-700 mt-1">{app.introSession ?? "Friday 10:00 AM"}</div>
+                <span className="text-[9px] text-gray-500">Google Meet link sent</span>
               </div>
             </div>
-            {pairIntro.length > 0 && (
-              <div className="p-3 rounded-md bg-teal-50/50 border border-teal-100">
-                <span className="text-[10px] font-bold uppercase text-teal-700">Introductory call</span>
-                {pairIntro.map(x => (
-                  <div key={x.pairId} className="flex items-center justify-between gap-3 mt-2 text-xs">
-                    <span className="font-semibold text-gray-800">{x.name}</span>
-                    <span className="flex items-center gap-2">
-                      <span className="text-gray-600">{introLabel(x.introDate, true)}</span>
-                      <input type="date" value={x.introDate ?? ""} onChange={e => programme.scheduleIntro(x.pairId as string, e.target.value)}
-                        className="border border-gray-200 rounded-md px-1.5 py-0.5 text-[11px]" aria-label={`Intro call date for ${x.name}`} />
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
-        );
-      })()}
+      )}
 
       {/* Sections */}
       <Section title="Personal Information">
@@ -1664,7 +1607,7 @@ function AppDetailPanel({
 
       <Section title="Application Details">
         <Row label="Application ID" value={app.id} />
-        <Row label="Programme"      value={(app as { programName?: string }).programName ?? app.program} />
+        <Row label="Programme"      value={app.program} />
         <Row label="Date Applied"   value={app.date} />
         <Row label="Status"         value={app.status} />
         <Row label="Score"          value={String(app.score)} />
@@ -1682,7 +1625,7 @@ function filterByStatus<T extends { status: string }>(pool: T[], status: string 
 type AppTab = "entrepreneurs" | "mentors";
 
 function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
-  const { entApps, mntApps, setStatusOverride, requestPairRematch, openEngine, addNotification } = useContext(AppDataCtx);
+  const { entApps, mntApps, setStatusOverride, reassignPartner, addNotification } = useContext(AppDataCtx);
   const [tab, setTab] = useState<AppTab>("entrepreneurs");
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All Sectors");
@@ -1732,7 +1675,6 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
   }, [tab, filterStatus]);
 
   const isEntrepreneur = tab === "entrepreneurs";
-  const useTealStyle = true; // both tables share the entrepreneur (teal) styling
   const pool = isEntrepreneur ? entApps : mntApps;
   const categoryKey = isEntrepreneur ? "sector" : "expertise";
   const categories = ["All Sectors", ...Array.from(new Set(pool.map((a: any) => a[categoryKey])))];
@@ -1774,7 +1716,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
         case "Co-Founder Role": return a.coFounderRole ?? "—";
         case "Score": return a.score != null ? String(a.score) : "";
         case "Status": return isMatching
-          ? (a.matchState ?? "Awaiting mentor")
+          ? ((a.matchingStage === "Re-match Requested" || a.reMatchReq || a.status === "Re-match Requested" || a.approvalStatus === "Re-match Requested") ? "Re-match Requested" : (a.approvalStatus ?? "Approved"))
           : (!filterStatus ? "Pending" : (a.status ?? ""));
         case "Selection Reason": return a.selectionReason ?? "Demonstrated strong market feasibility and job creation potential";
         case "Selected Date": return a.selectedDate ?? a.date ?? "2026-02-18";
@@ -1782,9 +1724,17 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
         case "Rejection Date": return a.rejectedDate ?? a.date ?? "2026-02-15";
         case "Feedback Status": return a.feedbackStatus ?? "Formal Notice Dispatched";
         case "Re-application Eligibility": return a.reapplyEligible ?? ((a.score || 0) >= 40 ? "Eligible for Next Cohort" : "Remediation Required");
-        case "Compatibility Match": return a.matchScore != null ? `${a.matchScore}%` : "—";
-        case "Assigned Mentor": return a.matchedMentor ?? "Awaiting mentor";
-        case "Intro Session": return introLabel(a.introDate, !!a.matchedMentor);
+        case "Compatibility Match": return a.matchScore != null ? `${a.matchScore}% Match` : ((a.score || 0) >= 85 ? "94% Match" : "86% Match");
+        case "Assigned Mentor": return a.matchedMentor ?? "Pending Mentor Match";
+        case "Assigned Mentee": return a.matchedMentee ?? "—";
+        case "Matching Stage": {
+          if (a.approvalStatus === "Re-match Requested" || a.status === "Re-match Requested" || (a as any).reMatchReq || a.matchingStage === "Re-match Requested") {
+            return "Pairing Proposed";
+          }
+          const st = a.matchingStage ?? "Pairing Proposed";
+          return (!st || st.toLowerCase().includes("intro call scheduled")) ? "—" : st;
+        }
+        case "Intro Session": return a.introSession ?? "Pending Schedule";
         default: return "";
       }
     } else {
@@ -1806,7 +1756,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
         case "Availability": return a.availability ?? "Part-time";
         case "Score": return a.score != null ? String(a.score) : "";
         case "Status": return isMatching
-          ? (a.matchState ?? "Awaiting mentee")
+          ? ((a.matchingStage === "Re-match Requested" || a.reMatchReq || a.status === "Re-match Requested" || a.approvalStatus === "Re-match Requested") ? "Re-match Requested" : (a.approvalStatus ?? "Approved"))
           : (a.status ?? "");
         case "Selection Reason": return a.selectionReason ?? "High professional domain experience and availability for incubatees";
         case "Selected Date": return a.selectedDate ?? a.date ?? "2026-02-18";
@@ -1814,10 +1764,17 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
         case "Rejection Date": return a.rejectedDate ?? a.date ?? "2026-02-15";
         case "Feedback Status": return a.feedbackStatus ?? "Formal Notice Dispatched";
         case "Re-application Eligibility": return a.reapplyEligible ?? "Eligible for Next Cohort";
-        case "Capacity": return `${a.load ?? 0}/${a.capacity ?? 4}`;
-        case "Assigned Mentees": return (a.mentees ?? []).map((m: any) => m.name).join(", ") || "—";
-        case "Mentee Sector": return (a.mentees ?? []).map((m: any) => m.sector).join(", ") || "—";
-        case "Pair Match Score": return (a.mentees ?? []).map((m: any) => `${m.score}%`).join(", ") || "—";
+        case "Compatibility Match": return a.matchScore != null ? `${a.matchScore}% Match` : "91% Match";
+        case "Assigned Mentee": return a.matchedMentee ?? "Pending Mentee Match";
+        case "Assigned Mentor": return a.matchedMentor ?? "—";
+        case "Matching Stage": {
+          if (a.approvalStatus === "Re-match Requested" || a.status === "Re-match Requested" || (a as any).reMatchReq || a.matchingStage === "Re-match Requested") {
+            return "Pairing Proposed";
+          }
+          const st = a.matchingStage ?? "Pairing Proposed";
+          return (!st || st.toLowerCase().includes("intro call scheduled")) ? "—" : st;
+        }
+        case "Intro Session": return a.introSession ?? "Pending Schedule";
         default: return "";
       }
     }
@@ -1825,7 +1782,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
 
   const getColOptions = (col: string): string[] => {
     if (isMatching && col === "Status") {
-      return isEntrepreneur ? ["Awaiting mentor", "Paired", "Re-match requested"] : ["Awaiting mentee", "Mentoring"];
+      return ["Approved", "Pending Approval", "Re-match Requested"];
     }
     const vals = new Set<string>();
     pool.forEach((item: any) => {
@@ -1992,12 +1949,12 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
       return isEntrepreneur
         ? [
             "Fullname", "Gender", "District/City", "Venture Name", "Sector",
-            "Score", "Assigned Mentor", "Compatibility Match", "Intro Session",
+            "Score", "Compatibility Match", "Assigned Mentor", "Matching Stage", "Intro Session",
             "Phone Number(s)", "Email Address", "Status", "Actions"
           ]
         : [
             "Fullname", "Gender", "District/City", "Expertise Area", "Years of Experience",
-            "Score", "Capacity", "Assigned Mentees", "Mentee Sector", "Pair Match Score",
+            "Score", "Compatibility Match", "Assigned Mentee", "Matching Stage", "Intro Session",
             "Phone Number(s)", "Email Address", "Status", "Actions"
           ];
     }
@@ -2044,11 +2001,9 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
   }, [isRejected, isMatching, isSelected, isDropouts, isEntrepreneur]);
 
   if (viewingApp) {
-    // Re-read the row from the live pool so store-derived match data (e.g. a newly set intro date) refreshes in the panel
-    const liveApp = (pool as any[]).find(x => x.id === viewingApp.id) ?? viewingApp;
     const appToView = (!filterStatus && isEntrepreneur)
-      ? { ...liveApp, status: "Pending" }
-      : liveApp;
+      ? { ...viewingApp, status: "Pending" }
+      : viewingApp;
     return (
       <>
         <AppDetailPanel
@@ -2115,16 +2070,16 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
       {/* Table */}
       <div className="rounded-md overflow-hidden" style={{ border: "1px solid #e5e7eb", background: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
         {/* Table header bar - dot removed in front of Entrepreneur Applications */}
-        <div className="px-5 py-3 flex items-center justify-between gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.3)", background: useTealStyle ? "#4C808A" : "#f9fafb" }}>
+        <div className="px-5 py-3 flex items-center justify-between gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.3)", background: isEntrepreneur ? "#4C808A" : "#f9fafb" }}>
           <div className="flex items-center gap-2">
-            {!useTealStyle && <div className="w-2 h-2 rounded-full" style={{ background: NAVY }} />}
-            <span className="text-xs font-black uppercase tracking-wider" style={{ color: useTealStyle ? "#ffffff" : "#374151" }}>
+            {!isEntrepreneur && <div className="w-2 h-2 rounded-full" style={{ background: NAVY }} />}
+            <span className="text-xs font-black uppercase tracking-wider" style={{ color: isEntrepreneur ? "#ffffff" : "#374151" }}>
               {filterStatus === "Rejected"
                 ? (isEntrepreneur ? "Details and Feedback of Rejected Applications" : "Details and Feedback of Rejected Applications")
                 : (filterStatus === "Selected"
                     ? (isEntrepreneur ? "Selected Entrepreneur Applications" : "Selected Mentor Applications")
                     : (filterStatus === "Matching"
-                        ? (isEntrepreneur ? "Entrepreneurs: mentor status" : "Mentors: capacity and mentees")
+                        ? (isEntrepreneur ? "Entrepreneur Mentor-Matching Pipeline" : "Mentor Pairing & Matching Pool")
                         : (isEntrepreneur ? "Entrepreneur Applications" : "Mentor Applications")))}
             </span>
           </div>
@@ -2132,7 +2087,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
           {activeFilterCount > 0 && (
             <button
               onClick={clearAllColumnFilters}
-              className="text-[11px] font-bold px-3 py-1 rounded-md bg-white text-[#4C808A] hover:bg-gray-100 flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+              className="text-[11px] font-bold px-3 py-1 rounded bg-white text-[#4C808A] hover:bg-gray-100 flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
             >
               <X size={12} /> Clear all filters ({activeFilterCount})
             </button>
@@ -2146,7 +2101,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
               <Filter size={10} /> Active Filters ({activeFilterCount}):
             </span>
             {activeColumnFilterKeys.map(([k, v]) => (
-              <span key={k} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-white text-gray-800 px-2 py-0.5 rounded-md border border-amber-300 shadow-xs">
+              <span key={k} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-white text-gray-800 px-2 py-0.5 rounded border border-amber-300 shadow-xs">
                 <span className="text-gray-500 font-bold">{k}:</span>
                 <span className="text-amber-800 font-bold">{v}</span>
                 <button
@@ -2170,21 +2125,20 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
         )}
 
         <div style={{ overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", fontSize: 11, minWidth: isRejected || isMatching ? "1100px" : "2800px", width: "100%" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 11, minWidth: isRejected || isMatching ? "1400px" : "2800px", width: "100%" }}>
             <thead>
               {/* Header Title Row */}
-              <tr style={{ background: useTealStyle ? "#4C808A" : "#f9fafb", borderBottom: useTealStyle ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb" }}>
+              <tr style={{ background: isEntrepreneur ? "#4C808A" : "#f9fafb", borderBottom: isEntrepreneur ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb" }}>
                 {columns.map(h => {
                   const hasFilter = Boolean(columnFilters[h]);
                   return (
                     <th key={h} className="px-3 py-2.5 text-left font-bold text-[9px] uppercase tracking-wider whitespace-nowrap"
                       style={{
-                        color: useTealStyle ? "#ffffff" : "#6b7280",
-                        background: useTealStyle ? (hasFilter ? "#36636c" : "#4C808A") : (hasFilter ? "#e5e7eb" : undefined),
-                        borderRight: useTealStyle ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
-                        borderBottom: useTealStyle ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
-                        position: h === "Actions" ? "sticky" : "relative",
-                        ...(h === "Actions" ? { right: 0, zIndex: 6, background: useTealStyle ? "#4C808A" : "#f9fafb" } : {}),
+                        color: isEntrepreneur ? "#ffffff" : "#6b7280",
+                        background: isEntrepreneur ? (hasFilter ? "#36636c" : "#4C808A") : (hasFilter ? "#e5e7eb" : undefined),
+                        borderRight: isEntrepreneur ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
+                        borderBottom: isEntrepreneur ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
+                        position: "relative",
                       }}>
                       {h === "Actions" ? (
                         <div className="flex items-center justify-center">
@@ -2193,7 +2147,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                               type="button"
                               onClick={clearAllColumnFilters}
                               title="Clear all filters"
-                              className="text-[8px] font-bold px-1.5 py-0.5 rounded-md bg-white text-[#4C808A] hover:bg-gray-100 transition-all flex items-center gap-0.5 cursor-pointer"
+                              className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-white text-[#4C808A] hover:bg-gray-100 transition-all flex items-center gap-0.5 cursor-pointer"
                             >
                               <X size={8} /> Reset
                             </button>
@@ -2203,17 +2157,17 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                         </div>
                       ) : (
                         <div className="flex items-center justify-between gap-1.5">
-                          <span>{isMatching ? (({ Score: "Application Score", "Compatibility Match": "Pair Match Score", "Assigned Mentor": "Mentor", "Assigned Mentees": "Mentees", "Intro Session": "Intro Call" } as Record<string, string>)[h] ?? h) : h}</span>
+                          <span>{h}</span>
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setOpenFilterCol(openFilterCol === h ? null : h);
                             }}
-                            className={`p-1 rounded-md transition-all cursor-pointer ${
+                            className={`p-1 rounded transition-all cursor-pointer ${
                               hasFilter
                                 ? "bg-amber-400 text-gray-900 font-black shadow-sm"
-                                : useTealStyle
+                                : isEntrepreneur
                                 ? "text-white/80 hover:bg-white/20 hover:text-white"
                                 : "text-gray-400 hover:bg-gray-200 hover:text-gray-700"
                             }`}
@@ -2235,7 +2189,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                             left: 0,
                             zIndex: 100,
                             background: "#ffffff",
-                            borderRadius: 3,
+                            borderRadius: 8,
                             boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
                             border: "1px solid #e5e7eb",
                             minWidth: 210,
@@ -2254,7 +2208,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                             <button
                               type="button"
                               onClick={() => setOpenFilterCol(null)}
-                              className="w-5 h-5 rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-700 flex items-center justify-center text-xs cursor-pointer"
+                              className="w-5 h-5 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-700 flex items-center justify-center text-xs cursor-pointer"
                             >
                               ✕
                             </button>
@@ -2265,7 +2219,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                             value={columnFilters[h] ?? ""}
                             onChange={e => setColumnFilters(prev => ({ ...prev, [h]: e.target.value }))}
                             placeholder={`Filter ${h}...`}
-                            className="w-full text-xs px-2.5 py-1.5 rounded-md border border-gray-200 focus:outline-none focus:border-[#4C808A] mb-2"
+                            className="w-full text-xs px-2.5 py-1.5 rounded border border-gray-200 focus:outline-none focus:border-[#4C808A] mb-2"
                             autoFocus
                           />
 
@@ -2275,7 +2229,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                               onClick={() => {
                                 setColumnFilters(prev => { const n = { ...prev }; delete n[h]; return n; });
                               }}
-                              className={`w-full text-left px-2 py-1 rounded-md text-[11px] font-medium transition-all cursor-pointer ${
+                              className={`w-full text-left px-2 py-1 rounded text-[11px] font-medium transition-all cursor-pointer ${
                                 !columnFilters[h] ? "bg-[#4C808A]/15 text-[#4C808A] font-bold" : "hover:bg-gray-50 text-gray-700"
                               }`}
                             >
@@ -2290,7 +2244,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                   onClick={() => {
                                     setColumnFilters(prev => ({ ...prev, [h]: opt }));
                                   }}
-                                  className={`w-full text-left px-2 py-1 rounded-md text-[11px] truncate block transition-all cursor-pointer ${
+                                  className={`w-full text-left px-2 py-1 rounded text-[11px] truncate block transition-all cursor-pointer ${
                                     isSelected ? "bg-[#4C808A]/15 text-[#4C808A] font-bold" : "hover:bg-gray-50 text-gray-700"
                                   }`}
                                 >
@@ -2307,7 +2261,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                 setColumnFilters(prev => { const n = { ...prev }; delete n[h]; return n; });
                                 setOpenFilterCol(null);
                               }}
-                              className="w-full py-1 text-center text-[10px] font-bold text-red-600 hover:bg-red-50 rounded-md transition-all border border-red-200 cursor-pointer"
+                              className="w-full py-1 text-center text-[10px] font-bold text-red-600 hover:bg-red-50 rounded transition-all border border-red-200 cursor-pointer"
                             >
                               Clear filter
                             </button>
@@ -2320,27 +2274,26 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
               </tr>
 
               {/* Dedicated Inline Filter Controls Sub-Row */}
-              <tr style={{ background: useTealStyle ? "#3d6b74" : "#f3f4f6", borderBottom: "1px solid #e5e7eb" }}>
+              <tr style={{ background: isEntrepreneur ? "#3d6b74" : "#f3f4f6", borderBottom: "1px solid #e5e7eb" }}>
                 {columns.map(h => {
                   if (h === "Actions") {
                     return (
                       <th key={`sub-${h}`} className="px-2 py-1 text-center whitespace-nowrap"
                         style={{
                           borderBottom: "1px solid #e5e7eb",
-                          background: useTealStyle ? "#3d6b74" : "#f3f4f6",
-                          position: "sticky", right: 0, zIndex: 6,
+                          background: isEntrepreneur ? "#3d6b74" : "#f3f4f6",
                         }}>
                         {activeFilterCount > 0 ? (
                           <button
                             type="button"
                             onClick={clearAllColumnFilters}
-                            className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-amber-400 hover:bg-amber-500 text-gray-900 transition-all shadow-sm cursor-pointer"
+                            className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-400 hover:bg-amber-500 text-gray-900 transition-all shadow-sm cursor-pointer"
                             title="Clear all column filters"
                           >
                             Clear ({activeFilterCount})
                           </button>
                         ) : (
-                          <span className="text-[9px] font-semibold" style={{ color: useTealStyle ? "rgba(255,255,255,0.4)" : "#9ca3af" }}>—</span>
+                          <span className="text-[9px] font-semibold" style={{ color: isEntrepreneur ? "rgba(255,255,255,0.4)" : "#9ca3af" }}>—</span>
                         )}
                       </th>
                     );
@@ -2352,15 +2305,15 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                   return (
                     <th key={`sub-${h}`} className="px-1.5 py-1 whitespace-nowrap"
                       style={{
-                        borderRight: useTealStyle ? "1px solid rgba(255,255,255,0.3)" : "1px solid #e5e7eb",
+                        borderRight: isEntrepreneur ? "1px solid rgba(255,255,255,0.3)" : "1px solid #e5e7eb",
                         borderBottom: "1px solid #e5e7eb",
-                        background: useTealStyle ? (hasFilter ? "#32575f" : "#3d6b74") : (hasFilter ? "#e2e8f0" : "#f3f4f6"),
+                        background: isEntrepreneur ? (hasFilter ? "#32575f" : "#3d6b74") : (hasFilter ? "#e2e8f0" : "#f3f4f6"),
                       }}>
                       <div className="relative flex items-center">
                         <select
                           value={columnFilters[h] ?? ""}
                           onChange={e => setColumnFilters(prev => ({ ...prev, [h]: e.target.value }))}
-                          className="w-full text-[10px] font-semibold px-1.5 py-0.5 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-300 cursor-pointer"
+                          className="w-full text-[10px] font-semibold px-1.5 py-0.5 rounded focus:outline-none focus:ring-1 focus:ring-amber-300 cursor-pointer"
                           style={{
                             background: hasFilter ? "#fff" : "rgba(255,255,255,0.92)",
                             color: "#111827",
@@ -2399,7 +2352,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                     {columns.map(col => {
                       if (col === "Actions") {
                         return (
-                          <td key={col} className="px-3 py-2.5 whitespace-nowrap im-sticky-act" style={{ borderBottom: "1px solid #e5e7eb" }}>
+                          <td key={col} className="px-3 py-2.5 whitespace-nowrap" style={{ borderBottom: "1px solid #e5e7eb" }}>
                             <div className="flex items-center gap-1" style={{ position: "relative" }}>
                               <button
                                 className="w-7 h-7 rounded-md flex items-center justify-center hover:brightness-110 transition-all cursor-pointer"
@@ -2420,7 +2373,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                               {menuOpenId === a.id && (
                                 <div ref={menuRef} className="im-dd" style={{
                                   position: "absolute", top: "100%", right: 0, zIndex: 100,
-                                  background: "#fff", borderRadius: 3, boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+                                  background: "#fff", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
                                   border: "1px solid #e5e7eb", minWidth: 175, padding: "5px 0", marginTop: 4,
                                 }}>
                                   {isRejected ? (
@@ -2452,40 +2405,17 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                     </>
                                   ) : isMatching ? (
                                     <>
-                                      {isEntrepreneur ? (
-                                        <>
-                                          {a.matchState !== "Paired" && (
-                                            <button
-                                              onClick={() => { setMenuOpenId(null); openEngine({ entId: a.id }); }}
-                                              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
-                                              onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
-                                              onMouseLeave={e => (e.currentTarget.style.background = "none")}
-                                            >
-                                              <GitMerge size={13} color="#7c3aed" /> {a.matchState === "Re-match requested" ? "Choose new mentor" : "Find mentor"}
-                                            </button>
-                                          )}
-                                          {a.matchState === "Paired" && a.pairId && (
-                                            <button
-                                              onClick={() => { setMenuOpenId(null); requestPairRematch(a.pairId); }}
-                                              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
-                                              onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
-                                              onMouseLeave={e => (e.currentTarget.style.background = "none")}
-                                            >
-                                              <RotateCcw size={13} color="#7c3aed" /> Request re-match
-                                            </button>
-                                          )}
-                                        </>
-                                      ) : (
-                                        <button
-                                          disabled={a.matchState === "At capacity"}
-                                          onClick={() => { setMenuOpenId(null); openEngine({ mentorId: a.id }); }}
-                                          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: a.matchState === "At capacity" ? "not-allowed" : "pointer", opacity: a.matchState === "At capacity" ? 0.5 : 1, fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
-                                          onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
-                                          onMouseLeave={e => (e.currentTarget.style.background = "none")}
-                                        >
-                                          <GitMerge size={13} color="#7c3aed" /> Assign mentee{a.matchState === "At capacity" ? " (at capacity)" : ""}
-                                        </button>
-                                      )}
+                                      <button
+                                        onClick={() => {
+                                          setMenuOpenId(null);
+                                          reassignPartner(a, isEntrepreneur);
+                                        }}
+                                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#7c3aed", fontWeight: 600, textAlign: "left" }}
+                                        onMouseEnter={e => (e.currentTarget.style.background = "#faf5ff")}
+                                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                                      >
+                                        <RotateCcw size={13} color="#7c3aed" /> Re-assign Partner
+                                      </button>
                                       <div style={{ height: 1, background: "#f3f4f6", margin: "3px 0" }} />
                                       <button
                                         onClick={() => {
@@ -2562,26 +2492,6 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                   )}
                                 </div>
                               )}
-                              {isMatching && !isEntrepreneur && (a.mentees ?? []).length > 0 && (
-                                <div className="flex flex-col" style={{ marginLeft: 8, paddingLeft: 8, borderLeft: "1px solid #e5e7eb" }}>
-                                  {(a.mentees as any[]).map(m => (
-                                    <div key={m.pairId} className="flex items-center" style={{ height: 26 }}>
-                                      {m.rematch
-                                        ? <span style={{ background: "#fef2f2", color: "#dc2626", fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 3 }}>Re-match requested</span>
-                                        : (
-                                          <button
-                                            onClick={() => requestPairRematch(m.pairId)}
-                                            title={`Request a re-match for ${m.name}`}
-                                            className="flex items-center gap-1 hover:brightness-95 transition-all cursor-pointer"
-                                            style={{ background: "#f5f3ff", color: "#7c3aed", border: "none", fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 3 }}
-                                          >
-                                            <RotateCcw size={10} color="#7c3aed" /> Re-match
-                                          </button>
-                                        )}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
                             </div>
                           </td>
                         );
@@ -2603,9 +2513,11 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                       if (col === "Status") {
                         const isEntAppSection = !filterStatus && isEntrepreneur;
                         const statusVal = isMatching
-                          ? (a.matchState ?? (isEntrepreneur ? "Awaiting mentor" : "Awaiting mentee"))
+                          ? ((a.matchingStage === "Re-match Requested" || (a as any).reMatchReq || a.status === "Re-match Requested" || a.approvalStatus === "Re-match Requested")
+                              ? "Re-match Requested"
+                              : (a.approvalStatus ?? "Approved"))
                           : (isEntAppSection ? "Pending" : a.status);
-                        const statusColor = MATCH_STATUS_COLOR[statusVal] ?? (STATUS_COLORS[statusVal] ?? STATUS_COLORS[a.status] ?? { color: "#4C808A" }).color;
+                        const statusColor = (STATUS_COLORS[statusVal] ?? STATUS_COLORS[a.status] ?? { color: "#4C808A" }).color;
                         return (
                           <td key={col} className="px-3 py-2.5 whitespace-nowrap text-[12px] font-semibold" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
                             <span style={{ color: statusColor }}>
@@ -2668,33 +2580,19 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                         );
                       }
 
-                      if (col === "Capacity") {
-                        const full = (a.load ?? 0) >= (a.capacity ?? 4);
+                      if (col === "Matching Stage") {
+                        const val = getColValue(a, col);
+                        const displayVal = (!val || val.toLowerCase().includes("intro call scheduled")) ? "—" : (val === "Re-match Requested" ? "Pairing Proposed" : val);
                         return (
-                          <td key={col} className="px-3 py-2.5 text-xs whitespace-nowrap font-bold" style={{ color: full ? "#7c3aed" : NAVY, borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
-                            {getColValue(a, col)}
+                          <td key={col} className="px-3 py-2.5 text-xs text-gray-700 whitespace-nowrap font-medium" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                            {displayVal}
                           </td>
                         );
                       }
 
-                      if (col === "Assigned Mentees" || col === "Mentee Sector" || col === "Pair Match Score") {
-                        const list: any[] = a.mentees ?? [];
+                      if (col === "Assigned Mentor" || col === "Assigned Mentee") {
                         return (
-                          <td key={col} className="px-3 py-2.5 text-xs whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb", minWidth: col === "Assigned Mentees" ? 170 : undefined }}>
-                            {list.length === 0 ? <span className="text-gray-400">—</span> : list.map(m => (
-                              <div key={m.pairId} className="flex items-center" style={{ height: 26 }}>
-                                {col === "Assigned Mentees" && <span className="font-bold" style={{ color: NAVY }}>{m.name}</span>}
-                                {col === "Mentee Sector" && <span className="text-gray-600">{m.sector}</span>}
-                                {col === "Pair Match Score" && <span className="font-medium text-gray-700">{m.score}%</span>}
-                              </div>
-                            ))}
-                          </td>
-                        );
-                      }
-
-                      if (col === "Assigned Mentor") {
-                        return (
-                          <td key={col} className="px-3 py-2.5 font-bold whitespace-nowrap text-xs" style={{ color: a.matchedMentor ? NAVY : "#9ca3af", borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
+                          <td key={col} className="px-3 py-2.5 font-bold whitespace-nowrap text-xs" style={{ color: NAVY, borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
                             {getColValue(a, col)}
                           </td>
                         );
@@ -2715,7 +2613,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                         return (
                           <td key={col} className="px-3 py-2.5 text-gray-500 whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
                             {isReg ? (
-                              <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 3, background: "#d1fae5", color: "#065f46" }}>Registered</span>
+                              <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: "#d1fae5", color: "#065f46" }}>Registered</span>
                             ) : (
                               getColValue(a, col)
                             )}
@@ -2853,13 +2751,10 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                   const finalReason = customReasonText.trim() || (decisionModal.action === "Select" ? "Meets selection criteria and approved for incubation shortlisting" : "Disqualified by evaluation committee");
                   const targetStatus = decisionModal.action === "Select" ? "Selected" : "Rejected";
                   setStatusOverride(decisionModal.app.id, targetStatus, finalReason);
-                  // The applicant sees the decision under Track Application straight away; this also lets the admin email them.
-                  const mailto = decisionMailto(decisionModal.app, targetStatus as "Selected" | "Rejected", finalReason);
-                  const emailAction = mailto ? { label: "Email applicant", onClick: () => { window.location.href = mailto; } } : undefined;
                   if (decisionModal.action === "Select") {
-                    toast.success(`${decisionModal.app.name} has been selected! Reason recorded and moved to Selection.`, { action: emailAction, duration: emailAction ? 12000 : undefined });
+                    toast.success(`${decisionModal.app.name} has been selected! Reason recorded and moved to Selection.`);
                   } else {
-                    toast.error(`${decisionModal.app.name} has been rejected. Reason recorded in Rejection section.`, { action: emailAction, duration: emailAction ? 12000 : undefined });
+                    toast.error(`${decisionModal.app.name} has been rejected. Reason recorded in Rejection section.`);
                   }
                   setDecisionModal(null);
                 }}
@@ -3118,36 +3013,8 @@ function ProgramSetupView({
     name: "", sector: "", description: "",
     status: "Accepting Applications", duration: "", location: "", format: "Hybrid",
     overview: "", benefits: "", eligibility: "",
-    startDate: "", deadline: "", cohortSize: "", cohortId: "",
   };
   const [newProg, setNewProg] = useState(emptyProg);
-  const programme = useProgramme();
-  const [showErrors, setShowErrors] = useState(false);
-  const [interest, setInterest] = useState<Interest[]>(loadInterest);
-  useEffect(() => {
-    const on = (e: StorageEvent) => { if (e.key === INTEREST_KEY) setInterest(loadInterest()); };
-    window.addEventListener("storage", on);
-    return () => window.removeEventListener("storage", on);
-  }, []);
-
-  // The programme as it would be published, checked against the same rules the public page relies on
-  const draft: AdminProgram = {
-    id: editingId ?? "draft",
-    name: newProg.name, sector: newProg.sector, description: newProg.description, status: newProg.status, coverUrl,
-    duration: newProg.duration, location: newProg.location, format: newProg.format, overview: newProg.overview,
-    timelineEntries: tlEntries, benefits: newProg.benefits, eligibility: newProg.eligibility, published: true,
-    startDate: newProg.startDate.trim() || undefined,
-    deadline: newProg.deadline.trim() || undefined,
-    cohortSize: newProg.cohortSize.trim() === "" ? undefined : Number(newProg.cohortSize),
-    cohortId: newProg.cohortId === "" ? undefined : Number(newProg.cohortId),
-  };
-  const problems = validateProgram(draft);
-  const errors: Record<string, string> = showErrors ? Object.fromEntries(problems.map(x => [x.field, x.message])) : {};
-  const fieldStyle = (k: string, bg = "#f9fafb") => ({ background: bg, border: `1px solid ${errors[k] ? "#ef4444" : "#e5e7eb"}`, color: "#111827" });
-  const fieldError = (k: string) => errors[k] ? <p className="text-[10px] font-semibold" style={{ color: "#ef4444" }}>{errors[k]}</p> : null;
-  // Same decisions as the public card (start date, deadline, cohort line)
-  const facts = programFacts(draft, programme.cohorts.map(c => ({ id: c.id, name: c.name, startDate: c.startDate, enrolled: cohortEnrolled(c, programme.pairs, programme.waiting.length) })));
-  const effectiveDeadline = facts.deadline !== "—" ? facts.deadline : null;
 
   // ── Progress calculations ──────────────────────────────────────────────────
   const profileFields = [newProg.name, newProg.sector, newProg.description, newProg.status, newProg.duration, newProg.location, newProg.format, coverUrl];
@@ -3170,30 +3037,10 @@ function ProgramSetupView({
     if (words.length <= 40) setNewProg(p => ({ ...p, overview: val }));
   };
 
-  // Cover is stored as a small data URL (not a blob: URL) so it survives a refresh and can be saved with the programme
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = "";
     if (!file) return;
-    const reader = new FileReader();
-    reader.onerror = () => toast.error("Could not read that image. Please try another file.");
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => toast.error("That file is not a valid image.");
-      img.onload = () => {
-        const MAX_W = 1200;
-        const scale = Math.min(1, MAX_W / img.width);
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        const ctx = canvas.getContext("2d");
-        if (!ctx) { setCoverUrl(reader.result as string); return; }
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        setCoverUrl(canvas.toDataURL("image/jpeg", 0.8));
-      };
-      img.src = reader.result as string;
-    };
-    reader.readAsDataURL(file);
+    setCoverUrl(URL.createObjectURL(file));
   };
 
   const handleTlAdd = () => {
@@ -3216,32 +3063,31 @@ function ProgramSetupView({
   };
 
   const handleSaveChanges = () => {
-    if (problems.length > 0) {
-      setShowErrors(true);
-      setSavedOnce(false);
-      toast.error(`Please complete ${problems.length} required item${problems.length !== 1 ? "s" : ""} before saving.`);
-      return;
-    }
-    setShowErrors(false);
     setSavedOnce(true);
     toast.success("Changes saved to preview.");
   };
 
   const handleCreate = () => {
     if (!savedOnce) return;
-    // Re-check: fields may have been cleared after "Save Changes" was clicked
-    if (problems.length > 0) {
-      setShowErrors(true);
-      setSavedOnce(false);
-      toast.error(`Please complete ${problems.length} required item${problems.length !== 1 ? "s" : ""} before publishing.`);
-      return;
-    }
-    // Editing must not silently change whether the programme is live
-    const wasPublished = editingId ? (adminPrograms.find(x => x.id === editingId)?.published ?? true) : true;
-    const prog: AdminProgram = { ...draft, id: editingId ?? Date.now().toString(), name: draft.name.trim(), published: wasPublished };
+    const prog: AdminProgram = {
+      id: editingId ?? Date.now().toString(),
+      name: newProg.name,
+      sector: newProg.sector,
+      description: newProg.description,
+      status: newProg.status,
+      coverUrl,
+      duration: newProg.duration,
+      location: newProg.location,
+      format: newProg.format,
+      overview: newProg.overview,
+      timelineEntries: tlEntries,
+      benefits: newProg.benefits,
+      eligibility: newProg.eligibility,
+      published: true,
+    };
     if (editingId) {
       onUpdateProgram(prog);
-      toast.success(wasPublished ? `"${prog.name}" updated successfully.` : `"${prog.name}" updated. It is still unpublished. Use Republish to put it back on the public page.`);
+      toast.success(`"${prog.name}" updated successfully.`);
     } else {
       onCreateProgram(prog);
       toast.success(`"${prog.name}" created and published!`);
@@ -3250,7 +3096,6 @@ function ProgramSetupView({
     setCoverUrl("");
     setTlEntries([]);
     setSavedOnce(false);
-    setShowErrors(false);
     setEditingId(null);
     setAddOpen(false);
     setAppTab("Overview");
@@ -3263,13 +3108,10 @@ function ProgramSetupView({
       status: p.status, duration: p.duration, location: p.location,
       format: p.format, overview: p.overview,
       benefits: p.benefits, eligibility: p.eligibility,
-      startDate: p.startDate ?? "", deadline: p.deadline ?? "",
-      cohortSize: p.cohortSize ? String(p.cohortSize) : "", cohortId: p.cohortId != null ? String(p.cohortId) : "",
     });
     setCoverUrl(p.coverUrl);
     setTlEntries(p.timelineEntries);
     setSavedOnce(false);
-    setShowErrors(false);
     setAddOpen(true);
     setAppTab("Overview");
   };
@@ -3279,33 +3121,20 @@ function ProgramSetupView({
     setCoverUrl("");
     setTlEntries([]);
     setSavedOnce(false);
-    setShowErrors(false);
     setEditingId(null);
     setAddOpen(false);
     setAppTab("Overview");
   };
 
-  const handleRepublish = (prog: AdminProgram) => {
-    const probs = validateProgram(prog);
-    if (probs.length > 0) {
-      toast.error(`"${prog.name || "Untitled"}" can't go live yet: ${probs.slice(0, 3).map(x => x.message).join("; ")}${probs.length > 3 ? "; ..." : ""}. Click Edit to complete it.`);
-      return;
-    }
-    onUpdateProgram({ ...prog, published: true });
-    toast.success(`"${prog.name}" is live on the public page again.`);
-  };
-
-  const downloadInterest = () => {
-    const blob = new Blob([interestToCsv(interest)], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "notify-me-signups.csv"; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-
   const statusColor = PROG_STATUS_COLORS[newProg.status] ?? "#6b7280";
   // Overview tab hidden per requirements — sourced from Program Description
   const appTabs: SetupTab[] = ["Timeline", "Benefits", "Eligibility"];
+
+  // Auto-compute Application Deadline from timeline "Applications Close" entry
+  const autoDeadline = tlEntries.find(e =>
+    e.title.toLowerCase().includes("application close") ||
+    e.title.toLowerCase().includes("applications close")
+  )?.date ?? null;
 
   const progBarColor = (pct: number) =>
     pct === 100 ? "#16a34a" : pct >= 60 ? TEAL : pct >= 30 ? "#f59e0b" : "#ef4444";
@@ -3330,57 +3159,21 @@ function ProgramSetupView({
                   <div className="text-[10px]" style={{ color: "#6b7280" }}>{p.sector || "—"} · {p.format}</div>
                 </div>
                 <span className="text-[9px] font-bold px-2 py-0.5 rounded-md shrink-0"
-                  style={{ background: p.published ? NAVY : "#9ca3af", color: "#fff" }}>
+                  style={{ background: NAVY, color: "#fff" }}>
                   {p.published ? p.status : "Unpublished"}
                 </span>
-                {interest.filter(x => x.programId === p.id).length > 0 && (
-                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-md shrink-0" style={{ background: "#fffbeb", color: "#b45309" }}>
-                    {interest.filter(x => x.programId === p.id).length} interested
-                  </span>
-                )}
                 <button
                   onClick={() => handleEdit(p)}
                   className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all"
                   style={{ background: TEAL, color: "#fff" }}>
                   <Edit2 size={10} /> Edit
                 </button>
-                {p.published ? (
-                  <button
-                    onClick={() => setDeleteConfirm(p.id)}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all"
-                    style={{ background: TEAL, color: "#fff" }}>
-                    <EyeOff size={10} /> Unpublish
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => handleRepublish(p)}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all"
-                    style={{ background: "#16a34a", color: "#fff" }}>
-                    <CheckCircle size={10} /> Republish
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── Notify-me sign-ups from Coming Soon programmes ── */}
-      {interest.length > 0 && (
-        <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
-          <div className="px-6 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid #f0f0f0" }}>
-            <span className="text-xs font-black uppercase tracking-widest" style={{ color: NAVY }}>Notify-me Sign-ups</span>
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md" style={{ background: NAVY, color: "#fff" }}>{interest.length} sign-up{interest.length !== 1 ? "s" : ""}</span>
-              <button onClick={downloadInterest} className="px-3 py-1.5 rounded-md text-[10px] font-bold" style={{ background: TEAL, color: "#fff" }}>Download CSV</button>
-            </div>
-          </div>
-          <div className="divide-y divide-[#f0f0f0]" style={{ maxHeight: 220, overflowY: "auto" }}>
-            {[...interest].reverse().map((x, i) => (
-              <div key={`${x.programId}-${x.email}-${i}`} className="flex items-center gap-4 px-6 py-2">
-                <span className="text-[11px] font-bold truncate flex-1" style={{ color: NAVY }}>{x.email}</span>
-                <span className="text-[10px] truncate" style={{ color: "#6b7280", maxWidth: 220 }}>{x.programName}</span>
-                <span className="text-[10px] shrink-0" style={{ color: "#9ca3af" }}>{x.date.slice(0, 10)}</span>
+                <button
+                  onClick={() => setDeleteConfirm(p.id)}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all"
+                  style={{ background: TEAL, color: "#fff" }}>
+                  <TrashIcon size={10} /> {p.published ? "Unpublish" : "Unpublished"}
+                </button>
               </div>
             ))}
           </div>
@@ -3479,16 +3272,14 @@ function ProgramSetupView({
                   <input type="text" placeholder="Zantchito Incubation"
                     value={newProg.name} onChange={e => setNewProg(p => ({ ...p, name: e.target.value }))}
                     className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("name")} />
-                  {fieldError("name")}
+                    style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }} />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Program Sector</label>
                   <input type="text" placeholder="AgriTech, CleanEnergy"
                     value={newProg.sector} onChange={e => setNewProg(p => ({ ...p, sector: e.target.value }))}
                     className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("sector")} />
-                  {fieldError("sector")}
+                    style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }} />
                 </div>
               </div>
 
@@ -3498,8 +3289,7 @@ function ProgramSetupView({
                 <textarea rows={3} placeholder="Briefly describe program goals, target beneficiaries and expected outcomes..."
                   value={newProg.description} onChange={e => setNewProg(p => ({ ...p, description: e.target.value }))}
                   className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none resize-none"
-                  style={fieldStyle("description")} />
-                {fieldError("description")}
+                  style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }} />
               </div>
 
               {/* Row 2: Status + Format */}
@@ -3529,57 +3319,14 @@ function ProgramSetupView({
                   <input type="text" placeholder="6 Months"
                     value={newProg.duration} onChange={e => setNewProg(p => ({ ...p, duration: e.target.value }))}
                     className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("duration")} />
-                  {fieldError("duration")}
+                    style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }} />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Location</label>
                   <input type="text" placeholder="Mzuzu, Malawi"
                     value={newProg.location} onChange={e => setNewProg(p => ({ ...p, location: e.target.value }))}
                     className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("location")} />
-                  {fieldError("location")}
-                </div>
-              </div>
-
-              {/* Row 4: Start date + Application deadline */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Start Date <span style={{ color: "#9ca3af", fontWeight: 600 }}>(optional)</span></label>
-                  <input type="text" placeholder="6 October 2026"
-                    value={newProg.startDate} onChange={e => setNewProg(p => ({ ...p, startDate: e.target.value }))}
-                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("startDate")} />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Application Deadline</label>
-                  <input type="text" placeholder="31 August 2026"
-                    value={newProg.deadline} onChange={e => setNewProg(p => ({ ...p, deadline: e.target.value }))}
-                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("deadline")} />
-                  {fieldError("deadline")}
-                </div>
-              </div>
-
-              {/* Row 5: Cohort size + linked cohort */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Cohort Size <span style={{ color: "#9ca3af", fontWeight: 600 }}>(places)</span></label>
-                  <input type="number" min={1} placeholder="30"
-                    value={newProg.cohortSize} onChange={e => setNewProg(p => ({ ...p, cohortSize: e.target.value }))}
-                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("cohortSize")} />
-                  {fieldError("cohortSize")}
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Linked Cohort <span style={{ color: "#9ca3af", fontWeight: 600 }}>(optional)</span></label>
-                  <select value={newProg.cohortId} onChange={e => setNewProg(p => ({ ...p, cohortId: e.target.value }))}
-                    className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none"
-                    style={fieldStyle("cohortId")}>
-                    <option value="">Not linked</option>
-                    {programme.cohorts.map(c => <option key={c.id} value={String(c.id)}>{c.name} ({c.status})</option>)}
-                  </select>
-                  <p className="text-[9px]" style={{ color: "#9ca3af" }}>Shows live enrolment on the public card and links this program in Cohort Management.</p>
+                    style={{ background: "#f9fafb", border: "1px solid #e5e7eb", color: "#111827" }} />
                 </div>
               </div>
 
@@ -3635,10 +3382,10 @@ function ProgramSetupView({
                 {/* Auto-detected Application Deadline */}
                 <div className="px-4 py-2.5 flex items-center gap-3" style={{ background: "#fff", borderBottom: "1px solid #f0f0f0" }}>
                   <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#6b7280" }}>Application Deadline</span>
-                  <span className="text-[10px] font-black" style={{ color: effectiveDeadline ? NAVY : errors.deadline ? "#ef4444" : "#9ca3af" }}>
-                    {effectiveDeadline ? effectiveDeadline : "Set an Application Deadline above, or add an \"Applications Close\" timeline entry"}
+                  <span className="text-[10px] font-black" style={{ color: autoDeadline ? NAVY : "#9ca3af" }}>
+                    {autoDeadline ? autoDeadline : "Add an \"Applications Close\" timeline entry to auto-populate"}
                   </span>
-                  {effectiveDeadline && !newProg.deadline.trim() && <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold" style={{ background: "#f0fdf4", color: "#16a34a" }}>From timeline</span>}
+                  {autoDeadline && <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold" style={{ background: "#f0fdf4", color: "#16a34a" }}>Auto</span>}
                 </div>
                 {/* Tab panels */}
                 <div className="p-4" style={{ background: "#fafafa" }}>
@@ -3724,25 +3471,16 @@ function ProgramSetupView({
                     <textarea rows={5} placeholder="Benefits participants will receive (one per line: seed funding, mentorship, certification)..."
                       value={newProg.benefits} onChange={e => setNewProg(p => ({ ...p, benefits: e.target.value }))}
                       className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none resize-none"
-                      style={fieldStyle("benefits", "#fff")} />
+                      style={{ background: "#fff", border: "1px solid #e5e7eb", color: "#111827" }} />
                   )}
                   {appTab === "Eligibility" && (
                     <textarea rows={5} placeholder="Eligibility criteria (one per line: age range, business stage, residency)..."
                       value={newProg.eligibility} onChange={e => setNewProg(p => ({ ...p, eligibility: e.target.value }))}
                       className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none resize-none"
-                      style={fieldStyle("eligibility", "#fff")} />
+                      style={{ background: "#fff", border: "1px solid #e5e7eb", color: "#111827" }} />
                   )}
                 </div>
               </div>
-
-              {showErrors && problems.length > 0 && (
-                <div className="rounded-md p-3 space-y-1" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
-                  <p className="text-[10px] font-black uppercase tracking-wider" style={{ color: "#b91c1c" }}>Complete these before saving</p>
-                  <ul className="space-y-0.5">
-                    {problems.map(x => <li key={x.field} className="text-[10px] font-semibold" style={{ color: "#b91c1c" }}>- {x.message}</li>)}
-                  </ul>
-                </div>
-              )}
 
               {/* Action buttons */}
               <div className="flex gap-3 pt-1">
@@ -3794,14 +3532,12 @@ function ProgramSetupView({
                 <div className="p-3 space-y-3">
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      { label: "Start Date", value: facts.startDate },
-                      { label: "Duration",   value: newProg.duration || "—" },
-                      { label: "Location",   value: newProg.location || "—" },
-                      { label: "Format",     value: newProg.format   || "—" },
-                      { label: "Sector",     value: newProg.sector   || "—" },
-                      ...(facts.cohort ? [{ label: "Cohort", value: facts.cohort }] : []),
-                    ].map(({ label, value }, idx, arr) => (
-                      <div key={label} className={`rounded-md p-2 ${arr.length % 2 === 1 && idx === arr.length - 1 ? "col-span-2" : ""}`} style={{ border: "1px solid rgba(59,65,103,0.12)", background: "#f8f9fb" }}>
+                      { label: "Duration", value: newProg.duration || "—" },
+                      { label: "Format",   value: newProg.format   || "—" },
+                      { label: "Location", value: newProg.location || "—" },
+                      { label: "Sector",   value: newProg.sector   || "—" },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="rounded-md p-2" style={{ border: "1px solid rgba(59,65,103,0.12)", background: "#f8f9fb" }}>
                         <div className="text-[9px] font-bold" style={{ color: NAVY }}>{label}</div>
                         <div className="text-[9px] mt-0.5 truncate" style={{ color: "#6b7280" }}>{value}</div>
                       </div>
@@ -3815,10 +3551,10 @@ function ProgramSetupView({
                     </p>
                   )}
                   {/* Auto deadline */}
-                  {effectiveDeadline && (
+                  {autoDeadline && (
                     <div className="flex items-center gap-1.5 rounded-md px-2 py-1" style={{ background: "#fef2f2", border: "1px solid #fecaca" }}>
                       <span className="text-[8px] font-bold" style={{ color: "#ef4444" }}>Deadline:</span>
-                      <span className="text-[8px] font-semibold" style={{ color: "#374151" }}>{effectiveDeadline}</span>
+                      <span className="text-[8px] font-semibold" style={{ color: "#374151" }}>{autoDeadline}</span>
                     </div>
                   )}
 
@@ -3915,7 +3651,7 @@ function SettingsView() {
               aria-checked={on}
               onClick={() => setSettings(prev => ({ ...prev, [s.key]: !prev[s.key] }))}
               className="relative cursor-pointer shrink-0 focus:outline-none"
-              style={{ width: 40, height: 22, borderRadius: 3, background: on ? TEAL : "#d1d5db", border: "none", padding: 0, transition: "background 0.2s" }}
+              style={{ width: 40, height: 22, borderRadius: 11, background: on ? TEAL : "#d1d5db", border: "none", padding: 0, transition: "background 0.2s" }}
             >
               <span
                 className="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-all"
@@ -3931,8 +3667,26 @@ function SettingsView() {
 
 // ── Admin Panel View Components ───────────────────────────────────────────────
 
-/** Stable numeric id for table rows (the store uses string ids). */
-const numId = (s: string) => /^[pw]\d+$/.test(s) ? (s === "w1" ? 4 : Number(s.slice(1))) : 100000 + ([...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7) % 900000);
+const INITIAL_MATCH_PAIRS: MentorPair[] = [
+  { id: 1, mentee: "Chisomo Banda", menteeVenture: "AgroConnect Malawi", mentor: "Dr. Tiwonge Banda", expertise: "AgriTech and Finance", stage: "Validation", matchScore: 91, status: "Active", sessions: 14, lastSession: "Jul 24", reMatchReq: false },
+  { id: 2, mentee: "Kondwani Phiri", menteeVenture: "EduBridge", mentor: "Prof. Patrick Likoswe", expertise: "EdTech & Curriculum", stage: "MVP", matchScore: 86, status: "Active", sessions: 9, lastSession: "Jul 21", reMatchReq: false },
+  { id: 3, mentee: "Tadala Chirwa", menteeVenture: "CleanHeat", mentor: "Limbani Gondwe", expertise: "CleanEnergy and Hardware", stage: "Idea", matchScore: 79, status: "Active", sessions: 5, lastSession: "Jul 18", reMatchReq: false },
+  { id: 4, mentee: "Madalitso Chiumia", menteeVenture: "FarmLink", mentor: "Unmatched", expertise: "—", stage: "Idea", matchScore: 0, status: "Pending", sessions: 0, lastSession: "—", reMatchReq: false },
+  { id: 5, mentee: "Grace Kamwendo", menteeVenture: "HealthTrack", mentor: "Dr. Chimwemwe Phiri", expertise: "HealthTech & UX", stage: "MVP", matchScore: 88, status: "Active", sessions: 11, lastSession: "Jul 22", reMatchReq: true },
+];
+
+const PAIR_HEALTH = [
+  { mentee: "Chisomo Banda", mentor: "Dr. Tiwonge Banda", health: "Healthy", sessions7d: 1, satisfaction: 95, goalPct: 71, flagged: false, trend: "up" },
+  { mentee: "Kondwani Phiri", mentor: "Prof. Patrick Likoswe", health: "Healthy", sessions7d: 1, satisfaction: 88, goalPct: 64, flagged: false, trend: "up" },
+  { mentee: "Tadala Chirwa", mentor: "Limbani Gondwe", health: "At Risk", sessions7d: 0, satisfaction: 62, goalPct: 22, flagged: true, trend: "down" },
+  { mentee: "Grace Kamwendo", mentor: "Dr. Chimwemwe Phiri", health: "Healthy", sessions7d: 1, satisfaction: 91, goalPct: 55, flagged: false, trend: "stable" },
+];
+
+const COHORTS_DATA = [
+  { id: 1, name: "Cohort 5 — 2025", status: "Active", startDate: "Jan 2025", endDate: "Dec 2025", mentees: 18, mentors: 8, avgProgress: 62, sector: "Mixed" },
+  { id: 2, name: "Cohort 4 — 2024", status: "Completed", startDate: "Jan 2024", endDate: "Dec 2024", mentees: 22, mentors: 10, avgProgress: 100, sector: "AgriTech" },
+  { id: 3, name: "Cohort 3 — 2023", status: "Completed", startDate: "Jan 2023", endDate: "Dec 2023", mentees: 16, mentors: 7, avgProgress: 100, sector: "CleanEnergy" },
+];
 
 // ── AI Matching Engine — Data & Algorithm ─────────────────────────────────────
 interface EntMatchProfile {
@@ -4069,9 +3823,9 @@ KNOWN_ENT_PROFILES["APP-009"] = KNOWN_ENT_PROFILES["Grace Kamwendo"];
 
 function getProfileForMentee(nameOrId: string, fallback?: Partial<EntMatchProfile>): EntMatchProfile {
   if (KNOWN_ENT_PROFILES[nameOrId]) return KNOWN_ENT_PROFILES[nameOrId];
-  const all = [...ENT_MATCH_PROFILES, ...Object.values(KNOWN_ENT_PROFILES)];
-  const found = all.find(p => p.id === nameOrId || p.name.toLowerCase() === nameOrId.toLowerCase())
-    ?? (fallback?.name ? all.find(p => p.name.toLowerCase() === fallback.name!.toLowerCase()) : undefined);
+  const found = Object.values(KNOWN_ENT_PROFILES).find(
+    p => p.id === nameOrId || p.name.toLowerCase() === nameOrId.toLowerCase()
+  );
   if (found) return found;
   return {
     id: fallback?.id || `APP-${Date.now()}`,
@@ -4171,25 +3925,6 @@ const MENTOR_MATCH_PROFILES: MentorMatchProfile[] = [
     personality: "Direct and results-driven",
   },
 ];
-
-/** One mentor roster: every approved mentor in the pipeline is scorable. Detailed profiles are used where they exist; otherwise a profile is built from the application. */
-function profileFromMentorApp(m: MentorApplication): MentorMatchProfile {
-  const known = MENTOR_MATCH_PROFILES.find(x => x.id === m.id);
-  const capacity = m.capacity ?? known?.maxMenteeCount ?? 4;
-  if (known) return { ...known, name: m.name, district: m.district, expertise: m.expertise, maxMenteeCount: capacity };
-  return {
-    id: m.id, name: m.name, district: m.district, expertise: m.expertise,
-    programmeInterest: ["Both"],
-    stageExpertise: ["Idea", "Validation", "Prototype-MVP", "MVP", "Early Startup"], preferredStages: ["Idea", "Validation", "Prototype-MVP", "MVP"],
-    industryExpertise: [m.expertise, "Services"], preferredIndustries: [m.expertise],
-    functionalExpertise: [m.expertise, "Business Planning", "Operations"],
-    hasEntrepreneurialExp: true, yearsExperience: 8, startupsmentored: 4,
-    preferredFounderTypes: ["Youth", "Women"],
-    languages: ["English", "Chichewa"], mentoringMode: "Hybrid",
-    hoursPerMonth: 8, currentMenteeCount: 0, maxMenteeCount: capacity,
-    biography: `${m.title ?? "Mentor"}${m.employer ? ` at ${m.employer}` : ""}.`, personality: "Supportive",
-  };
-}
 
 function computeMatch(ent: EntMatchProfile, mentor: MentorMatchProfile): MatchResult | null {
   if (!mentor.programmeInterest.some(p => p === "Incubation Programme" || p === "Both")) return null;
@@ -4386,7 +4121,7 @@ function MentorProfileModal({
                 {mentor.expertise && (
                   <span
                     style={{ background: "#4C808A", color: "#ffffff", border: "1px solid rgba(255,255,255,0.25)" }}
-                    className="text-[10px] font-bold px-2.5 py-0.5 rounded-md shadow-xs"
+                    className="text-[10px] font-bold px-2.5 py-0.5 rounded shadow-xs"
                   >
                     {mentor.expertise.replace(/&/g, "and")}
                   </span>
@@ -4394,7 +4129,7 @@ function MentorProfileModal({
                 {mentor.district && (
                   <span
                     style={{ background: "#4C808A", color: "#ffffff", border: "1px solid rgba(255,255,255,0.25)" }}
-                    className="text-[10px] font-medium px-2 py-0.5 rounded-md shadow-xs"
+                    className="text-[10px] font-medium px-2 py-0.5 rounded shadow-xs"
                   >
                     {mentor.district}
                   </span>
@@ -4423,13 +4158,13 @@ function MentorProfileModal({
                   </span>
                 </div>
                 {matchContext.result && (
-                  <span style={{ background: "#4C808A", color: "#ffffff", border: "none", padding: "3px 10px", borderRadius: 3, fontSize: 11, fontWeight: 800 }}>
+                  <span style={{ background: "#4C808A", color: "#ffffff", border: "none", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 800 }}>
                     {matchContext.result.score}/100 Match
                   </span>
                 )}
               </div>
               {matchContext.result?.explanation && (
-                <div style={{ background: "#4C808A", borderRadius: 3, padding: "8px 12px", border: "1px solid #4C808A" }}>
+                <div style={{ background: "#4C808A", borderRadius: 6, padding: "8px 12px", border: "1px solid #4C808A" }}>
                   <p className="text-white text-[11px] leading-relaxed m-0">
                     <strong className="text-white font-bold">Why this match: </strong>
                     {matchContext.result.explanation.replace(/\.$/, "")}
@@ -4465,7 +4200,7 @@ function MentorProfileModal({
               {mentor.personality && !isRemovedPersonality(mentor.personality) && (
                 <div className="flex items-center gap-2 pt-1 flex-wrap">
                   <span className="text-[10px] font-bold text-gray-500">Mentoring Approach:</span>
-                  <span className="text-[11px] font-semibold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-200 italic">
+                  <span className="text-[11px] font-semibold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200 italic">
                     "{mentor.personality}"
                   </span>
                 </div>
@@ -4484,7 +4219,7 @@ function MentorProfileModal({
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Target Business Stages</span>
                   <div className="flex gap-1.5 flex-wrap">
                     {mentor.stageExpertise.filter(st => !isRemovedBadge(st)).map(st => (
-                      <span key={st} className="px-2 py-0.5 rounded-md bg-teal-50 text-teal-700 border border-teal-200 font-medium text-[10px]">
+                      <span key={st} className="px-2 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 font-medium text-[10px]">
                         {st}
                       </span>
                     ))}
@@ -4496,7 +4231,7 @@ function MentorProfileModal({
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Industry Expertise</span>
                   <div className="flex gap-1.5 flex-wrap">
                     {mentor.industryExpertise.filter(ind => !isRemovedBadge(ind)).map(ind => (
-                      <span key={ind} className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 font-medium text-[10px]">
+                      <span key={ind} className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-medium text-[10px]">
                         {ind.replace(/&/g, "and")}
                       </span>
                     ))}
@@ -4508,7 +4243,7 @@ function MentorProfileModal({
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Functional Expertise</span>
                   <div className="flex gap-1.5 flex-wrap">
                     {mentor.functionalExpertise.filter(fx => !isRemovedBadge(fx)).map(fx => (
-                      <span key={fx} className="px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200 font-medium text-[10px]">
+                      <span key={fx} className="px-2 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200 font-medium text-[10px]">
                         {fx}
                       </span>
                     ))}
@@ -4562,7 +4297,7 @@ function MentorProfileModal({
             <button
               onClick={() => {
                 if (!matchContext.isConfirmed) {
-                  matchContext.onConfirm?.();
+                  matchContext.onConfirm();
                 }
               }}
               disabled={matchContext.isConfirmed}
@@ -4584,21 +4319,10 @@ function MentorProfileModal({
   );
 }
 
-// Splits a match explanation ("a; b; covers 1/4 stated needs (x)") into checklist rows
-function parseMatchReasons(explanation: string): { text: string; warn: boolean }[] {
-  return explanation.replace(/\.$/, "").split(";").map(t => t.trim()).filter(Boolean).map(t => {
-    const m = /^covers (\d+)\/(\d+) stated needs \((.*)\)$/i.exec(t);
-    if (m) {
-      const partial = m[1] !== m[2];
-      return { warn: partial, text: partial ? `Covers only ${m[1]} of ${m[2]} stated needs (${m[3].toLowerCase()})` : `Covers all ${m[2]} stated needs (${m[3].toLowerCase()})` };
-    }
-    return { warn: false, text: t.charAt(0).toUpperCase() + t.slice(1) };
-  });
-}
-
-function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSelectedEntId?: string | null; initialMentorId?: string | null }) {
-  const { matchPairs, confirmPairing, entApps, mntApps } = useContext(AppDataCtx);
+function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: string | null }) {
+  const { matchPairs, confirmPairing, entApps, pairings } = useContext(AppDataCtx);
   const [selectedEntId, setSelectedEntId] = useState<string | null>(initialSelectedEntId || null);
+  const [confirmedPairs, setConfirmedPairs] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [expandedBreakdown, setExpandedBreakdown] = useState<string | null>(null);
@@ -4607,13 +4331,60 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
     result?: MatchResult;
   } | null>(null);
 
-  // Candidates are the entrepreneurs in the Matching section (same rows as the Entrepreneurs table), linked by application id.
-  const candidates: EntMatchProfile[] = useMemo(() =>
-    entApps.filter(a => a.status === "Matching").map(a => ({
-      ...getProfileForMentee(a.id, { id: a.id, name: a.name, district: a.district, sector: a.sector, businessStage: a.stage, isWoman: a.gender === "Female" }),
-      id: a.id,
-    })),
-  [entApps]);
+  // Available candidate profiles: starts with standard ENT_MATCH_PROFILES,
+  // and dynamically incorporates any entrepreneur with a re-match requested
+  // (such as Dalitso Mvula, Brian Kumwenda, Enelesi Phiri, or Grace Kamwendo)
+  const candidates: EntMatchProfile[] = useMemo(() => {
+    const list = [...ENT_MATCH_PROFILES];
+    const seenIds = new Set(list.map(e => e.id));
+    const seenNames = new Set(list.map(e => e.name.toLowerCase()));
+
+    // 1. From matchPairs with reMatchReq === true
+    matchPairs.filter(p => p.reMatchReq).forEach(p => {
+      if (seenNames.has(p.mentee.toLowerCase())) return;
+      const profile = getProfileForMentee(p.mentee, {
+        id: `APP-${p.id}`,
+        name: p.mentee,
+        sector: p.menteeVenture,
+        businessStage: p.stage,
+      });
+      if (!seenIds.has(profile.id)) {
+        seenIds.add(profile.id);
+        seenNames.add(profile.name.toLowerCase());
+        list.push(profile);
+      }
+    });
+
+    // 2. From entApps where re-match requested or in pairings with "Re-match Requested"
+    entApps.forEach(a => {
+      const isRematch =
+        (a as any).reMatchReq ||
+        a.matchingStage === "Re-match Requested" ||
+        a.status === "Re-match Requested" ||
+        a.approvalStatus === "Re-match Requested" ||
+        pairings?.[a.id]?.approvalStatus === "Re-match Requested" ||
+        matchPairs.some(p => p.reMatchReq && p.mentee.toLowerCase() === a.name.toLowerCase());
+
+      if (isRematch) {
+        if (seenNames.has(a.name.toLowerCase())) return;
+        const profile = getProfileForMentee(a.id, {
+          id: a.id,
+          name: a.name,
+          district: a.district,
+          sector: a.sector,
+          businessStage: a.stage,
+          isWoman: a.gender === "Female",
+        });
+        if (!seenIds.has(profile.id)) {
+          seenIds.add(profile.id);
+          seenNames.add(profile.name.toLowerCase());
+          list.push(profile);
+        }
+      }
+    });
+
+    return list;
+  }, [matchPairs, entApps, pairings]);
 
   useEffect(() => {
     if (initialSelectedEntId) {
@@ -4627,33 +4398,8 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
 
   const selectedEnt = candidates.find(e => e.id === selectedEntId || e.name.toLowerCase() === selectedEntId?.toLowerCase()) || null;
 
-  // Capacity follows the programme store; the current mentor is never re-suggested.
-  const programme = useProgramme();
-  // "Confirmed" = has a live pair and no open re-match. A re-match request unlocks the mentee again.
-  const isDone = (ent: { name: string }) => {
-    const p = programme.pairs.find(x => x.menteeId === (ent as any).id) ?? programme.pairs.find(x => !x.menteeId && x.mentee.toLowerCase() === ent.name.toLowerCase());
-    return !!p && !programme.rematches.some(r => r.pairId === p.id && r.status === "open");
-  };
-  const currentMentor = selectedEnt ? (programme.pairs.find(p => p.menteeId === selectedEnt.id) ?? programme.pairs.find(p => !p.menteeId && p.mentee.toLowerCase() === selectedEnt.name.toLowerCase()))?.mentor : undefined;
-  // One roster: every approved mentor from the pipeline; load comes from the store's live pairs (by id).
-  const livePool: MentorMatchProfile[] = mntApps
-    .filter(m => ["Matching", "Approved", "Selected"].includes(m.status))
-    .map(m => {
-      const base = profileFromMentorApp(m);
-      const load = programme.pairs.filter(p => p.mentorId === m.id || (!p.mentorId && p.mentor === m.name)).length;
-      return { ...base, currentMenteeCount: load };
-    });
-  const focusMentor = initialMentorId ? livePool.find(m => m.id === initialMentorId) ?? null : null;
-  const focusResults: { ent: EntMatchProfile; result: MatchResult }[] = focusMentor
-    ? candidates
-        .filter(e => !isDone(e))
-        .map(e => ({ ent: e, result: computeMatch(e, focusMentor) }))
-        .filter((x): x is { ent: EntMatchProfile; result: MatchResult } => x.result !== null)
-        .sort((a, b) => b.result.score - a.result.score)
-    : [];
   const recommendations: MatchResult[] = selectedEnt
-    ? livePool
-        .filter(m => m.name !== currentMentor)
+    ? MENTOR_MATCH_PROFILES
         .map(m => computeMatch(selectedEnt, m))
         .filter((r): r is MatchResult => r !== null)
         .sort((a, b) => b.score - a.score)
@@ -4669,14 +4415,9 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
     setTimeout(() => { setRunning(false); setShowResults(true); }, 600);
   };
 
-  // When a pairing is confirmed, keep the list that was on screen so the chosen card stays "Confirmed" and the others are disabled.
-  const [frozen, setFrozen] = useState<{ entId: string; results: MatchResult[]; chosenId: string } | null>(null);
-  // Unlocked again (e.g. a new re-match request): drop the frozen list and score fresh.
-  useEffect(() => { if (frozen && selectedEnt && !isDone(selectedEnt)) setFrozen(null); }, [frozen, selectedEnt, programme.pairs, programme.rematches]);
-
   const handleConfirm = (result: MatchResult) => {
     if (!selectedEnt) return;
-    setFrozen({ entId: selectedEnt.id, results: recommendations, chosenId: result.mentor.id });
+    setConfirmedPairs(prev => new Set([...prev, selectedEnt.id]));
     confirmPairing(
       selectedEnt.id,
       result.mentor.id,
@@ -4686,6 +4427,7 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
       selectedEnt.name,
       selectedEnt.sector
     );
+    toast.success(`Pairing confirmed: ${selectedEnt.name} → ${result.mentor.name}. Successfully updated in Active Pairs and Matching section!`);
   };
 
   const scoreColor = (s: number) => s >= 80 ? "#059669" : s >= 60 ? "#f59e0b" : "#ef4444";
@@ -4694,7 +4436,7 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
   return (
     <div style={{ display: "grid", gap: 18 }}>
       {/* Header */}
-      <div style={{ background: "#4C808A", borderRadius: 3, padding: "14px 18px", border: "1px solid #4C808A" }}>
+      <div style={{ background: "#4C808A", borderRadius: 8, padding: "14px 18px", border: "1px solid #4C808A" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <GitMerge size={16} color="#ffffff" />
           <span style={{ color: "#ffffff", fontWeight: 800, fontSize: 13 }}>Matching Engine</span>
@@ -4704,123 +4446,129 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
         </p>
       </div>
 
-      {/* Mentor-side start: rank the waiting entrepreneurs for ONE mentor */}
-      {focusMentor && (
-        <div style={{ background: "#fff", border: "2px solid #e8e8e8", borderRadius: 3, padding: "14px 16px" }}>
-          <p style={{ color: NAVY, fontWeight: 800, fontSize: 13, margin: "0 0 2px" }}>
-            Assign a mentee to {focusMentor.name} <span style={{ color: "#6b7280", fontWeight: 600 }}>({focusMentor.currentMenteeCount}/{focusMentor.maxMenteeCount} mentees)</span>
-          </p>
-          <p style={{ color: "#6b7280", fontSize: 11, margin: "0 0 10px" }}>Entrepreneurs still awaiting a mentor (or with an open re-match), ranked by fit with this mentor. Pairs that fail the hard filters are not shown.</p>
-          {focusMentor.currentMenteeCount >= focusMentor.maxMenteeCount ? (
-            <p style={{ color: "#7c3aed", fontSize: 12, fontWeight: 700, margin: 0 }}>This mentor is at capacity.</p>
-          ) : focusResults.length === 0 ? (
-            <p style={{ color: "#6b7280", fontSize: 12, margin: 0 }}>No eligible entrepreneurs are waiting for a mentor.</p>
-          ) : (
-            <div style={{ display: "grid", gap: 8 }}>
-              {focusResults.map(({ ent, result }) => (
-                <div key={ent.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, border: "1px solid #e8e8e8", borderRadius: 3, padding: "8px 12px" }}>
-                  <div>
-                    <div style={{ color: NAVY, fontWeight: 700, fontSize: 12 }}>{ent.name} <span style={{ color: "#6b7280", fontWeight: 500, marginLeft: 8 }}>{ent.sector}</span> <span style={{ color: "#6b7280", fontWeight: 500, marginLeft: 8 }}>{ent.businessStage}</span></div>
-                    <div style={{ color: "#6b7280", fontSize: 10, marginTop: 2 }}>{result.explanation}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                    <span style={{ color: scoreColor(result.score), fontWeight: 800, fontSize: 13 }}>{result.score}%</span>
-                    <button onClick={() => confirmPairing(ent.id, focusMentor.id, focusMentor.name, focusMentor.expertise, result.score, ent.name, ent.sector)}
-                      style={{ background: TEAL, color: "#fff", border: "none", borderRadius: 3, padding: "6px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Assign</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Entrepreneur cards */}
       <div>
+        <p style={{ color: "#3B4167", fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", margin: "0 0 10px" }}>
+          STEP 1: SELECT ENTREPRENEUR CANDIDATE ({candidates.length} available)
+        </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
           {candidates.map(ent => {
             const isSelected = selectedEntId === ent.id || selectedEnt?.id === ent.id;
-            const isConfirmed = isDone(ent);
+            const isConfirmed = confirmedPairs.has(ent.id);
             const weakSkills = Object.entries(ent.skillRatings).filter(([, v]) => v <= 2).map(([k]) => k);
-            const isRematchCandidate = entApps.some(a => a.id === ent.id && (a as any).matchState === "Re-match requested");
+            const isRematchCandidate = matchPairs.some(p => p.reMatchReq && (p.mentee.toLowerCase() === ent.name.toLowerCase() || p.mentee.toLowerCase().includes(ent.name.toLowerCase()))) ||
+              entApps.some(a => a.name.toLowerCase() === ent.name.toLowerCase() && (
+                (a as any).reMatchReq ||
+                a.matchingStage === "Re-match Requested" ||
+                a.status === "Re-match Requested" ||
+                a.approvalStatus === "Re-match Requested" ||
+                pairings?.[a.id]?.approvalStatus === "Re-match Requested"
+              ));
 
             return (
               <div
                 key={ent.id}
                 style={{
                   background: "#fff",
-                  borderRadius: 3,
-                  overflow: "hidden",
-                  border: `1px solid ${isSelected ? "#4c808a" : "#e8e8e8"}`,
+                  borderRadius: 8,
+                  padding: "14px 16px",
+                  border: `2px solid ${isConfirmed ? "#059669" : isSelected ? TEAL : "#e5e7eb"}`,
+                  boxShadow: isSelected ? `0 0 0 3px ${TEAL}20` : "0 2px 8px rgba(0,0,0,0.05)",
                   cursor: isConfirmed ? "default" : "pointer",
-                  transition: "border-color 0.2s",
+                  transition: "all 0.2s",
                 }}
                 onClick={() => !isConfirmed && handleRun(ent.id)}
               >
-                {/* Header band: profile photo, name + district, confirmed check */}
-                <div style={{ background: "#ffffff", borderBottom: "1px solid #e8e8e8", display: "flex", alignItems: "center", gap: 14, padding: "16px 18px" }}>
-                  {(ent as any).photoUrl ? (
-                    <img src={(ent as any).photoUrl} alt={ent.name} style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "2px solid #e8e8e8" }} />
-                  ) : (
-                    <svg xmlns="http://www.w3.org/2000/svg" width="46" height="46" viewBox="0 0 46 46" role="img" aria-label={`${ent.name} profile photo`} style={{ flexShrink: 0 }}>
-                      <defs><clipPath id={`pp-${ent.id}`}><circle cx="23" cy="23" r="23" /></clipPath></defs>
-                      <circle cx="23" cy="23" r="23" fill="#4c808a" />
-                      <g clipPath={`url(#pp-${ent.id})`} fill="#ffffff">
-                        <circle cx="23" cy="17.5" r="7.5" />
-                        <ellipse cx="23" cy="42" rx="14" ry="11.5" />
-                      </g>
-                    </svg>
-                  )}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: PANEL_BG, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <User size={14} color="#fff" strokeWidth={1.8} />
+                  </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <p style={{ color: "#4c808a", fontWeight: 600, fontSize: 15, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ent.name}</p>
+                      <p style={{ color: NAVY, fontWeight: 700, fontSize: 11, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ent.name}</p>
+                      {isRematchCandidate && (
+                        <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 8, padding: "1px 5px", borderRadius: 4, fontWeight: 700, flexShrink: 0 }}>
+                          RE-MATCH
+                        </span>
+                      )}
                     </div>
-                    <p style={{ color: "#4c808a", fontWeight: 500, fontSize: 12, margin: "2px 0 0" }}>{ent.district}</p>
+                    <p style={{ color: "#888", fontSize: 9, margin: 0 }}>{ent.district}</p>
                   </div>
-                  {isRematchCandidate && !isConfirmed && (
-                    <span style={{ color: "#ef4444", fontSize: 10, fontWeight: 700, flexShrink: 0, letterSpacing: "0.03em" }}>
-                      RE-MATCH
-                    </span>
+                  {isConfirmed && <CheckCircle size={16} color="#059669" />}
+                </div>
+
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
+                  {ent.businessStage && !isRemovedBadge(ent.businessStage) && (
+                    <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>{ent.businessStage}</span>
                   )}
-                  {isConfirmed && (
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4c808a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="Pairing confirmed" style={{ flexShrink: 0 }}>
-                      <circle cx="12" cy="12" r="10" />
-                      <path d="M8 12.5l3 3 5-6" />
-                    </svg>
+                  {ent.sector && !isRemovedBadge(ent.sector) && (
+                    <span style={{ background: "#f3f4f6", color: "#555", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>{ent.sector}</span>
+                  )}
+                  {ent.isYouth && !isRemovedBadge("Youth") && (
+                    <span style={{ background: "#eff6ff", color: "#2563eb", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>Youth</span>
+                  )}
+                  {ent.isWoman && !isRemovedBadge("Woman") && (
+                    <span style={{ background: "#fdf4ff", color: "#9333ea", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>Woman</span>
+                  )}
+                  {ent.isRural && !isRemovedBadge("Rural") && (
+                    <span style={{ background: "#f0fdf4", color: "#16a34a", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>Rural</span>
                   )}
                 </div>
 
-                {/* Body */}
-                <div style={{ padding: "14px 18px 16px" }}>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-                    {ent.businessStage && !isRemovedBadge(ent.businessStage) && (
-                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>{ent.businessStage}</span>
-                    )}
-                    {ent.sector && !isRemovedBadge(ent.sector) && (
-                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>{ent.sector}</span>
-                    )}
-                    {ent.isYouth && !isRemovedBadge("Youth") && (
-                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>Youth</span>
-                    )}
-                    {ent.isWoman && !isRemovedBadge("Woman") && (
-                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>Woman</span>
-                    )}
-                    {ent.isRural && !isRemovedBadge("Rural") && (
-                      <span style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 500 }}>Rural</span>
-                    )}
-                  </div>
+                <p style={{ color: "#666", fontSize: 9, margin: "0 0 6px", lineHeight: 1.5 }}>
+                  <strong style={{ color: "#444" }}>Needs:</strong> {ent.businessNeeds.join(", ")}
+                </p>
 
-                  <p style={{ color: "#52514e", fontSize: 13, margin: "0 0 6px", lineHeight: 1.45 }}>
-                    <strong style={{ color: "#3b4167", fontWeight: 600 }}>Needs:</strong> {ent.businessNeeds.join(", ")}
+                {weakSkills.length > 0 && (
+                  <p style={{ color: "#666", fontSize: 9, margin: "0 0 6px" }}>
+                    <strong style={{ color: "#ef4444" }}>Skills gaps:</strong> {weakSkills.join(", ")}
                   </p>
+                )}
 
-                  {weakSkills.length > 0 && (
-                    <p style={{ color: "#52514e", fontSize: 13, margin: "0 0 6px", lineHeight: 1.45 }}>
-                      <strong style={{ color: "#8e2626", fontWeight: 600 }}>Gaps:</strong> {weakSkills.join(", ")}
-                    </p>
-                  )}
-
-                </div>
+                {isConfirmed ? (
+                  <div style={{ marginTop: 10, background: "#f0fdf4", borderRadius: 6, padding: "6px 10px", textAlign: "center" }}>
+                    <span style={{ color: "#059669", fontSize: 9, fontWeight: 700 }}>✓ Pairing Confirmed</span>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 10 }}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRun(ent.id);
+                      }}
+                      disabled={running && isSelected}
+                      style={{
+                        width: "100%",
+                        background: "#3B4167",
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: 6,
+                        padding: "7px 12px",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        cursor: running && isSelected ? "default" : "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 6,
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                        transition: "all 0.15s ease",
+                      }}
+                    >
+                      {isSelected && running ? (
+                        <>
+                          <div style={{ width: 10, height: 10, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTop: "2px solid #ffffff", animation: "im-spin 0.8s linear infinite" }} />
+                          <span>Computing Matches...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={11} color="#ffffff" />
+                          <span>{isSelected ? "Showing Matches" : "Click to Run Match"}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -4831,7 +4579,7 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
       {selectedEnt && (
         <div>
           {running ? (
-            <div style={{ background: "#fff", borderRadius: 3, padding: "32px", textAlign: "center", border: "1px solid #e8e8e8" }}>
+            <div style={{ background: "#fff", borderRadius: 8, padding: "32px", textAlign: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
               <div style={{ width: 40, height: 40, borderRadius: "50%", border: `3px solid ${TEAL}30`, borderTop: `3px solid ${TEAL}`, margin: "0 auto 14px", animation: "im-spin 0.9s linear infinite" }} />
               <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 4px" }}>Running Matching Engine...</p>
               <p style={{ color: "#888", fontSize: 11, margin: 0 }}>Applying eligibility filters → weighted scoring → semantic alignment</p>
@@ -4842,131 +4590,137 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
                 <p style={{ color: "#3B4167", fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", margin: 0 }}>
                   TOP RECOMMENDATIONS FOR {selectedEnt.name.toUpperCase()}
                 </p>
-                <span style={{ color: "#888", fontSize: 10 }}>{livePool.length} mentors scored, {recommendations.length} shown</span>
+                <span style={{ color: "#888", fontSize: 10 }}>{MENTOR_MATCH_PROFILES.length} mentors scored, {recommendations.length} shown</span>
               </div>
-              {(frozen && frozen.entId === selectedEnt.id ? frozen.results : recommendations).map((result, idx) => {
+              {recommendations.map((result, idx) => {
                 const isExpanded = expandedBreakdown === result.mentor.id;
-                const isConfirmed = isDone(selectedEnt);
-                const isChosen = isConfirmed && frozen?.entId === selectedEnt.id && frozen.chosenId === result.mentor.id;
-                const isDisabledOption = isConfirmed && !isChosen;
+                const isConfirmed = confirmedPairs.has(selectedEnt.id);
                 return (
                   <div key={result.mentor.id} style={{
-                    opacity: isDisabledOption ? 0.55 : 1, transition: "opacity 0.2s",
-                    background: "#fff", borderRadius: 3, overflow: "hidden",
-                    border: "1px solid #e8e8e8",
+                    background: "#fff", borderRadius: 8, overflow: "hidden",
+                    boxShadow: idx === 0 ? `0 4px 16px ${TEAL}20` : "0 2px 8px rgba(0,0,0,0.06)",
+                    border: idx === 0 ? `1.5px solid ${TEAL}40` : "1px solid #e5e7eb",
                   }}>
-                    <div style={{ padding: "20px 22px" }}>
-                      {/* Header: score ring + rank tag, name, details */}
-                      <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 16 }}>
-                        <svg width="64" height="64" viewBox="0 0 64 64" style={{ flexShrink: 0 }} role="img" aria-label={`Match score ${result.score} out of 100`}>
-                          <circle cx="32" cy="32" r="27" fill="none" stroke="#f0f0f0" strokeWidth="6" />
-                          <circle cx="32" cy="32" r="27" fill="none" stroke={scoreColor(result.score)} strokeWidth="6" strokeLinecap="round"
-                            strokeDasharray={`${(result.score / 100) * 2 * Math.PI * 27} ${2 * Math.PI * 27}`} transform="rotate(-90 32 32)" />
-                          <text x="32" y="38" textAnchor="middle" fontSize="19" fontWeight="600" fill="#3b4167">{result.score}</text>
-                        </svg>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <span style={{ display: "inline-block", background: "#3b4167", color: "#ffffff", fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 999, marginBottom: 6 }}>{rankLabel[idx]}</span>
-                          <p style={{ color: "#3b4167", fontWeight: 600, fontSize: 16, margin: "0 0 3px" }}>{result.mentor.name}</p>
-                          <p style={{ color: "#6b6b68", fontSize: 12, margin: 0, lineHeight: 1.4, display: "flex", flexWrap: "wrap", columnGap: 12, rowGap: 2 }}>
-                            <span>{result.mentor.expertise.replace(/&/g, "and")}</span>
-                            <span>{result.mentor.district}</span>
-                            <span>{result.mentor.yearsExperience} yrs exp</span>
-                            <span>{result.mentor.startupsmentored} startups mentored</span>
-                            <span>{result.mentor.mentoringMode}</span>
+                    {/* Rank banner */}
+                    <div style={{ background: idx === 0 ? TEAL : idx === 1 ? `${TEAL}cc` : `${TEAL}99`, padding: "5px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span style={{ color: "#fff", fontSize: 9, fontWeight: 800, letterSpacing: "0.1em" }}>{rankLabel[idx]}</span>
+                    </div>
+                    <div style={{ padding: "14px 16px" }}>
+                      {/* Mentor header */}
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
+                        <div style={{ width: 44, height: 44, borderRadius: "50%", background: PANEL_BG, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <User size={20} color="#fff" strokeWidth={1.5} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <p style={{ color: NAVY, fontWeight: 800, fontSize: 13, margin: "0 0 2px" }}>{result.mentor.name}</p>
+                          <p style={{ color: "#888", fontSize: 10, margin: "0 0 4px" }}>{result.mentor.expertise.replace(/&/g, "and")} • {result.mentor.district}</p>
+                          <p style={{ color: "#666", fontSize: 9, margin: 0, fontStyle: "italic" }}>
+                            {result.mentor.yearsExperience} yrs exp • {result.mentor.startupsmentored} startups mentored • Mode: {result.mentor.mentoringMode}
                           </p>
+                        </div>
+                        {/* Score badge */}
+                        <div style={{ textAlign: "center", flexShrink: 0 }}>
+                          <div style={{
+                            width: 56, height: 56, borderRadius: "50%",
+                            background: `conic-gradient(${scoreColor(result.score)} ${result.score * 3.6}deg, #f0f0f0 0deg)`,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            position: "relative",
+                          }}>
+                            <div style={{ width: 44, height: 44, borderRadius: "50%", background: "#fff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                              <span style={{ color: scoreColor(result.score), fontWeight: 900, fontSize: 14, lineHeight: 1 }}>{result.score}</span>
+                              <span style={{ color: "#bbb", fontSize: 7, fontWeight: 600 }}>/ 100</span>
+                            </div>
+                          </div>
                         </div>
                       </div>
 
-                      {/* Why this match: check / warning list */}
-                      <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
-                        {parseMatchReasons(result.explanation).map((r, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, color: "#1f1f1e", fontSize: 13 }}>
-                            {r.warn ? (
-                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a5a00" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                                <path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /><path d="M12 9v4" /><path d="M12 17h.01" />
-                              </svg>
-                            ) : (
-                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#006300" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                                <path d="M20 6L9 17l-5-5" />
-                              </svg>
-                            )}
-                            <span>{r.text}</span>
+                      {/* Explanation */}
+                      <div style={{ background: "#4C808A", borderRadius: 6, padding: "9px 13px", marginBottom: 10, border: "1px solid #4C808A" }}>
+                        <p style={{ color: "#ffffff", fontSize: 10, margin: 0, lineHeight: 1.6 }}>
+                          <strong style={{ color: "#ffffff", fontWeight: 800 }}>Why this match: </strong>{result.explanation.replace(/\.$/, "")}
+                        </p>
+                      </div>
+
+                      {/* Capacity & availability */}
+                      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                        {[
+                          { label: "Capacity", val: `${result.mentor.currentMenteeCount}/${result.mentor.maxMenteeCount} mentees` },
+                          { label: "Languages", val: result.mentor.languages.join(", ") },
+                          { label: "Monthly Hours", val: `${result.mentor.hoursPerMonth} hrs/mo` },
+                        ].map(item => (
+                          <div key={item.label} style={{ background: "#3B4167", borderRadius: 5, padding: "4px 10px", border: "1px solid #3B4167" }}>
+                            <p style={{ color: "rgba(255, 255, 255, 0.75)", fontSize: 8, margin: "0 0 1px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{item.label}</p>
+                            <p style={{ color: "#ffffff", fontSize: 10, margin: 0, fontWeight: 700 }}>{item.val}</p>
                           </div>
                         ))}
                       </div>
 
-                      {/* Capacity, languages, hours */}
-                      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-                        {[
-                          `${result.mentor.currentMenteeCount}/${result.mentor.maxMenteeCount} mentees`,
-                          result.mentor.languages.join(", "),
-                          `${result.mentor.hoursPerMonth} hrs/month`,
-                        ].map(txt => (
-                          <span key={txt} style={{ background: "#3b4167", color: "#ffffff", fontSize: 12, padding: "4px 12px", borderRadius: 999 }}>{txt}</span>
-                        ))}
-                      </div>
+                      {/* Breakdown toggle */}
+                      <button onClick={() => setExpandedBreakdown(isExpanded ? null : result.mentor.id)}
+                        style={{ background: "none", border: "none", padding: 0, color: TEAL, fontSize: 10, cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 4, marginBottom: isExpanded ? 10 : 0 }}>
+                        <ChevronRight size={12} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+                        {isExpanded ? "Hide" : "View"} score breakdown (9 criteria)
+                      </button>
 
                       {isExpanded && (
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
                           {result.breakdown.map(b => (
-                            <div key={b.label} style={{ background: "#f8f9fb", borderRadius: 3, padding: "6px 10px" }}>
+                            <div key={b.label} style={{ background: "#f8f9fb", borderRadius: 5, padding: "6px 10px" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                                <span style={{ color: "#666", fontSize: 10, fontWeight: 600 }}>{b.label}</span>
-                                <span style={{ color: scoreColor(b.score), fontSize: 10, fontWeight: 800 }}>{b.score}%</span>
+                                <span style={{ color: "#666", fontSize: 9, fontWeight: 600 }}>{b.label}</span>
+                                <span style={{ color: scoreColor(b.score), fontSize: 9, fontWeight: 800 }}>{b.score}%</span>
                               </div>
                               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <div style={{ flex: 1, height: 4, background: "#e5e7eb", borderRadius: 3 }}>
-                                  <div style={{ height: "100%", width: `${b.score}%`, background: scoreColor(b.score), borderRadius: 3, transition: "width 0.5s ease" }} />
+                                <div style={{ flex: 1, height: 4, background: "#e5e7eb", borderRadius: 4 }}>
+                                  <div style={{ height: "100%", width: `${b.score}%`, background: scoreColor(b.score), borderRadius: 4, transition: "width 0.5s ease" }} />
                                 </div>
-                                <span style={{ color: "#bbb", fontSize: 9 }}>×{b.weight}%</span>
+                                <span style={{ color: "#bbb", fontSize: 8 }}>×{b.weight}%</span>
                               </div>
                             </div>
                           ))}
                         </div>
                       )}
 
-                      {/* Footer: breakdown toggle + actions */}
-                      <div style={{ borderTop: "1px solid #e8e8e8", paddingTop: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                        <button onClick={() => setExpandedBreakdown(isExpanded ? null : result.mentor.id)}
-                          style={{ background: "none", border: "none", padding: 0, color: "#4c808a", fontSize: 12, cursor: "pointer", fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}>
-                          {isExpanded ? "Hide" : "View"} score breakdown (9 criteria)
-                          <ChevronRight size={13} style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+                      {/* Action */}
+                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                        <button
+                          onClick={() => setViewingMentorModal({ mentor: result.mentor, result })}
+                          style={{
+                            background: "#4C808A",
+                            border: "1px solid #4C808A",
+                            borderRadius: 6,
+                            padding: "7px 14px",
+                            fontSize: 10,
+                            color: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 700
+                          }}
+                        >
+                          View Full Profile
                         </button>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <button
-                            onClick={() => setViewingMentorModal({ mentor: result.mentor, result })}
-                            style={{ background: "#4c808a", border: "1px solid #4c808a", borderRadius: 3, padding: "8px 16px", fontSize: 12, color: "#ffffff", cursor: "pointer", fontWeight: 500 }}
-                          >
-                            View profile
-                          </button>
-                          <button
-                            onClick={() => !isConfirmed && handleConfirm(result)}
-                            disabled={isConfirmed}
-                            title={isDisabledOption ? "Another mentor was confirmed for this entrepreneur" : undefined}
-                            style={{
-                              background: isDisabledOption ? "#f3f4f6" : "#4c808a",
-                              border: `1px solid ${isDisabledOption ? "#e8e8e8" : "#4c808a"}`,
-                              borderRadius: 3,
-                              padding: "8px 16px",
-                              fontSize: 12,
-                              color: isDisabledOption ? "#9ca3af" : "#ffffff",
-                              cursor: isConfirmed ? "not-allowed" : "pointer",
-                              fontWeight: 500,
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                            }}
-                          >
-                            {isDisabledOption ? (
-                              <>{frozen?.entId === selectedEnt.id ? "Not selected" : "Already paired"}</>
-                            ) : (
-                              <>
-                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-                                {isChosen ? "Confirmed" : "Confirm pairing"}
-                              </>
-                            )}
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => !isConfirmed && handleConfirm(result)}
+                          disabled={isConfirmed}
+                          style={{
+                            background: isConfirmed ? "#f0fdf4" : TEAL,
+                            border: isConfirmed ? "1px solid #bbf7d0" : "none",
+                            borderRadius: 6,
+                            padding: "7px 18px",
+                            fontSize: 10,
+                            color: isConfirmed ? "#059669" : "#fff",
+                            cursor: isConfirmed ? "default" : "pointer",
+                            fontWeight: 700,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          {isConfirmed ? (
+                            <><CheckCircle size={12} /> Confirmed</>
+                          ) : (
+                            <><CheckCircle size={12} /> Confirm Pairing</>
+                          )}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -4984,7 +4738,7 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
           matchContext={selectedEnt ? {
             selectedEnt,
             result: viewingMentorModal.result,
-            isConfirmed: isDone(selectedEnt),
+            isConfirmed: confirmedPairs.has(selectedEnt.id),
             onConfirm: () => {
               if (viewingMentorModal.result) {
                 handleConfirm(viewingMentorModal.result);
@@ -4998,36 +4752,46 @@ function AIMatchingEngine({ initialSelectedEntId, initialMentorId }: { initialSe
   );
 }
 
+const HEALTH_COLOR: Record<string, string> = { "Healthy": "#059669", "At Risk": "#f59e0b", "Stalled": "#ef4444" };
+const HEALTH_BG: Record<string, string> = { "Healthy": "#f0fdf4", "At Risk": "#fffbeb", "Stalled": "#fef2f2" };
 
 function AdminPairingView() {
-  const { matchPairs, entApps, mntApps, engineTarget, clearEngineTarget } = useContext(AppDataCtx);
-  const programme = useProgramme();
-  const [mentorFocus, setMentorFocus] = useState<string | null>(null);
+  const { matchPairs, setMatchPairs, entApps, confirmPairing } = useContext(AppDataCtx);
   const [search, setSearch] = useState("");
   const [showReMatchOnly, setShowReMatchOnly] = useState(false);
   const [selected, setSelected] = useState<number | null>(null);
   const [pairingTab, setPairingTab] = useState<"pairs" | "ai-engine">("pairs");
   const [selectedEntId, setSelectedEntId] = useState<string | null>(null);
   const [viewingMentorModal, setViewingMentorModal] = useState<{ mentor: MentorMatchProfile } | null>(null);
-  // Launched from a Matching table row (entrepreneur or mentor side)
-  useEffect(() => {
-    if (!engineTarget) return;
-    setSelectedEntId(engineTarget.entId ?? null);
-    setMentorFocus(engineTarget.mentorId ?? null);
-    setPairingTab("ai-engine");
-    clearEngineTarget();
-  }, [engineTarget]);
+
+  const handleDirectConfirm = (p: MentorPair) => {
+    const entApp = entApps.find(e => e.name.toLowerCase() === p.mentee.toLowerCase());
+    const entId = entApp ? entApp.id : `APP-${p.id}`;
+    const mentorName = (p.mentor && p.mentor !== "Unmatched" && p.mentor !== "Pending Re-assignment") ? p.mentor : "Mrs. Faith Nyirenda";
+    const mentorExpertise = (p.expertise && p.expertise !== "—") ? p.expertise : "Marketing";
+    const matchScore = p.matchScore > 0 ? p.matchScore : 94;
+    confirmPairing(
+      entId,
+      `MNT-${p.id}`,
+      mentorName,
+      mentorExpertise,
+      matchScore,
+      p.mentee,
+      p.menteeVenture || "Enterprise"
+    );
+  };
 
   const filtered = matchPairs.filter(p =>
     (!showReMatchOnly || p.reMatchReq) &&
     (p.mentee.toLowerCase().includes(search.toLowerCase()) || p.mentor.toLowerCase().includes(search.toLowerCase()))
   );
 
-  const scored = matchPairs.filter(p => p.status !== "Terminated" && p.matchScore > 0);
   const activePairsCount = matchPairs.filter(p => p.status === "Active").length;
   const pendingPairsCount = matchPairs.filter(p => p.status === "Pending").length;
   const rematchCount = matchPairs.filter(p => p.reMatchReq).length;
-  const avgScore = scored.length > 0 ? Math.round(scored.reduce((acc, p) => acc + p.matchScore, 0) / scored.length) : 0;
+  const avgScore = matchPairs.length > 0
+    ? Math.round(matchPairs.reduce((acc, p) => acc + (p.matchScore || 0), 0) / matchPairs.length)
+    : 86;
 
   return (
     <div className="im-fade" style={{ display: "grid", gap: 16 }}>
@@ -5040,12 +4804,12 @@ function AdminPairingView() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #e8e8e8" }}>
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #e5e7eb" }}>
         {([
           { key: "pairs",     label: "Active Pairs",    icon: Users },
           { key: "ai-engine", label: "Matching Engine", icon: GitMerge },
         ] as { key: typeof pairingTab; label: string; icon: React.ElementType }[]).map(tab => (
-          <button key={tab.key} onClick={() => { if (tab.key === "ai-engine" && pairingTab !== "ai-engine") { setSelectedEntId(null); setMentorFocus(null); } setPairingTab(tab.key); }}
+          <button key={tab.key} onClick={() => { if (tab.key === "ai-engine" && pairingTab !== "ai-engine") setSelectedEntId(null); setPairingTab(tab.key); }}
             style={{
               background: "none", border: "none", padding: "10px 18px",
               fontSize: 12, fontWeight: pairingTab === tab.key ? 700 : 400,
@@ -5059,7 +4823,7 @@ function AdminPairingView() {
         ))}
       </div>
 
-      {pairingTab === "ai-engine" && <AIMatchingEngine key={`${selectedEntId}|${mentorFocus}`} initialSelectedEntId={selectedEntId} initialMentorId={mentorFocus} />}
+      {pairingTab === "ai-engine" && <AIMatchingEngine initialSelectedEntId={selectedEntId} />}
       {pairingTab === "pairs" && (<>
 
       {/* Stats row */}
@@ -5074,7 +4838,7 @@ function AdminPairingView() {
             key={s.label}
             style={{
               background: "#4C808A",
-              borderRadius: 3,
+              borderRadius: 6,
               padding: "12px 16px",
               boxShadow: "0 2px 8px rgba(76,128,138,0.25)",
               border: "1px solid #4C808A",
@@ -5091,16 +4855,16 @@ function AdminPairingView() {
         <div style={{ flex: 1, position: "relative" }}>
           <Search size={13} color="#bbb" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search mentee or mentor..."
-            style={{ width: "100%", paddingLeft: 34, padding: "9px 12px 9px 34px", border: "1px solid #e8e8e8", borderRadius: 3, fontSize: 12, outline: "none", background: "#fff", boxSizing: "border-box" }} />
+            style={{ width: "100%", paddingLeft: 34, padding: "9px 12px 9px 34px", border: "1px solid #e0e0e0", borderRadius: 6, fontSize: 12, outline: "none", background: "#fff", boxSizing: "border-box" }} />
         </div>
         <button onClick={() => setShowReMatchOnly(r => !r)}
-          style={{ padding: "9px 14px", borderRadius: 3, border: `1px solid ${showReMatchOnly ? "#ef4444" : "#e8e8e8"}`, background: showReMatchOnly ? "#fef2f2" : "#fff", color: showReMatchOnly ? "#ef4444" : "#666", fontSize: 11, cursor: "pointer", fontWeight: showReMatchOnly ? 700 : 400 }}>
+          style={{ padding: "9px 14px", borderRadius: 6, border: `1px solid ${showReMatchOnly ? "#ef4444" : "#e0e0e0"}`, background: showReMatchOnly ? "#fef2f2" : "#fff", color: showReMatchOnly ? "#ef4444" : "#666", fontSize: 11, cursor: "pointer", fontWeight: showReMatchOnly ? 700 : 400 }}>
           Re-match Requests {rematchCount > 0 ? `(${rematchCount})` : ""} {showReMatchOnly ? "✕" : ""}
         </button>
       </div>
 
       {/* Table */}
-      <div style={{ background: "#fff", borderRadius: 3, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
+      <div style={{ background: "#fff", borderRadius: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
             <thead>
@@ -5112,22 +4876,22 @@ function AdminPairingView() {
             </thead>
             <tbody>
               {filtered.map(p => (
-                <Fragment key={p.id}>
-                  <tr className="im-row" style={{ cursor: "pointer" }} onClick={() => setSelected(selected === p.id ? null : p.id)}>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", whiteSpace: "nowrap" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap" }}>
+                <>
+                  <tr key={p.id} className="im-row" style={{ cursor: "pointer" }} onClick={() => setSelected(selected === p.id ? null : p.id)}>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <div style={{ width: 28, height: 28, borderRadius: "50%", background: PANEL_BG, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>
                           <User size={12} color="#fff" strokeWidth={1.8} />
                         </div>
-                        <span style={{ color: NAVY, fontWeight: 600, whiteSpace: "nowrap" }}>{p.mentee}</span>
-                        {p.reMatchReq && <span style={{ color: "#ef4444", fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", flexShrink: 0 }}>RE-MATCH</span>}
+                        <span style={{ color: NAVY, fontWeight: 600 }}>{p.mentee}</span>
+                        {p.reMatchReq && <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 8, padding: "1px 6px", borderRadius: 6, fontWeight: 700 }}>RE-MATCH</span>}
                       </div>
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.menteeVenture}</td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: p.mentor === "Unmatched" ? "#bbb" : NAVY, fontStyle: p.mentor === "Unmatched" ? "italic" : "normal" }}>{p.mentor}</td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
                       {p.stage && !isRemovedBadge(p.stage) ? (
-                        <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>{p.stage}</span>
+                        <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 600 }}>{p.stage}</span>
                       ) : (
                         <span style={{ color: "#bbb", fontSize: 10 }}>—</span>
                       )}
@@ -5135,20 +4899,20 @@ function AdminPairingView() {
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
                       {p.matchScore > 0 ? (
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <div style={{ width: 50, height: 5, background: "#f0f0f0", borderRadius: 3 }}>
-                            <div style={{ height: "100%", width: `${p.matchScore}%`, background: "#059669", borderRadius: 3 }} />
+                          <div style={{ width: 50, height: 5, background: "#f0f0f0", borderRadius: 4 }}>
+                            <div style={{ height: "100%", width: `${p.matchScore}%`, background: "#059669", borderRadius: 4 }} />
                           </div>
                           <span style={{ color: NAVY, fontWeight: 700, fontSize: 10 }}>{p.matchScore}%</span>
                         </div>
                       ) : <span style={{ color: "#bbb", fontSize: 10 }}>—</span>}
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
-                      <span title={p.note} style={{ background: p.status === "Active" ? "#f0fdf4" : p.status === "Terminated" ? "#f3f4f6" : "#fffbeb", color: p.status === "Active" ? "#059669" : p.status === "Terminated" ? "#6b7280" : "#f59e0b", fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 700 }}>{p.status}</span>
+                      <span style={{ background: p.status === "Active" ? "#f0fdf4" : "#fffbeb", color: p.status === "Active" ? "#059669" : "#f59e0b", fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{p.status}</span>
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.sessions}</td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.lastSession}</td>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", whiteSpace: "nowrap" }}>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "nowrap", alignItems: "center" }}>
+                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
+                      <div style={{ display: "flex", gap: 6 }}>
                         {p.reMatchReq && (
                           <button
                             onClick={(e) => {
@@ -5158,30 +4922,20 @@ function AdminPairingView() {
                               setSelectedEntId(entId);
                               setPairingTab("ai-engine");
                             }}
-                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
                           >
                             Review Re-match
                           </button>
                         )}
-                        {p.reMatchReq && p.rematchId && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); programme.declineRematch(p.rematchId!); toast.info(`Re-match request for ${p.mentee} declined. They stay with ${p.mentor}.`); }}
-                            style={{ background: "#fff", border: "1px solid #d1d5db", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#555", cursor: "pointer", fontWeight: 700 }}
-                          >
-                            Keep Mentor
-                          </button>
-                        )}
-                        {p.status === "Pending" && !p.reMatchReq && p.mentor === "Unmatched" && (
+                        {p.status === "Pending" && !p.reMatchReq && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              const entApp = entApps.find(x => x.name.toLowerCase() === p.mentee.toLowerCase());
-                              setSelectedEntId(entApp ? entApp.id : `APP-${p.id}`);
-                              setPairingTab("ai-engine");
+                              handleDirectConfirm(p);
                             }}
-                            style={{ background: "#059669", border: "1px solid #059669", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#059669", border: "1px solid #059669", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
                           >
-                            Find Mentor
+                            Confirm Match
                           </button>
                         )}
                         {p.status === "Active" && !p.reMatchReq && (
@@ -5213,7 +4967,7 @@ function AdminPairingView() {
                               };
                               setViewingMentorModal({ mentor: found });
                             }}
-                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "5px 12px", fontSize: 10, whiteSpace: "nowrap", flexShrink: 0, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
                           >
                             View Full Profile
                           </button>
@@ -5224,33 +4978,23 @@ function AdminPairingView() {
                   {selected === p.id && (
                     <tr key={`${p.id}-exp`}>
                       <td colSpan={9} style={{ padding: "12px 14px", background: "#f8f9fb", borderBottom: "1px solid #f0f0f0" }}>
-                        {(() => {
-                          // Real criteria from the Matching Engine for this pair (capacity ignored: the pair already exists)
-                          const sp = p.pairId ? programme.pairs.find(x => x.id === p.pairId) : undefined;
-                          const mApp = sp ? mntApps.find(m => m.id === sp.mentorId || (!sp.mentorId && m.name === sp.mentor)) : undefined;
-                          const eApp = sp ? entApps.find(a => a.id === sp.menteeId || (!sp.menteeId && a.name === sp.mentee)) : undefined;
-                          const res = sp && mApp && eApp
-                            ? computeMatch(getProfileForMentee(eApp.id, { id: eApp.id, name: eApp.name, district: eApp.district, sector: eApp.sector, businessStage: eApp.stage, isWoman: eApp.gender === "Female" }), { ...profileFromMentorApp(mApp), currentMenteeCount: 0 })
-                            : null;
-                          if (!res) return <p style={{ color: "#888", fontSize: 11, margin: 0 }}>{p.mentor === "Unmatched" ? "No pair yet, so there is no match breakdown." : "No engine breakdown is available for this pair."}</p>;
-                          return (
-                            <>
-                              <p style={{ color: "#888", fontSize: 10, margin: "0 0 8px" }}>Engine criteria for this pair, computed from the current profiles. The pair score shown in the list is the score at the time it was confirmed.</p>
-                              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12 }}>
-                                {res.breakdown.map(f => (
-                                  <div key={f.label} style={{ background: "#fff", borderRadius: 3, padding: "10px 12px" }}>
-                                    <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{f.label} {f.weight}%</p>
-                                    <p style={{ color: TEAL, fontSize: 16, fontWeight: 800, margin: 0 }}>{Math.round(f.score)}%</p>
-                                  </div>
-                                ))}
-                              </div>
-                            </>
-                          );
-                        })()}
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+                          {[
+                            { label: "Expertise Fit", val: `${Math.round(p.matchScore * 0.98)}%` },
+                            { label: "Stage Alignment", val: `${Math.round(p.matchScore * 0.95)}%` },
+                            { label: "Industry Overlap", val: `${Math.round(p.matchScore * 1.02)}%` },
+                            { label: "Working Style", val: `${Math.round(p.matchScore * 0.92)}%` },
+                          ].map(f => (
+                            <div key={f.label} style={{ background: "#fff", borderRadius: 6, padding: "10px 12px" }}>
+                              <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{f.label}</p>
+                              <p style={{ color: TEAL, fontSize: 16, fontWeight: 800, margin: 0 }}>{f.val}</p>
+                            </div>
+                          ))}
+                        </div>
                       </td>
                     </tr>
                   )}
-                </Fragment>
+                </>
               ))}
             </tbody>
           </table>
@@ -5268,6 +5012,395 @@ function AdminPairingView() {
   );
 }
 
+function AdminRelHealthView() {
+  const [filterHealth, setFilterHealth] = useState<string | null>(null);
+
+  const filtered = filterHealth ? PAIR_HEALTH.filter(p => p.health === filterHealth) : PAIR_HEALTH;
+  const healthyCnt = PAIR_HEALTH.filter(p => p.health === "Healthy").length;
+  const atRiskCnt = PAIR_HEALTH.filter(p => p.health === "At Risk").length;
+  const stalledCnt = PAIR_HEALTH.filter(p => p.health === "Stalled").length;
+
+  return (
+    <div className="im-fade" style={{ display: "grid", gap: 16 }}>
+      <div>
+        <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: "0 0 4px" }}>Relationship Health Dashboard</h2>
+        <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Monitor mentor–mentee pair health, flag at-risk relationships and track engagement metrics</p>
+      </div>
+
+      {/* Summary gauges */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+        {[
+          { label: "Healthy Pairs", val: healthyCnt, total: PAIR_HEALTH.length, color: "#059669", desc: "≥ 1 session/wk, satisfaction > 80%" },
+          { label: "At Risk Pairs", val: atRiskCnt, total: PAIR_HEALTH.length, color: "#f59e0b", desc: "< 1 session/wk or satisfaction < 70%" },
+          { label: "Stalled Pairs", val: stalledCnt, total: PAIR_HEALTH.length, color: "#ef4444", desc: "0 sessions in 2+ weeks, flagged" },
+        ].map(g => (
+          <button key={g.label} onClick={() => setFilterHealth(filterHealth === g.label.split(" ")[0] + " " + g.label.split(" ")[1] ? null : g.label.replace("Pairs", "").trim())}
+            style={{ background: "#fff", borderRadius: 6, padding: "18px 20px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${filterHealth && g.label.includes(filterHealth) ? g.color : "transparent"}`, textAlign: "left" }}>
+            <p style={{ color: "#888", fontSize: 10, margin: "0 0 6px" }}>{g.label}</p>
+            <p style={{ color: g.color, fontSize: 28, fontWeight: 800, margin: "0 0 4px" }}>{g.val}<span style={{ fontSize: 14, fontWeight: 400, color: "#bbb" }}>/{PAIR_HEALTH.length}</span></p>
+            <div style={{ height: 4, background: "#f0f0f0", borderRadius: 4, marginBottom: 6 }}>
+              <div style={{ height: "100%", width: `${(g.val / PAIR_HEALTH.length) * 100}%`, background: g.color, borderRadius: 4 }} />
+            </div>
+            <p style={{ color: "#aaa", fontSize: 9, margin: 0 }}>{g.desc}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Alert Banner for at-risk pairs */}
+      {PAIR_HEALTH.some(p => p.flagged) && (
+        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <AlertCircle size={16} color="#f59e0b" style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <p style={{ color: "#92600a", fontSize: 12, fontWeight: 700, margin: "0 0 2px" }}>Alert: Engagement below threshold</p>
+            <p style={{ color: "#a16207", fontSize: 11, margin: 0 }}>Tadala Chirwa & Limbani Gondwe — 0 sessions in the past 2 weeks, satisfaction at 62%. Programme staff review recommended.</p>
+          </div>
+          <button style={{ marginLeft: "auto", background: "#f59e0b", border: "none", borderRadius: 6, padding: "6px 12px", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 700, whiteSpace: "nowrap" }}>Send Nudge</button>
+        </div>
+      )}
+
+      {/* Pair Cards */}
+      <div style={{ display: "grid", gap: 12 }}>
+        {filtered.map(p => (
+          <div key={p.mentee} style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderLeft: `4px solid ${HEALTH_COLOR[p.health]}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ background: HEALTH_BG[p.health], color: HEALTH_COLOR[p.health], fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{p.health}</span>
+                  {p.flagged && <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>⚠ FLAGGED</span>}
+                </div>
+                <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: "0 0 2px" }}>{p.mentee} <span style={{ color: "#aaa", fontWeight: 400 }}>with</span> {p.mentor}</p>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ background: "#f8f9fb", border: "1px solid #e0e0e0", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#666", cursor: "pointer" }}>View Pair</button>
+                {p.flagged && <button style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#ef4444", cursor: "pointer", fontWeight: 700 }}>Intervene</button>}
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 12 }}>
+              {[
+                { label: "Sessions (7 days)", val: p.sessions7d, unit: "", good: p.sessions7d >= 1 },
+                { label: "Satisfaction Score", val: p.satisfaction, unit: "%", good: p.satisfaction >= 80 },
+                { label: "Goal Progress", val: p.goalPct, unit: "%", good: p.goalPct >= 50 },
+                { label: "Trend", val: p.trend === "up" ? "↑ Improving" : p.trend === "down" ? "↓ Declining" : "→ Stable", unit: "", good: p.trend !== "down" },
+              ].map(m => (
+                <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 6, padding: "10px 12px" }}>
+                  <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{m.label}</p>
+                  <p style={{ color: m.good ? "#059669" : "#ef4444", fontSize: typeof m.val === "number" ? 18 : 13, fontWeight: 700, margin: 0 }}>{m.val}{m.unit}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminCohortView() {
+  const [selectedCohort, setSelectedCohort] = useState(COHORTS_DATA[0]);
+
+  return (
+    <div className="im-fade" style={{ display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: "0 0 4px" }}>Cohort & Programme Management</h2>
+          <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Manage cohort intake, enrollment, mentor assignments and custom scoring rubrics</p>
+        </div>
+        <button style={{ background: TEAL, border: "none", borderRadius: 6, padding: "9px 18px", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+          <PlusCircle size={14} /> New Cohort
+        </button>
+      </div>
+
+      {/* Cohort cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+        {COHORTS_DATA.map(c => (
+          <button key={c.id} onClick={() => setSelectedCohort(c)}
+            style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${selectedCohort.id === c.id ? TEAL : "transparent"}`, textAlign: "left" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+              <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: 0 }}>{c.name}</p>
+              <span style={{ background: c.status === "Active" ? "#f0fdf4" : "#f8f9fb", color: c.status === "Active" ? "#059669" : "#888", fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{c.status}</span>
+            </div>
+            <p style={{ color: "#aaa", fontSize: 10, margin: "0 0 10px" }}>{c.startDate} — {c.endDate} · {c.sector}</p>
+            <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
+              <div>
+                <p style={{ color: TEAL, fontSize: 18, fontWeight: 800, margin: 0 }}>{c.mentees}</p>
+                <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Mentees</p>
+              </div>
+              <div>
+                <p style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: 0 }}>{c.mentors}</p>
+                <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Mentors</p>
+              </div>
+            </div>
+            <div style={{ height: 4, background: "#f0f0f0", borderRadius: 4 }}>
+              <div style={{ height: "100%", width: `${c.avgProgress}%`, background: c.status === "Active" ? TEAL : "#059669", borderRadius: 4 }} />
+            </div>
+            <p style={{ color: "#aaa", fontSize: 9, margin: "4px 0 0" }}>{c.avgProgress}% avg progress</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Selected Cohort Detail */}
+      <div style={{ background: "#fff", borderRadius: 6, padding: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <p style={{ color: NAVY, fontWeight: 700, fontSize: 14, margin: "0 0 14px" }}>{selectedCohort.name} — Details</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          {/* Enrollment Table */}
+          <div>
+            <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>Enrollment Breakdown</p>
+            <div style={{ background: "#f8f9fb", borderRadius: 6, overflow: "hidden" }}>
+              {[
+                { label: "Total Enrolled", val: selectedCohort.mentees, color: NAVY },
+                { label: "Active", val: Math.round(selectedCohort.mentees * 0.85), color: "#059669" },
+                { label: "At Risk", val: Math.round(selectedCohort.mentees * 0.1), color: "#f59e0b" },
+                { label: "Dropped", val: Math.round(selectedCohort.mentees * 0.05), color: "#ef4444" },
+                { label: "Mentors Assigned", val: selectedCohort.mentors, color: TEAL },
+              ].map(r => (
+                <div key={r.label} style={{ display: "flex", justifyContent: "space-between", padding: "9px 14px", borderBottom: "1px solid #f0f0f0" }}>
+                  <p style={{ color: "#666", fontSize: 11, margin: 0 }}>{r.label}</p>
+                  <p style={{ color: r.color, fontSize: 11, fontWeight: 700, margin: 0 }}>{r.val}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* Scoring Rubric */}
+          <div>
+            <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>Custom Scoring Rubric</p>
+            <div style={{ background: "#f8f9fb", borderRadius: 6, overflow: "hidden" }}>
+              {[
+                { label: "Business Registration", weight: 15 },
+                { label: "Market Validation (≥50 interviews)", weight: 20 },
+                { label: "Revenue Milestone", weight: 25 },
+                { label: "Session Attendance", weight: 15 },
+                { label: "Goal Completion Rate", weight: 15 },
+                { label: "Mentor Satisfaction", weight: 10 },
+              ].map(r => (
+                <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", borderBottom: "1px solid #f0f0f0" }}>
+                  <p style={{ color: "#666", fontSize: 11, margin: 0 }}>{r.label}</p>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <div style={{ width: 50, height: 4, background: "#e0e0e0", borderRadius: 4 }}>
+                      <div style={{ height: "100%", width: `${r.weight * 4}%`, background: TEAL, borderRadius: 4 }} />
+                    </div>
+                    <p style={{ color: TEAL, fontSize: 10, fontWeight: 700, margin: 0, minWidth: 28 }}>{r.weight}%</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminReportingView() {
+  const [period, setPeriod] = useState<"month" | "quarter" | "year">("month");
+
+  const periodLabel = period === "month" ? "This Month" : period === "quarter" ? "This Quarter" : "This Year";
+
+  return (
+    <div className="im-fade" style={{ display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: "0 0 4px" }}>Reporting & Analytics</h2>
+          <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Programme-level metrics, engagement rates, goal completion and impact reporting</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 6, overflow: "hidden" }}>
+            {(["month", "quarter", "year"] as const).map(p => (
+              <button key={p} onClick={() => setPeriod(p)}
+                style={{ padding: "7px 14px", border: "none", background: period === p ? TEAL : "transparent", color: period === p ? "#fff" : "#666", fontSize: 11, cursor: "pointer", fontWeight: period === p ? 700 : 400, transition: "all 0.2s" }}>
+                {p.charAt(0).toUpperCase() + p.slice(1)}
+              </button>
+            ))}
+          </div>
+          <button style={{ background: "#fff", border: "1px solid #e0e0e0", borderRadius: 6, padding: "7px 14px", fontSize: 11, color: "#666", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+            <Download size={12} /> Export
+          </button>
+        </div>
+      </div>
+
+      {/* KPI Grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        {[
+          { label: "Sessions Conducted", val: "38", sub: "+12% vs last period", color: TEAL, trend: "up" },
+          { label: "Goal Completion Rate", val: "71%", sub: "Cohort 5 avg", color: "#059669", trend: "up" },
+          { label: "Avg Satisfaction Score", val: "84%", sub: "Post-session ratings", color: NAVY, trend: "stable" },
+          { label: "Programme Impact Score", val: "847", sub: "Composite metric", color: "#f59e0b", trend: "up" },
+        ].map(k => (
+          <div key={k.label} style={{ background: "#fff", borderRadius: 6, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderTop: `3px solid ${k.color}` }}>
+            <p style={{ color: "#888", fontSize: 10, margin: "0 0 4px" }}>{k.label}</p>
+            <p style={{ color: NAVY, fontSize: 22, fontWeight: 800, margin: "0 0 2px" }}>{k.val}</p>
+            <p style={{ color: k.trend === "up" ? "#059669" : "#aaa", fontSize: 9, margin: 0 }}>{k.trend === "up" ? "↑ " : "→ "}{k.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Charts Grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        {/* Sessions per mentor */}
+        <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+          <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Sessions per Mentor ({periodLabel})</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[
+              { mentor: "Dr. Tiwonge Banda", sessions: 14, max: 16 },
+              { mentor: "Prof. Patrick Likoswe", sessions: 9, max: 16 },
+              { mentor: "Dr. Chimwemwe Phiri", sessions: 11, max: 16 },
+              { mentor: "Limbani Gondwe", sessions: 4, max: 16 },
+            ].map(m => (
+              <div key={m.mentor}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                  <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{m.mentor}</p>
+                  <p style={{ color: TEAL, fontSize: 10, fontWeight: 700, margin: 0 }}>{m.sessions}</p>
+                </div>
+                <div style={{ height: 6, background: "#f0f0f0", borderRadius: 4 }}>
+                  <div style={{ height: "100%", width: `${(m.sessions / m.max) * 100}%`, background: m.sessions < 6 ? "#ef4444" : TEAL, borderRadius: 4, transition: "width 0.8s" }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Engagement Metrics */}
+        <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+          <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Engagement Metrics</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {[
+              { label: "Avg Sessions/Week", val: "1.2", target: "≥1/wk", ok: true },
+              { label: "Task Completion", val: "68%", target: "≥70%", ok: false },
+              { label: "Response Rate", val: "91%", target: "≥85%", ok: true },
+              { label: "On-Track Pairs", val: "75%", target: "≥70%", ok: true },
+            ].map(m => (
+              <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 6, padding: "10px 12px" }}>
+                <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{m.label}</p>
+                <p style={{ color: m.ok ? "#059669" : "#f59e0b", fontSize: 18, fontWeight: 800, margin: "0 0 2px" }}>{m.val}</p>
+                <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Target: {m.target}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Monthly sessions chart */}
+      <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Monthly Session Frequency — Cohort 5</p>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 100 }}>
+          {[
+            { month: "Jan", sessions: 12 },
+            { month: "Feb", sessions: 18 },
+            { month: "Mar", sessions: 15 },
+            { month: "Apr", sessions: 22 },
+            { month: "May", sessions: 19 },
+            { month: "Jun", sessions: 24 },
+            { month: "Jul", sessions: 20, current: true },
+          ].map(m => (
+            <div key={m.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+              <p style={{ color: m.current ? TEAL : "#aaa", fontSize: 9, fontWeight: m.current ? 700 : 400, margin: "0 0 2px" }}>{m.sessions}</p>
+              <div style={{ width: "100%", height: `${(m.sessions / 24) * 80}px`, background: m.current ? TEAL : `${TEAL}40`, borderRadius: "4px 4px 0 0", transition: "height 0.8s ease" }} />
+              <p style={{ color: "#bbb", fontSize: 8, margin: 0 }}>{m.month}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Outcome Metrics */}
+      <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Business Outcome Metrics — Cohort 5</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+          {[
+            { label: "Businesses Registered", val: "11/18", pct: 61, color: "#059669" },
+            { label: "Reached MVP Stage", val: "6/18", pct: 33, color: TEAL },
+            { label: "First Revenue", val: "4/18", pct: 22, color: NAVY },
+            { label: "Grant Applications", val: "8/18", pct: 44, color: "#f59e0b" },
+            { label: "Programme Graduation", val: "0/18", pct: 0, color: "#bbb" },
+          ].map(m => (
+            <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 6, padding: "12px 14px", textAlign: "center" }}>
+              <p style={{ color: m.color, fontSize: 18, fontWeight: 800, margin: "0 0 2px" }}>{m.val}</p>
+              <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 8px", lineHeight: 1.4 }}>{m.label}</p>
+              <div style={{ height: 4, background: "#e0e0e0", borderRadius: 4 }}>
+                <div style={{ height: "100%", width: `${m.pct}%`, background: m.color, borderRadius: 4 }} />
+              </div>
+              <p style={{ color: "#bbb", fontSize: 8, margin: "3px 0 0" }}>{m.pct}%</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminIntegrationView() {
+  const integrations: { name: string; category: string; status: string; icon: React.ElementType; desc: string; lastSync: string }[] = [
+    { name: "Google Calendar",       category: "Scheduling",    status: "Connected",     icon: Calendar,      desc: "Sync session scheduling and availability across mentor and mentee calendars", lastSync: "2 min ago" },
+    { name: "Microsoft Outlook",     category: "Scheduling",    status: "Connected",     icon: Mail,          desc: "Email and calendar integration for programme staff and mentors", lastSync: "5 min ago" },
+    { name: "Zoom",                  category: "Video Calls",   status: "Connected",     icon: Video,         desc: "Launch video calls directly from session management, auto-log attendance", lastSync: "Active" },
+    { name: "Google Meet",           category: "Video Calls",   status: "Not Connected", icon: Video,         desc: "Alternative video platform for sessions", lastSync: "—" },
+    { name: "LMS (Moodle)",          category: "Learning",      status: "Connected",     icon: GraduationCap, desc: "Course module visibility for mentors, track mentee course completions and certificates", lastSync: "10 min ago" },
+    { name: "Salesforce CRM",        category: "CRM",           status: "Not Connected", icon: Cloud,         desc: "Sync entrepreneur profiles and programme data with CRM for stakeholder reporting", lastSync: "—" },
+    { name: "HubSpot CRM",           category: "CRM",           status: "Not Connected", icon: Link2,         desc: "Alternative CRM integration for partner reporting and pipeline tracking", lastSync: "—" },
+    { name: "Typeform / Registration",category: "Intake",       status: "Connected",     icon: ClipboardList, desc: "Pull applicant data from intake forms directly into the platform", lastSync: "1 hr ago" },
+    { name: "Slack",                 category: "Communication", status: "Configurable",  icon: MessageSquare, desc: "Nudges, session reminders and cohort announcements via Slack workspace", lastSync: "—" },
+  ];
+
+  const categories = [...new Set(integrations.map(i => i.category))];
+  const connected = integrations.filter(i => i.status === "Connected").length;
+
+  return (
+    <div className="im-fade" style={{ display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: "0 0 4px" }}>Integration Hub</h2>
+          <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Manage platform connections — CRM, calendar, video, LMS and intake systems</p>
+        </div>
+        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "8px 14px", display: "flex", gap: 6, alignItems: "center" }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#059669" }} />
+          <p style={{ color: "#059669", fontSize: 11, fontWeight: 700, margin: 0 }}>{connected} of {integrations.length} connected</p>
+        </div>
+      </div>
+
+      {/* Health bar */}
+      <div style={{ background: "#fff", borderRadius: 6, padding: "12px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+          <p style={{ color: NAVY, fontSize: 11, fontWeight: 700, margin: 0 }}>Integration Coverage</p>
+          <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: 0 }}>{Math.round((connected / integrations.length) * 100)}%</p>
+        </div>
+        <div style={{ height: 6, background: "#f0f0f0", borderRadius: 4 }}>
+          <div style={{ height: "100%", width: `${(connected / integrations.length) * 100}%`, background: TEAL, borderRadius: 4, transition: "width 0.8s" }} />
+        </div>
+      </div>
+
+      {/* Integration cards by category */}
+      {categories.map(cat => (
+        <div key={cat}>
+          <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>{cat}</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+            {integrations.filter(i => i.category === cat).map(intg => (
+              <div key={intg.name} style={{ background: "#fff", borderRadius: 6, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderTop: `3px solid ${intg.status === "Connected" ? "#059669" : intg.status === "Configurable" ? "#f59e0b" : "#e0e0e0"}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 6, background: `${TEAL}15`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <intg.icon size={14} color={TEAL} />
+                    </div>
+                    <p style={{ color: NAVY, fontSize: 12, fontWeight: 700, margin: 0 }}>{intg.name}</p>
+                  </div>
+                  <span style={{
+                    background: intg.status === "Connected" ? "#f0fdf4" : intg.status === "Configurable" ? "#fffbeb" : "#f8f9fb",
+                    color: intg.status === "Connected" ? "#059669" : intg.status === "Configurable" ? "#f59e0b" : "#bbb",
+                    fontSize: 8, padding: "2px 7px", borderRadius: 6, fontWeight: 700
+                  }}>{intg.status === "Connected" ? "● Connected" : intg.status === "Configurable" ? "◑ Setup" : "○ Not Connected"}</span>
+                </div>
+                <p style={{ color: "#888", fontSize: 10, margin: "0 0 10px", lineHeight: 1.5 }}>{intg.desc}</p>
+                {intg.status === "Connected" && (
+                  <p style={{ color: "#bbb", fontSize: 9, margin: "0 0 8px" }}>Last sync: {intg.lastSync}</p>
+                )}
+                <button style={{ width: "100%", background: intg.status === "Connected" ? "#f8f9fb" : `${TEAL}15`, border: `1px solid ${intg.status === "Connected" ? "#e0e0e0" : `${TEAL}30`}`, borderRadius: 6, padding: "7px", fontSize: 10, color: intg.status === "Connected" ? "#666" : TEAL, cursor: "pointer", fontWeight: intg.status !== "Connected" ? 700 : 400 }}>
+                  {intg.status === "Connected" ? "Configure" : "Connect"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // (NavKey moved to top of file)
 
@@ -5295,10 +5428,15 @@ export function IncubationManagementPage({
   const [mgmtOpen, setMgmtOpen] = useState(true);
   const [adminOpen, setAdminOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  // Admin-side workflow state is saved so a refresh doesn't undo confirmed matches in the Matching section
-  const savedAdmin = useMemo(() => { try { return JSON.parse(localStorage.getItem(ADMIN_KEY) ?? "{}"); } catch { return {}; } }, []);
-  const [statusOverrides, setStatusOverrides] = useState<Record<string, { status: string; reason?: string; date?: string }>>(savedAdmin.statusOverrides ?? {});
-  const [engineTarget, setEngineTarget] = useState<{ entId?: string; mentorId?: string } | null>(null);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, { status: string; reason?: string; date?: string }>>({});
+  const [matchPairs, setMatchPairs] = useState<MentorPair[]>(INITIAL_MATCH_PAIRS);
+  const [pairings, setPairings] = useState<Record<string, {
+    partnerName: string;
+    matchScore: number;
+    matchingStage: string;
+    introSession: string;
+    approvalStatus: "Approved" | "Pending Approval" | "Re-match Requested";
+  }>>({});
   const [notifications, setNotifications] = useState<IncubationNotification[]>(INITIAL_NOTIFICATIONS);
 
   const addNotification = (
@@ -5337,8 +5475,7 @@ export function IncubationManagementPage({
   useEffect(() => {
     if (liveApplications.length > prevLiveCount.current) {
       const latest = liveApplications[liveApplications.length - 1];
-      // Acceleration applications share this list (for the public tracker) but aren't reviewed on this page
-      if (latest && latest.program === "Incubation") {
+      if (latest) {
         addNotification({
           section: "Applications",
           title: "New Application Received",
@@ -5356,20 +5493,9 @@ export function IncubationManagementPage({
   const setStatusOverride = (id: string, status: string, reason?: string) => {
     const today = new Date().toISOString().split("T")[0];
     setStatusOverrides(prev => ({ ...prev, [id]: { status, reason, date: today } }));
-    // The status change above is what the admin and the public tracker rely on; side effects below must never block it
-    try {
 
     const app = [...liveApplications, ...liveMentorApplications, ...MOCK_ENT_APPS, ...MOCK_MNT_APPS].find(a => a.id === id);
     const candidateName = app?.name || id;
-
-    // Anyone leaving the Matching pool must not leave an orphaned pair behind in the store.
-    if (status !== "Matching") {
-      const isMentorApp = id.startsWith("MNT") || liveMentorApplications.some(m => m.id === id);
-      const mine = programme.pairs.filter(pr => (isMentorApp ? pr.mentorId === id || (!pr.mentorId && pr.mentor === candidateName) : pr.menteeId === id || (!pr.menteeId && pr.mentee === candidateName)));
-      const why = status === "Rejected" ? `${candidateName} was rejected by the programme team.` : status === "Dropouts" ? `${candidateName} dropped out of the programme.` : `${candidateName} left the matching pool.`;
-      mine.forEach(pr => programme.endPair(pr.id, why, { requeue: isMentorApp }));
-      if (!isMentorApp) programme.removeWaiting(candidateName);
-    }
 
     if (status === "Selected") {
       addNotification({
@@ -5392,9 +5518,16 @@ export function IncubationManagementPage({
         actionTarget: "Rejected",
       });
     } else if (status === "Matching") {
-      // Entrepreneurs enter the store's waiting list; there is no separate pairing record any more
-      if ((app as any)?.sector !== undefined && !(app as any)?.expertise)
-        programme.addWaiting({ menteeId: id, mentee: candidateName, venture: (app as any).businessName || candidateName, sector: (app as any).sector || "Services", stage: (app as any).stage || "Idea" });
+      setPairings(prev => ({
+        ...prev,
+        [id]: {
+          partnerName: (app as any)?.matchedMentor || (app as any)?.matchedMentee || "Pending Match Assignment",
+          matchScore: (app as any)?.matchScore || 88,
+          matchingStage: "Awaiting Confirmation",
+          introSession: "Pending Schedule",
+          approvalStatus: "Pending Approval",
+        },
+      }));
       addNotification({
         section: "Matching",
         title: "Candidate Moved to Matching",
@@ -5425,39 +5558,8 @@ export function IncubationManagementPage({
         actionTarget: "Applications",
       });
     }
-    } catch (err) {
-      console.error("Status change saved, but a follow-up step failed:", err);
-    }
   };
 
-  const programme = useProgramme();
-  useEffect(() => {
-    try { localStorage.setItem(ADMIN_KEY, JSON.stringify({ statusOverrides })); } catch { /* storage blocked */ }
-  }, [statusOverrides]);
-
-  // Pairing & Matching rows are a VIEW of the programme store: live pairs, waiting mentees, archived (re-matched) pairs.
-  const matchPairs: MentorPair[] = useMemo(() => {
-    const openRematch = (pairId: string) => programme.rematches.find(r => r.pairId === pairId && r.status === "open");
-    const live: MentorPair[] = programme.pairs.map(p => {
-      const st = programme.stats[p.id], rm = openRematch(p.id);
-      return {
-        id: numId(p.id), pairId: p.id, mentee: p.mentee, menteeVenture: p.venture, sector: p.sector, mentor: p.mentor, expertise: p.expertise,
-        stage: p.stage, matchScore: p.matchScore, status: rm ? "Pending" : "Active", sessions: st?.sessionsTotal ?? 0,
-        lastSession: st?.lastSession ? fmtDate(st.lastSession) : "None yet", reMatchReq: !!rm, rematchId: rm?.id,
-        note: p.predecessorId ? "Re-matched" : undefined,
-      };
-    });
-    const waiting: MentorPair[] = programme.waiting.map(w => ({
-      id: numId(w.id), mentee: w.mentee, menteeVenture: w.venture, sector: w.sector, mentor: "Unmatched", expertise: "—", stage: w.stage,
-      matchScore: 0, status: "Pending", sessions: 0, lastSession: "—", reMatchReq: false,
-    }));
-    const ended: MentorPair[] = programme.pastPairs.map(p => ({
-      id: numId(p.id), pairId: p.id, mentee: p.mentee, menteeVenture: p.venture, sector: p.sector, mentor: p.mentor, expertise: p.expertise,
-      stage: p.stage, matchScore: p.matchScore, status: "Terminated", sessions: programme.sessions.filter(s => s.pairId === p.id).length,
-      lastSession: p.endedAt ? `Ended ${fmtDate(p.endedAt)}` : "Ended", reMatchReq: false, note: p.endReason,
-    }));
-    return [...live, ...waiting, ...ended];
-  }, [programme.pairs, programme.waiting, programme.pastPairs, programme.rematches, programme.stats, programme.sessions]);
   const confirmPairing = (
     entId: string,
     mentorId: string,
@@ -5468,56 +5570,192 @@ export function IncubationManagementPage({
     entSector: string
   ) => {
     const today = new Date().toISOString().split("T")[0];
-    const actualEnt = entApps.find(e => e.id === entId) ?? entApps.find(e => e.name.toLowerCase() === entName.toLowerCase());
-    const actualMentor = mntApps.find(m => m.id === mentorId) ?? mntApps.find(m => m.name.toLowerCase() === mentorName.toLowerCase());
-    const resolvedEntId = actualEnt ? actualEnt.id : entId;
-    const resolvedMentorId = actualMentor ? actualMentor.id : mentorId;
-    const existing = programme.pairs.find(p => p.menteeId === resolvedEntId || (!p.menteeId && p.mentee.toLowerCase() === entName.toLowerCase()));
-    if (existing && (existing.mentorId === resolvedMentorId || existing.mentor === mentorName)) { toast.info(`${entName} is already paired with ${mentorName}.`); return; }
 
-    // The programme store owns pairs. A re-match keeps venture, stage, goals, open tasks, courses and milestones.
-    programme.addPair({ menteeId: resolvedEntId, mentorId: resolvedMentorId, mentee: entName, mentor: mentorName, venture: (actualEnt as any)?.businessName ?? entName, sector: entSector, expertise: mentorExpertise, matchScore, stage: (actualEnt as any)?.stage });
-    setStatusOverrides(prev => ({ ...prev, [resolvedEntId]: { status: "Matching", date: today }, [resolvedMentorId]: { status: "Matching", date: today } }));
+    // Resolve accurate IDs for both sides
+    const actualEnt = entApps.find(e => e.id === entId || e.name.toLowerCase() === entName.toLowerCase());
+    const resolvedEntId = actualEnt ? actualEnt.id : entId;
+
+    const actualMentor = mntApps.find(m => m.id === mentorId || m.name.toLowerCase() === mentorName.toLowerCase());
+    const resolvedMentorId = actualMentor ? actualMentor.id : mentorId;
+
+    setPairings(prev => ({
+      ...prev,
+      [resolvedEntId]: {
+        partnerName: `${mentorName} (${mentorExpertise})`,
+        matchScore,
+        matchingStage: "Pairing Confirmed",
+        introSession: "Pending Introductory Call",
+        approvalStatus: "Approved",
+      },
+      [resolvedMentorId]: {
+        partnerName: `${entName} (${entSector})`,
+        matchScore,
+        matchingStage: "Pairing Confirmed",
+        introSession: "Pending Introductory Call",
+        approvalStatus: "Approved",
+      },
+    }));
+
+    setStatusOverrides(prev => ({
+      ...prev,
+      [resolvedEntId]: { status: "Matching", date: today },
+      [resolvedMentorId]: { status: "Matching", date: today },
+    }));
+
+    setMatchPairs(prev => {
+      const idx = prev.findIndex(p =>
+        p.mentee.toLowerCase() === entName.toLowerCase() ||
+        p.mentee.toLowerCase().includes(entName.toLowerCase()) ||
+        entName.toLowerCase().includes(p.mentee.toLowerCase())
+      );
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = {
+          ...updated[idx],
+          mentor: mentorName,
+          expertise: mentorExpertise,
+          matchScore,
+          status: "Active",
+          reMatchReq: false,
+          lastSession: "Intro Scheduled",
+        };
+        return updated;
+      }
+      return [
+        {
+          id: Date.now(),
+          mentee: entName,
+          menteeVenture: entSector,
+          mentor: mentorName,
+          expertise: mentorExpertise,
+          stage: "MVP",
+          matchScore,
+          status: "Active",
+          sessions: 0,
+          lastSession: "Intro Scheduled",
+          reMatchReq: false,
+        },
+        ...prev,
+      ];
+    });
 
     addNotification({
       section: "Matching",
-      title: existing ? "Re-match Confirmed" : "Mentor Match Confirmed",
-      message: existing
-        ? `${entName} re-matched from ${existing.mentor} to ${mentorName} (${matchScore}% compatibility). Goals, open tasks and courses moved with the mentee.`
-        : `Pair match confirmed: ${entName} paired with ${mentorName} (${mentorExpertise}) with ${matchScore}% compatibility score.`,
+      title: "Mentor Match Confirmed",
+      message: `Pair match confirmed: ${entName} paired with ${mentorName} (${mentorExpertise}) with ${matchScore}% compatibility score.`,
       candidateName: entName,
       candidateId: resolvedEntId,
       type: "success",
       actionTarget: "Matching",
     });
 
-    toast.success(existing ? `${entName} re-matched to ${mentorName}. Their goals and courses moved with them.` : `Pair match confirmed for ${entName} → ${mentorName}.`);
+    toast.success(`Pair match confirmed for ${entName}! Status updated to Approved in Matching section.`);
   };
 
-  /** Opens a re-match review for ONE pair (the store owns the request; both tables read it back). */
-  const requestPairRematch = (pairId: string) => {
-    const pr = programme.pairs.find(x => x.id === pairId); if (!pr) return;
-    programme.requestRematch(pairId, "Requested by the programme team", "admin");
+  const reassignPartner = (app: EntrepreneurApplication | MentorApplication, isEnt: boolean) => {
+    const appId = app.id;
+    const appName = app.name;
+    const today = new Date().toISOString().split("T")[0];
+
+    // 1. Update pairings state for this applicant to show re-match requested and Pairing Proposed
+    setPairings(prev => {
+      const existing = prev[appId];
+      return {
+        ...prev,
+        [appId]: {
+          partnerName: existing?.partnerName || (isEnt ? (app as any).matchedMentor : (app as any).matchedMentee) || "Pending Re-assignment",
+          matchScore: existing?.matchScore || (app as any).matchScore || 85,
+          matchingStage: "Pairing Proposed",
+          introSession: "Re-matching in Progress",
+          approvalStatus: "Re-match Requested",
+        },
+      };
+    });
+
+    // Also update counterpart mentor or mentee if already paired
+    if (isEnt && (app as any).matchedMentor) {
+      const mentorApp = mntApps.find(m => (app as any).matchedMentor.includes(m.name));
+      if (mentorApp) {
+        setPairings(prev => ({
+          ...prev,
+          [mentorApp.id]: {
+            partnerName: "Pending Re-assignment",
+            matchScore: 85,
+            matchingStage: "Pairing Proposed",
+            introSession: "Re-matching in Progress",
+            approvalStatus: "Re-match Requested",
+          },
+        }));
+      }
+    } else if (!isEnt && (app as any).matchedMentee) {
+      const entApp = entApps.find(e => (app as any).matchedMentee.includes(e.name));
+      if (entApp) {
+        setPairings(prev => ({
+          ...prev,
+          [entApp.id]: {
+            partnerName: "Pending Re-assignment",
+            matchScore: 85,
+            matchingStage: "Pairing Proposed",
+            introSession: "Re-matching in Progress",
+            approvalStatus: "Re-match Requested",
+          },
+        }));
+      }
+    }
+
+    // 2. Ensure status is "Matching" so matching count is maintained/updated
+    setStatusOverrides(prev => ({
+      ...prev,
+      [appId]: { status: "Matching", date: today },
+    }));
+
+    // 3. Update matchPairs inside Pairing & Matching:
+    setMatchPairs(prev => {
+      const existingIndex = prev.findIndex(p =>
+        p.mentee.toLowerCase() === appName.toLowerCase() ||
+        p.mentor.toLowerCase().includes(appName.toLowerCase())
+      );
+
+      if (existingIndex >= 0) {
+        const updated = [...prev];
+        updated[existingIndex] = {
+          ...updated[existingIndex],
+          reMatchReq: true,
+          status: "Pending",
+        };
+        return updated;
+      }
+
+      const newPair: MentorPair = {
+        id: Date.now(),
+        mentee: isEnt ? appName : ((app as any).matchedMentee?.split(" (")[0] || "Unassigned"),
+        menteeVenture: isEnt ? ((app as any).businessName || (app as any).sector || "Enterprise") : "Venture",
+        mentor: isEnt ? ((app as any).matchedMentor?.split(" (")[0] || "Pending Re-assignment") : appName,
+        expertise: (app as any).sector || (app as any).expertise || "Services",
+        stage: (app as any).stage || "MVP",
+        matchScore: (app as any).matchScore || 88,
+        status: "Pending",
+        sessions: 1,
+        lastSession: "Today",
+        reMatchReq: true,
+      };
+      return [newPair, ...prev];
+    });
+
     addNotification({
       section: "Matching",
-      title: "Re-match Requested",
-      message: `Re-match review opened for ${pr.mentee} and ${pr.mentor}. Use the Matching Engine to choose a new mentor.`,
-      candidateName: pr.mentee,
-      candidateId: pr.menteeId ?? pr.id,
+      title: "Partner Re-assignment Requested",
+      message: `${appName} partner re-assigned: Status changed to Pending Approval. Re-match request created in Pairing and Matching.`,
+      candidateName: appName,
+      candidateId: appId,
       type: "warning",
       actionTarget: "Pairing & Matching",
     });
-    toast.info(`Re-match requested for ${pr.mentee} (currently with ${pr.mentor}).`);
+
+    toast.info(`${appName} partner re-assigned: Status changed to Pending Approval. Re-match request created in Pairing and Matching.`);
   };
 
-  const openEngine = (target: { entId?: string; mentorId?: string }) => { setEngineTarget(target); setActive("Pairing & Matching"); };
-
-  // Match state is DERIVED from the programme store (pairs are linked by application id; name is only a fallback for legacy records)
-  const mentorPairs = (m: { id: string; name: string }) => programme.pairs.filter(pr => pr.mentorId === m.id || (!pr.mentorId && pr.mentor.toLowerCase() === m.name.toLowerCase()));
-  const menteePair = (a: { id: string; name: string }) => programme.pairs.find(pr => pr.menteeId === a.id) ?? programme.pairs.find(pr => !pr.menteeId && pr.mentee.toLowerCase() === a.name.toLowerCase());
-  const hasOpenRematch = (pairId: string) => programme.rematches.some(r => r.pairId === pairId && r.status === "open");
-
-  // Merge mockup data with live submissions (filter to Incubation only), apply overrides and derive match state from the programme store
+  // Merge mockup data with live submissions (filter to Incubation only), apply overrides & pairings
   const entApps = useMemo(() =>
     [...MOCK_ENT_APPS, ...liveApplications.filter(a => a.program === "Incubation")]
       .map(a => {
@@ -5542,17 +5780,28 @@ export function IncubationManagementPage({
             item = { ...item, status: ov.status };
           }
         }
-        if (item.status === "Matching") {
-          const pr = menteePair(a);
+        const pair = pairings[a.id];
+        if (pair) {
           item = {
             ...item,
-            pairId: pr?.id, matchedMentor: pr?.mentor, matchedMentorId: pr?.mentorId, matchScore: pr?.matchScore, introDate: pr?.introDate,
-            matchState: !pr ? "Awaiting mentor" : hasOpenRematch(pr.id) ? "Re-match requested" : "Paired",
+            status: "Matching",
+            matchedMentor: pair.partnerName,
+            matchScore: pair.matchScore,
+            matchingStage: pair.matchingStage,
+            introSession: pair.introSession,
+            approvalStatus: pair.approvalStatus,
+          };
+        } else if (item.status === "Matching") {
+          const wasMoved = statusOverrides[a.id]?.status === "Matching";
+          item = {
+            ...item,
+            matchingStage: wasMoved ? "Awaiting Confirmation" : (item.matchingStage || "Awaiting Confirmation"),
+            approvalStatus: wasMoved ? "Pending Approval" : (item.approvalStatus || (item.matchingStage === "Awaiting Confirmation" ? "Pending Approval" : "Approved")),
           };
         }
         return item;
       }),
-    [liveApplications, statusOverrides, programme.pairs, programme.rematches]
+    [liveApplications, statusOverrides, pairings]
   );
   const mntApps = useMemo(() =>
     [...MOCK_MNT_APPS, ...liveMentorApplications.filter(a => a.program === "Incubation")]
@@ -5578,29 +5827,29 @@ export function IncubationManagementPage({
             item = { ...item, status: ov.status };
           }
         }
-        if (item.status === "Matching") {
-          const mine = mentorPairs(a);
-          const capacity = a.capacity ?? MENTOR_MATCH_PROFILES.find(x => x.id === a.id)?.maxMenteeCount ?? 4;
-          const scores = mine.map(x => x.matchScore);
+        const pair = pairings[a.id];
+        if (pair) {
           item = {
-            ...item, capacity, load: mine.length,
-            mentees: mine.map(x => ({ pairId: x.id, menteeId: x.menteeId, name: x.mentee, sector: x.sector, score: x.matchScore, rematch: hasOpenRematch(x.id), introDate: x.introDate })),
-            // An open re-match on any of this mentor's pairs puts the mentor back to "Awaiting mentee"
-            matchState: (mine.length === 0 || mine.some(x => hasOpenRematch(x.id))) ? "Awaiting mentee" : mine.length >= capacity ? "At capacity" : "Mentoring",
+            ...item,
+            status: "Matching",
+            matchedMentee: pair.partnerName,
+            matchScore: pair.matchScore,
+            matchingStage: pair.matchingStage,
+            introSession: pair.introSession,
+            approvalStatus: pair.approvalStatus,
+          };
+        } else if (item.status === "Matching") {
+          const wasMoved = statusOverrides[a.id]?.status === "Matching";
+          item = {
+            ...item,
+            matchingStage: wasMoved ? "Awaiting Confirmation" : (item.matchingStage || "Awaiting Confirmation"),
+            approvalStatus: wasMoved ? "Pending Approval" : (item.approvalStatus || (item.matchingStage === "Awaiting Confirmation" ? "Pending Approval" : "Approved")),
           };
         }
         return item;
       }),
-    [liveMentorApplications, statusOverrides, programme.pairs, programme.rematches]
+    [liveMentorApplications, statusOverrides, pairings]
   );
-
-  // Entrepreneurs in the Matching section with no mentor wait in the store, so Pairing & Matching lists them as unmatched.
-  useEffect(() => {
-    entApps.filter(a => a.status === "Matching" && !menteePair(a)).forEach(a => {
-      if (!programme.waiting.some(w => w.menteeId === a.id || w.mentee.toLowerCase() === a.name.toLowerCase()))
-        programme.addWaiting({ menteeId: a.id, mentee: a.name, venture: (a as any).businessName || a.name, sector: (a as any).sector || "Services", stage: (a as any).stage || "Idea" });
-    });
-  }, [programme.pairs, programme.waiting, entApps]);
 
   const entStatusCounts = useMemo(() =>
     entApps.reduce((acc, a) => { acc[a.status] = (acc[a.status] || 0) + 1; return acc; }, {} as Record<string, number>),
@@ -5614,7 +5863,7 @@ export function IncubationManagementPage({
     { key: "Selection",    icon: CheckCircle, count: entStatusCounts["Selected"]  || 0 },
     { key: "Rejected",     icon: XCircle,     count: entStatusCounts["Rejected"]  || 0 },
     { key: "Matching",     icon: GitMerge,    count: matchingEntCount },
-    { key: "Dropouts",     icon: UserMinus,      count: entStatusCounts["Dropouts"]  || 0 },
+    { key: "Dropouts",     icon: Trash2,      count: entStatusCounts["Dropouts"]  || 0 },
   ];
 
   const adminItems: { key: NavKey; icon: React.ElementType; label?: string }[] = [
@@ -5643,7 +5892,7 @@ export function IncubationManagementPage({
     if (active === "Program Setup")      return <ProgramSetupView adminPrograms={adminPrograms} onCreateProgram={onCreateProgram} onUpdateProgram={onUpdateProgram} onDeleteProgram={onDeleteProgram} />;
     if (active === "Pairing & Matching") return <AdminPairingView />;
     if (active === "Relationship Health") return <AdminRelHealthView />;
-    if (active === "Cohort Management")  return <AdminCohortView programmeByCohort={Object.fromEntries(adminPrograms.filter(p => p.cohortId != null).map(p => [p.cohortId as number, p.name]))} />;
+    if (active === "Cohort Management")  return <AdminCohortView />;
     if (active === "Reports & Analytics") return <AdminReportingView />;
     if (active === "Integration Hub")    return <AdminIntegrationView />;
     if (active === "Settings")           return <SettingsView />;
@@ -5734,10 +5983,9 @@ export function IncubationManagementPage({
       confirmPairing,
       setActiveNav: setActive,
       matchPairs,
-      requestPairRematch,
-      openEngine,
-      engineTarget,
-      clearEngineTarget: () => setEngineTarget(null),
+      setMatchPairs,
+      pairings,
+      reassignPartner,
       notifications,
       addNotification,
       markNotificationAsRead,
@@ -5763,7 +6011,7 @@ export function IncubationManagementPage({
 
       {/* ── Desktop sidebar (sticky) ── */}
       <aside className="hidden md:flex flex-col sticky top-0 h-screen shrink-0 py-5 px-2 relative overflow-hidden"
-        style={{ width: 236, background: PANEL_BG, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
+        style={{ width: 260, background: PANEL_BG, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
         <div className="relative z-10 flex flex-col h-full im-sidebar">
           <SidebarBody onSelect={() => {}} />
         </div>
@@ -5813,7 +6061,7 @@ export function IncubationManagementPage({
         </header>
 
         {/* ── Page content ── */}
-        <main className="im-main flex-1 px-3 sm:px-4 py-5">
+        <main className="im-main flex-1 px-5 sm:px-8 py-7">
           {/* Breadcrumb + title */}
           {active !== "Pairing & Matching" && (
             <div className="mb-6">
