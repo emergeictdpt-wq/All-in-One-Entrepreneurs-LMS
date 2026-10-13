@@ -67,9 +67,17 @@ const css = `
 
 type LoginView = "login" | "forgot" | "mfa" | "success";
 
-export function LoginPage({ onBack, onNavigate }: {
+import type { AuthResult, ManagerAuthResult } from "../data/auth";
+import { SEED_MANAGERS } from "../data/managers";
+import { DEMO_MODE, DEMO_PASSWORD } from "../data/auth";
+
+export function LoginPage({ onBack, onNavigate, onEntrepreneurLogin, onManagerLogin }: {
   onBack: () => void;
   onNavigate?: (page: string) => void;
+  /** Checks the credentials and, when they are good, signs the person in and opens their portal. */
+  onEntrepreneurLogin?: (email: string, password: string) => Promise<AuthResult>;
+  /** Same for programme managers; on success App opens the Program Managers page for that manager. */
+  onManagerLogin?: (email: string, password: string) => Promise<ManagerAuthResult>;
 }) {
   const [view, setView] = useState<LoginView>("login");
   const [role, setRole] = useState<"entrepreneur" | "manager">("entrepreneur");
@@ -95,31 +103,24 @@ export function LoginPage({ onBack, onNavigate }: {
 
   const isLocked = attempts >= 5 && countdown > 0;
 
-  const handleSignIn = () => {
+  const handleSignIn = async () => {
     if (!email || !password) { setError("Please enter your email and password."); return; }
     if (isLocked) return;
     setError(""); setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      // Demo: navigate directly to respective portals
-      if (role === "manager") {
-        onNavigate?.("program-managers");
-        return;
-      }
-      if (role === "entrepreneur") {
-        onNavigate?.("mentee-dashboard");
-        return;
-      }
-      const next = attempts + 1;
-      setAttempts(next);
-      if (next >= 5) {
-        setCountdown(60);
-        setError("Account temporarily locked after 5 failed attempts. Try again in 60 seconds.");
-        setShake(true); setTimeout(() => setShake(false), 600);
-      } else {
-        setError(`Invalid credentials. ${5 - next} attempt${5 - next !== 1 ? "s" : ""} remaining.`);
-      }
-    }, 1200);
+    const res: { ok: boolean; code?: string; message?: string } | null =
+      role === "manager" ? (onManagerLogin ? await onManagerLogin(email, password) : null) : (onEntrepreneurLogin ? await onEntrepreneurLogin(email, password) : null);
+    setLoading(false);
+    if (res?.ok) return; // App has signed them in and opened their portal
+    setShake(true); setTimeout(() => setShake(false), 600);
+    if (res && res.code && res.code !== "invalid") { setError(res.message ?? "Sign-in is not available for this account."); return; } // right password, but not allowed in (yet): not a failed attempt
+    const next = attempts + 1;
+    setAttempts(next);
+    if (next >= 5) {
+      setCountdown(60);
+      setError("Account temporarily locked after 5 failed attempts. Try again in 60 seconds.");
+    } else {
+      setError(`Incorrect email or password. ${5 - next} attempt${5 - next !== 1 ? "s" : ""} remaining.`);
+    }
   };
 
   const handleMfaInput = (i: number, val: string) => {
@@ -261,6 +262,17 @@ export function LoginPage({ onBack, onNavigate }: {
                       <span className="flex-1">{error}</span>
                       {isLocked && countdown > 0 && <span className="font-bold shrink-0" style={{ color: "#ff8888" }}>{countdown}s</span>}
                     </div>
+                  )}
+
+                  {DEMO_MODE && role === "manager" && (
+                    <p className="mb-4 text-[11px] leading-relaxed" style={{ color: "rgba(255,255,255,0.45)" }}>
+                      Demo build: managers use the password <span className="font-mono text-white/70">{DEMO_PASSWORD}</span>. Try {SEED_MANAGERS.map(m => m.email).join(", ")}. Each sees only the programs they champion in Incubation Management.
+                    </p>
+                  )}
+                  {DEMO_MODE && role === "entrepreneur" && (
+                    <p className="mb-4 text-[11px] leading-relaxed" style={{ color: "rgba(255,255,255,0.45)" }}>
+                      Demo build: sample accounts use the password <span className="font-mono text-white/70">{DEMO_PASSWORD}</span>, e.g. chisomo.banda@gmail.com (paired) or madalitso.chiumia@example.com (waiting to be matched). Anyone who applied here signs in with the password they chose.
+                    </p>
                   )}
 
                   {/* Email */}

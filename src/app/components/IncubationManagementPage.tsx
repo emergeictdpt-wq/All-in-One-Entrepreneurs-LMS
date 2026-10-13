@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, createContext, useContext } from 
 import { toast } from "sonner";
 import {
   LayoutGrid, FileText, CheckCircle, ThumbsUp, GitMerge,
-  XCircle, LogOut, Settings, Mail, Activity, Users,
+  XCircle, Settings, Mail, Activity, Users,
   ChevronDown, ChevronRight, ChevronLeft, Bell, Search, User,
   Eye, Download, MoreHorizontal, Share2,
   PlusCircle, MapPin, Edit2, Trash2 as TrashIcon,
@@ -10,9 +10,14 @@ import {
   Send, Inbox, Star, Trash2, Sliders,
   GraduationCap, Award, BookOpen, CheckSquare, UserCheck, Plus,
   Calendar, Video, Cloud, Link2, MessageSquare, ClipboardList, Image as ImageIcon, Camera,
-  Filter, X, Layers, FileCheck, Lightbulb, RotateCcw, FileX, Phone, Sparkles, CheckCheck, BellRing,
+  Filter, X, Layers, FileCheck, Lightbulb, RotateCcw, FileX, Phone, Sparkles, CheckCheck, BellRing, Folder, Check,
 } from "lucide-react";
 import type { AdminProgram, TimelineEntry, EntrepreneurApplication, MentorApplication } from "../types";
+import { useProgramme, fmtDate, sameMentee, isMentorOf, MAX_MENTOR_CAPACITY } from "../data/programmeStore";
+import { DECISIONS_KEY } from "../data/applicationTracker";
+import { SAMPLE_CORE, SAMPLE_SHE } from "../data/directory";
+import type { Manager } from "../data/managers";
+import { ALL_PROJECTS, ALL_SCOPE, SELECTED_PROJECT_KEY, inScope, mentorInScope, isCompletedProject, splitProjects, type ProjectScope } from "../data/projectScope";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
@@ -87,8 +92,17 @@ export type NavKey =
   | "Pairing & Matching" | "Relationship Health" | "Cohort Management" | "Reports & Analytics" | "Integration Hub"
   | "Settings";
 
+export interface PairHealthRow {
+  pairId: string; programId?: string; mentee: string; mentor: string;
+  health: "Healthy" | "At Risk" | "Stalled" | "New";
+  sessions7d: number; satisfaction: number | null; goalPct: number;
+  flagged: boolean; trend: "up" | "down" | "stable"; reasons: string[]; intervention: boolean;
+}
+
 export interface MentorPair {
-  id: number;
+  id: string | number;
+  /** open re-match request in the programme store, if any */
+  rematchId?: string;
   mentee: string;
   menteeVenture: string;
   mentor: string;
@@ -99,6 +113,8 @@ export interface MentorPair {
   sessions: number;
   lastSession: string;
   reMatchReq: boolean;
+  /** project this pair belongs to */
+  programId?: string;
 }
 
 export interface IncubationNotification {
@@ -113,6 +129,8 @@ export interface IncubationNotification {
   read: boolean;
   type: "success" | "warning" | "danger" | "info";
   actionTarget?: NavKey;
+  /** project the notification is about (unset = general) */
+  programId?: string;
 }
 
 // ── Application data context ──────────────────────────────────────────────────
@@ -131,7 +149,10 @@ const AppDataCtx = createContext<{
   ) => void;
   setActiveNav?: (key: NavKey) => void;
   matchPairs: MentorPair[];
-  setMatchPairs: React.Dispatch<React.SetStateAction<MentorPair[]>>;
+  /** programme-wide pair count (not filtered by project) */
+  totalPairs: number;
+  /** relationship health per pair, computed from the shared programme store */
+  pairHealth: PairHealthRow[];
   pairings?: Record<string, {
     partnerName: string;
     matchScore: number;
@@ -146,13 +167,16 @@ const AppDataCtx = createContext<{
   markAllNotificationsAsRead: () => void;
   clearNotifications: () => void;
   removeNotification: (id: string) => void;
+  /** which project the admin is looking at; every section filters its data with this */
+  scope: ProjectScope;
 }>({
   entApps: [],
   mntApps: [],
   setStatusOverride: () => {},
   confirmPairing: () => {},
   matchPairs: [],
-  setMatchPairs: () => {},
+  totalPairs: 0,
+  pairHealth: [],
   pairings: {},
   reassignPartner: () => {},
   notifications: [],
@@ -161,11 +185,12 @@ const AppDataCtx = createContext<{
   markAllNotificationsAsRead: () => {},
   clearNotifications: () => {},
   removeNotification: () => {},
+  scope: ALL_SCOPE,
 });
 
 
 // ── Sample data (MOCKUP — replace with backend data when ready) ───────────────
-const MOCK_MNT_APPS: MentorApplication[] = [
+const MOCK_MNT_APPS_RAW: MentorApplication[] = [
   { id: "MNT-001", name: "Dr. Thoko Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 100 001", expertise: "Business Strategy",  date: "2026-01-06", status: "Approved",  score: 95, program: "Incubation", isMockup: true, email: "t.banda@univ.ac.mw", title: "Senior Business Advisor", employer: "Banda Strategy Partners" },
   { id: "MNT-002", name: "Mr. Chikumbe Phiri",    gender: "Male",   district: "Blantyre",   phone: "+265 888 200 002", expertise: "Finance & Accounts", date: "2026-01-07", status: "Matching",  score: 88, program: "Incubation", isMockup: true, email: "cphiri@fincorp.mw", title: "Chartered Accountant & CFO", employer: "Apex Financial Advisory", matchedMentee: "Tamara Kachingwe (Financial Services)", matchScore: 91, matchingStage: "Awaiting Confirmation", introSession: "Pending Mentor Acceptance", approvalStatus: "Pending Approval" },
   { id: "MNT-003", name: "Ms. Rejoice Mwale",     gender: "Female", district: "Mzuzu",      phone: "+265 993 300 003", expertise: "Agriculture",        date: "2026-01-09", status: "Selected",  score: 80, program: "Incubation", isMockup: true, email: "rmwale@agridev.org", title: "Agri-Tech Consultant", employer: "Malawi AgriDev Hub", selectionReason: "High expertise in Agri-Tech value chains and exemplary mentorship capability", selectedDate: "2026-01-16" },
@@ -184,8 +209,8 @@ const MOCK_MNT_APPS: MentorApplication[] = [
   { id: "MNT-016", name: "Frank Kalua",           gender: "Male",   district: "Zomba",      phone: "+265 993 660 016", expertise: "Creative Arts",       date: "2026-02-12", status: "Matching",  score: 82, program: "Incubation", isMockup: true, email: "fkalua@creativemedia.mw", title: "Creative Director", employer: "Zomba Media Lab", matchedMentee: "Enelesi Phiri (Creative Arts)", matchScore: 86, matchingStage: "Pairing Confirmed", introSession: "Thursday 3:00 PM" },
 ];
 
-const MOCK_ENT_APPS: EntrepreneurApplication[] = [
-  { id: "APP-001", name: "Chisomo Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 234 567", sector: "Agri-Business",          date: "2026-01-08", status: "Pending",   score: 82, program: "Incubation", isMockup: true, businessName: "Banda Agri-Hub", stage: "Growth", email: "chisomo.banda@gmail.com" },
+const MOCK_ENT_APPS_RAW: EntrepreneurApplication[] = [
+  { id: "APP-001", name: "Chisomo Banda",       gender: "Male",   district: "Lilongwe",   phone: "+265 991 234 567", sector: "Agri-Business",          date: "2026-01-08", status: "Matching",   score: 82, program: "Incubation", isMockup: true, businessName: "Banda Agri-Hub", stage: "Growth", email: "chisomo.banda@gmail.com" },
   { id: "APP-002", name: "Grace Phiri",         gender: "Female", district: "Blantyre",   phone: "+265 888 345 678", sector: "Technology",             date: "2026-01-09", status: "Approved",  score: 91, program: "Incubation", isMockup: true, businessName: "TechHub Malawi", stage: "Early Traction", email: "grace.phiri@outlook.com" },
   { id: "APP-003", name: "Takondwa Mwale",      gender: "Male",   district: "Mzuzu",      phone: "+265 993 456 789", sector: "Manufacturing",          date: "2026-01-10", status: "Selected",  score: 76, program: "Incubation", isMockup: true, businessName: "Mwale Processing", stage: "Idea Stage", email: "takondwa.mwale@gmail.com", selectionReason: "High manufacturing feasibility and robust local import-substitution value proposition", selectedDate: "2026-01-18" },
   { id: "APP-004", name: "Kondwani Tembo",      gender: "Male",   district: "Zomba",      phone: "+265 881 567 890", sector: "Trade",                  date: "2026-01-11", status: "Rejected",  score: 48, program: "Incubation", isMockup: true, businessName: "Tembo General Supplies", stage: "Idea Stage", email: "kondwani.tembo@yahoo.com", rejectionReason: "Evaluation score below 50-point cutoff threshold", rejectedDate: "2026-01-18", feedbackStatus: "Formal Notice Dispatched", reapplyEligible: "Eligible for Next Cohort" },
@@ -211,21 +236,28 @@ const MOCK_ENT_APPS: EntrepreneurApplication[] = [
   { id: "APP-024", name: "Enelesi Phiri",       gender: "Female", district: "Zomba",      phone: "+265 884 876 543", sector: "Creative Arts",          date: "2026-02-26", status: "Matching",  score: 80, program: "Incubation", isMockup: true, businessName: "Zomba Weavers Co-op", stage: "Early Traction", email: "enelesi.phiri@gmail.com", matchedMentor: "Mr. Charles Nkosi (Business Strategy)", matchScore: 86, matchingStage: "Pairing Confirmed", introSession: "Thursday 3:00 PM" },
 ];
 
+// Sample records are spread over the two seeded projects so each project shows its own data.
+// Pairs stay together: a mentor sits in the same project as the mentee they are matched with.
+const SHE_ENT_IDS = new Set(["APP-005", "APP-006", "APP-008", "APP-010", "APP-015", "APP-019", "APP-021", "APP-024"]);
+const SHE_MNT_IDS = new Set(["MNT-002", "MNT-005", "MNT-007", "MNT-010", "MNT-011", "MNT-013", "MNT-016"]);
+export const MOCK_ENT_APPS: EntrepreneurApplication[] = MOCK_ENT_APPS_RAW.map(a => ({ ...a, programId: SHE_ENT_IDS.has(a.id) ? SAMPLE_SHE : SAMPLE_CORE }));
+export const MOCK_MNT_APPS: MentorApplication[] = MOCK_MNT_APPS_RAW.map(a => ({ ...a, programId: SHE_MNT_IDS.has(a.id) ? SAMPLE_SHE : SAMPLE_CORE }));
+
 const EMAILS = [
-  { id: 1, subject: "Welcome to ARISE Youth Incubation Programme", recipients: 98,  opened: 74, clicked: 42, sent: "2026-01-05", status: "Delivered" },
-  { id: 2, subject: "Application Shortlist Notification — Round 1",  recipients: 52,  opened: 49, clicked: 31, sent: "2026-01-12", status: "Delivered" },
-  { id: 3, subject: "Mentor Matching Update: Your Mentor is Ready",   recipients: 31,  opened: 28, clicked: 19, sent: "2026-01-20", status: "Delivered" },
-  { id: 4, subject: "Monthly Progress Check-In — February 2026",      recipients: 98,  opened: 61, clicked: 29, sent: "2026-02-01", status: "Delivered" },
-  { id: 5, subject: "Incubation Bootcamp Reminder — March 2026",       recipients: 142, opened: 0,  clicked: 0,  sent: "2026-03-01", status: "Scheduled"},
+  { id: 1, programId: SAMPLE_CORE, subject: "Welcome to ARISE Youth Incubation Programme", recipients: 98,  opened: 74, clicked: 42, sent: "2026-01-05", status: "Delivered" },
+  { id: 2, programId: SAMPLE_CORE, subject: "Application Shortlist Notification — Round 1",  recipients: 52,  opened: 49, clicked: 31, sent: "2026-01-12", status: "Delivered" },
+  { id: 3, programId: SAMPLE_SHE, subject: "Mentor Matching Update: Your Mentor is Ready",   recipients: 31,  opened: 28, clicked: 19, sent: "2026-01-20", status: "Delivered" },
+  { id: 4, programId: SAMPLE_CORE, subject: "Monthly Progress Check-In — February 2026",      recipients: 98,  opened: 61, clicked: 29, sent: "2026-02-01", status: "Delivered" },
+  { id: 5, programId: SAMPLE_SHE, subject: "Incubation Bootcamp Reminder — March 2026",       recipients: 142, opened: 0,  clicked: 0,  sent: "2026-03-01", status: "Scheduled"},
 ];
 
 const ALUMNI = [
-  { name: "Grace Phiri",       cohort: "2024", business: "FarmFresh Malawi",       sector: "Agri-Business", revenue: "MK 4.2M", district: "Blantyre",  award: true  },
-  { name: "Blessings Kamwana", cohort: "2024", business: "TechHub Malawi",          sector: "Technology",    revenue: "MK 6.8M", district: "Blantyre",  award: false },
-  { name: "Vitumbiko Nkosi",   cohort: "2023", business: "NkosiCraft Industries",   sector: "Manufacturing", revenue: "MK 3.1M", district: "Mulanje",   award: true  },
-  { name: "Alinafe Gondwe",    cohort: "2023", business: "Gondwe Services Ltd",     sector: "Services",      revenue: "MK 2.4M", district: "Salima",    award: false },
-  { name: "Innocent Phiri",    cohort: "2022", business: "GreenFields Agri Co.",    sector: "Agri-Business", revenue: "MK 5.0M", district: "Nkhotakota",award: false },
-  { name: "Chisomo Banda",     cohort: "2022", business: "Banda Creative Studio",   sector: "Creative Arts", revenue: "MK 1.8M", district: "Lilongwe",  award: true  },
+  { programId: SAMPLE_SHE, name: "Grace Phiri",       cohort: "2024", business: "FarmFresh Malawi",       sector: "Agri-Business", revenue: "MK 4.2M", district: "Blantyre",  award: true  },
+  { programId: SAMPLE_CORE, name: "Blessings Kamwana", cohort: "2024", business: "TechHub Malawi",          sector: "Technology",    revenue: "MK 6.8M", district: "Blantyre",  award: false },
+  { programId: SAMPLE_CORE, name: "Vitumbiko Nkosi",   cohort: "2023", business: "NkosiCraft Industries",   sector: "Manufacturing", revenue: "MK 3.1M", district: "Mulanje",   award: true  },
+  { programId: SAMPLE_SHE, name: "Alinafe Gondwe",    cohort: "2023", business: "Gondwe Services Ltd",     sector: "Services",      revenue: "MK 2.4M", district: "Salima",    award: false },
+  { programId: SAMPLE_CORE, name: "Innocent Phiri",    cohort: "2022", business: "GreenFields Agri Co.",    sector: "Agri-Business", revenue: "MK 5.0M", district: "Nkhotakota",award: false },
+  { programId: SAMPLE_CORE, name: "Chisomo Banda",     cohort: "2022", business: "Banda Creative Studio",   sector: "Creative Arts", revenue: "MK 1.8M", district: "Lilongwe",  award: true  },
 ];
 
 const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
@@ -251,6 +283,7 @@ const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
     message: "Tamara Kachingwe (APP-015) was selected by the evaluation committee for Incubation Stage 2.",
     candidateName: "Tamara Kachingwe",
     candidateId: "APP-015",
+    programId: SAMPLE_SHE,
     timestamp: "12m ago",
     createdAt: Date.now() - 12 * 60 * 1000,
     read: false,
@@ -264,6 +297,7 @@ const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
     message: "Pair match confirmed: Dalitso Mvula paired with Ms. Rejoice Mwale (95% compatibility).",
     candidateName: "Dalitso Mvula",
     candidateId: "APP-022",
+    programId: SAMPLE_CORE,
     timestamp: "45m ago",
     createdAt: Date.now() - 45 * 60 * 1000,
     read: false,
@@ -277,6 +311,7 @@ const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
     message: "Grace Kamwendo partner re-assigned: Status changed to Pending Approval. Re-match request created in Pairing and Matching.",
     candidateName: "Grace Kamwendo",
     candidateId: "APP-020",
+    programId: SAMPLE_CORE,
     timestamp: "2h ago",
     createdAt: Date.now() - 2 * 60 * 60 * 1000,
     read: false,
@@ -290,6 +325,7 @@ const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
     message: "Enelesi Phiri (APP-024) disqualified by evaluation committee. Notice sent to applicant.",
     candidateName: "Enelesi Phiri",
     candidateId: "APP-024",
+    programId: SAMPLE_SHE,
     timestamp: "4h ago",
     createdAt: Date.now() - 4 * 60 * 60 * 1000,
     read: true,
@@ -303,6 +339,7 @@ const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
     message: "Esther Chikaonda (APP-008) recorded as Dropout due to relocation outside pilot district.",
     candidateName: "Esther Chikaonda",
     candidateId: "APP-008",
+    programId: SAMPLE_SHE,
     timestamp: "Yesterday",
     createdAt: Date.now() - 24 * 60 * 60 * 1000,
     read: true,
@@ -316,6 +353,7 @@ const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
     message: "Lusungu Nyirenda (APP-005) submitted new Incubation application for Nyirenda Logistics.",
     candidateName: "Lusungu Nyirenda",
     candidateId: "APP-005",
+    programId: SAMPLE_SHE,
     timestamp: "1d ago",
     createdAt: Date.now() - 28 * 60 * 60 * 1000,
     read: true,
@@ -489,7 +527,125 @@ function NotificationBellDropdown({
 }
 
 // ── Profile dropdown ──────────────────────────────────────────────────────────
-function ProfileDropdown({ onSignOut }: { onSignOut: () => void }) {
+
+// ── "No data for this project" notice ────────────────────────────────────────
+function ProjectEmptyNotice({ scope, what }: { scope: ProjectScope; what: string }) {
+  return (
+    <div className="rounded-md px-6 py-10 flex flex-col items-center text-center gap-2"
+      style={{ background: "#fff", border: "1px dashed #d1d5db" }}>
+      <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: `${TEAL}15` }}>
+        <Folder size={18} color={TEAL} />
+      </div>
+      <div className="font-black text-sm" style={{ color: NAVY }}>
+        No {what} yet{scope.project ? ` for ${scope.project.name}` : ""}
+      </div>
+      <div className="text-[11px] max-w-sm" style={{ color: "#6b7280" }}>
+        {scope.project
+          ? "This project has no records here so far. Data appears as soon as applicants apply to it, or switch to another project from All Projects in the top bar."
+          : "Nothing has been recorded here yet."}
+      </div>
+    </div>
+  );
+}
+
+// ── Navbar project switcher ("All Projects ▾") ───────────────────────────────
+function ProjectSwitcher({ programs, selectedId, counts, onSelect, allLabel = "All Projects" }: {
+  allLabel?: string;
+  programs: AdminProgram[];
+  selectedId: string;
+  counts: Record<string, number>;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const { current, completed } = splitProjects(programs);
+  const needle = q.trim().toLowerCase();
+  const hit = (p: AdminProgram) => !needle || p.name.toLowerCase().includes(needle);
+  const cur = current.filter(hit);
+  const done = completed.filter(hit);
+  const total = current.length + completed.length;
+  const selected = programs.find(p => p.id === selectedId && p.published);
+
+  const pick = (id: string) => { onSelect(id); setOpen(false); setQ(""); };
+
+  const Row = ({ id, name, sub, dot, active, count }: { id: string; name: string; sub?: string; dot?: string; active: boolean; count?: number }) => (
+    <button onClick={() => pick(id)} role="option" aria-selected={active}
+      className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors"
+      style={{ background: active ? `${TEAL}14` : "transparent" }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#f3f4f6"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = active ? `${TEAL}14` : "transparent"; }}>
+      <span className="flex-1 min-w-0">
+        <span className="block text-[12px] font-bold truncate" style={{ color: NAVY }}>{name}</span>
+        {sub && <span className="block text-[10px] truncate" style={{ color: "#6b7280" }}>{sub}</span>}
+      </span>
+      {active && <Check size={13} color={TEAL} className="shrink-0" />}
+    </button>
+  );
+
+  const Group = ({ title, items }: { title: string; items: AdminProgram[] }) => (
+    <div>
+      <div className="px-3 pt-2.5 pb-1 text-[9px] font-black uppercase tracking-widest" style={{ color: "#9ca3af" }}>
+        {title}
+      </div>
+      {items.length === 0
+        ? <div className="px-3 py-2 text-[11px]" style={{ color: "#9ca3af" }}>{needle ? "No match" : "None yet"}</div>
+        : items.map(p => (
+            <Row key={p.id} id={p.id} name={p.name || "Untitled project"}
+              dot={PROG_STATUS_COLORS[p.status] ?? "#6b7280"} active={selectedId === p.id} />
+          ))}
+    </div>
+  );
+
+  return (
+    <div ref={ref} className="relative z-10 min-w-0">
+      <button onClick={() => setOpen(o => !o)} aria-haspopup="listbox" aria-expanded={open}
+        className="flex items-center gap-2 rounded-md px-3 py-2 text-white transition-all max-w-[190px] sm:max-w-[280px]"
+        style={{ background: TEAL, border: "1px solid rgba(255,255,255,0.35)", filter: open ? "brightness(0.92)" : "none" }}>
+        <Folder size={13} color="#fff" className="shrink-0" />
+        <span className="text-[11px] font-bold truncate">{selected ? selected.name : allLabel}</span>
+        {selected && isCompletedProject(selected) && (
+          <span className="hidden sm:inline text-[8px] font-black uppercase px-1.5 py-0.5 rounded-md shrink-0" style={{ background: "rgba(255,255,255,0.22)" }}>Completed</span>
+        )}
+        <ChevronDown size={13} color="#fff" className="shrink-0 transition-transform" style={{ transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+
+      {open && (
+        <div className="im-dd absolute left-0 mt-2 rounded-md overflow-hidden"
+          style={{ width: 320, maxWidth: "calc(100vw - 32px)", background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 12px 32px rgba(0,0,0,0.22)", zIndex: 60 }}>
+          {total > 6 && (
+            <div className="p-2" style={{ borderBottom: "1px solid #f3f4f6" }}>
+              <div className="flex items-center gap-2 rounded-md px-2.5 py-1.5" style={{ background: "#f3f4f6" }}>
+                <Search size={11} color="#6b7280" />
+                <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Find a project\u2026"
+                  className="bg-transparent text-[11px] w-full focus:outline-none" style={{ color: "#111827" }} />
+              </div>
+            </div>
+          )}
+          <div role="listbox" className="overflow-y-auto" style={{ maxHeight: 380 }}>
+            {!needle && (
+              <Row id={ALL_PROJECTS} name={allLabel} active={selectedId === ALL_PROJECTS || !selected} dot={TEAL} />
+            )}
+            <Group title="Current projects" items={cur} />
+            <div style={{ borderTop: "1px solid #f3f4f6" }}><Group title="Completed projects" items={done} /></div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProfileDropdown({ name = "Programme Manager", title = "Program Manager" }: { name?: string; title?: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -515,7 +671,7 @@ function ProfileDropdown({ onSignOut }: { onSignOut: () => void }) {
             <ellipse cx="14" cy="23" rx="8.5" ry="5" fill="rgba(255,255,255,0.9)" />
           </svg>
         </div>
-        <span className="text-white text-[11px] font-bold hidden sm:block">Gift Chimwendo</span>
+        <span className="text-white text-[11px] font-bold hidden sm:block">{name}</span>
         <ChevronDown size={11} color="rgba(255,255,255,0.6)" />
       </button>
 
@@ -531,8 +687,8 @@ function ProfileDropdown({ onSignOut }: { onSignOut: () => void }) {
               </svg>
             </div>
             <div className="min-w-0">
-              <div className="text-white text-xs font-bold truncate">Gift Chimwendo</div>
-              <div className="text-[10px] truncate text-white/80 font-medium">Program Manager</div>
+              <div className="text-white text-xs font-bold truncate">{name}</div>
+              <div className="text-[10px] truncate text-white/80 font-medium">{title}</div>
             </div>
           </div>
           <div className="py-1.5">
@@ -548,18 +704,6 @@ function ProfileDropdown({ onSignOut }: { onSignOut: () => void }) {
                 {label}
               </button>
             ))}
-          </div>
-          <div style={{ borderTop: "1px solid rgba(255,255,255,0.18)" }}>
-            <button onClick={() => { setOpen(false); onSignOut(); }}
-              className="flex items-center gap-3 w-full px-4 py-3 text-xs font-bold transition-all text-left"
-              style={{ color: "#fee2e2" }}
-              onMouseEnter={e => (e.currentTarget.style.background = "rgba(220,38,38,0.2)")}
-              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
-              <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: "rgba(239,68,68,0.25)" }}>
-                <LogOut size={11} color="#fee2e2" />
-              </div>
-              Sign Out
-            </button>
           </div>
         </div>
       )}
@@ -1023,10 +1167,14 @@ function SectorPieChart({ pool, isEnt, onFilter, activeFilter }: { pool: any[]; 
 
 // ── Applications dashboard ────────────────────────────────────────────────────
 function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "mentors"; filterStatus?: string | null }) {
-  const { entApps, mntApps } = useContext(AppDataCtx);
+  const { entApps, mntApps, scope } = useContext(AppDataCtx);
   const isEnt     = tab === "entrepreneurs";
   const pool      = isEnt ? entApps : mntApps;
-  const targets   = isEnt ? ENT_TARGETS : MNT_TARGETS;
+  // Targets follow the selected project's cohort size (the global defaults only apply to "All Projects")
+  const basePlaces = Math.max(scope.project?.cohortSize ?? 0, 10);
+  const targets   = !scope.project ? (isEnt ? ENT_TARGETS : MNT_TARGETS)
+    : isEnt ? { applications: basePlaces * 2, approval: Math.ceil(basePlaces * 1.33), incubation: basePlaces }
+            : { applications: Math.ceil(basePlaces * 0.9), approval: Math.ceil(basePlaces * 0.6), incubation: Math.ceil(basePlaces * 0.4) };
 
   const [sectorFilter,   setSectorFilter]   = useState<string | null>(null);
   const [districtFilter, setDistrictFilter] = useState<string | null>(null);
@@ -2024,9 +2172,6 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
       <div className="flex items-center gap-1 p-1 rounded-md self-start w-fit"
         style={{ background: "#e9edf2", border: "1px solid #d1d5db" }}>
         {(["entrepreneurs", "mentors"] as AppTab[]).map(t => {
-          const countVal = t === "entrepreneurs"
-            ? (filterStatus ? entApps.filter(a => a.status === filterStatus).length : entApps.length)
-            : (filterStatus ? mntApps.filter(a => a.status === filterStatus).length : mntApps.length);
           return (
             <button
               key={t}
@@ -2038,7 +2183,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                 boxShadow: tab === t ? "0 2px 8px rgba(59,65,103,0.25)" : "none",
               }}
             >
-              {t === "entrepreneurs" ? "Entrepreneurs" : "Mentors"} ({countVal})
+              {t === "entrepreneurs" ? "Entrepreneurs" : "Mentors"}
             </button>
           );
         })}
@@ -2783,15 +2928,19 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
 
 // ── View: Email Dashboard ─────────────────────────────────────────────────────
 function EmailDashboardView() {
+  const { scope } = useContext(AppDataCtx);
+  const emails = EMAILS.filter(e => inScope(scope, e));
+  const delivered = emails.filter(e => e.status === "Delivered");
+  const avg = (f: (e: typeof EMAILS[number]) => number) => delivered.length ? Math.round(delivered.reduce((a, e) => a + (e.recipients ? f(e) / e.recipients : 0), 0) / delivered.length * 100) : 0;
   return (
     <div className="im-fade space-y-6">
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
-          { icon: Send,    label: "Sent",      value: "5",    color: TEAL  },
-          { icon: Inbox,   label: "Delivered",  value: "4",    color: "#059669" },
-          { icon: Star,    label: "Avg. Open",  value: "73%",  color: "#7c3aed" },
-          { icon: TrendingUp, label: "Avg. Click", value: "38%", color: "#d97706" },
+          { icon: Send,    label: "Sent",      value: String(emails.length),    color: TEAL  },
+          { icon: Inbox,   label: "Delivered",  value: String(delivered.length),    color: "#059669" },
+          { icon: Star,    label: "Avg. Open",  value: `${avg(e => e.opened)}%`,  color: "#7c3aed" },
+          { icon: TrendingUp, label: "Avg. Click", value: `${avg(e => e.clicked)}%`, color: "#d97706" },
         ].map(s => (
           <div key={s.label} className="rounded-md p-4 flex flex-col gap-2"
             style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.05)" }}>
@@ -2820,7 +2969,7 @@ function EmailDashboardView() {
             </tr>
           </thead>
           <tbody>
-            {EMAILS.map((e, i) => {
+            {emails.map((e, i) => {
               const sc = STATUS_COLORS[e.status] ?? { bg: "#f3f4f6", color: "#374151" };
               const openRate = e.recipients > 0 ? Math.round((e.opened / e.recipients) * 100) : 0;
               const clickRate = e.recipients > 0 ? Math.round((e.clicked / e.recipients) * 100) : 0;
@@ -2853,6 +3002,7 @@ function EmailDashboardView() {
             })}
           </tbody>
         </table>
+        {emails.length === 0 && <div className="p-4"><ProjectEmptyNotice scope={scope} what="email campaigns" /></div>}
       </div>
     </div>
   );
@@ -2860,6 +3010,10 @@ function EmailDashboardView() {
 
 // ── View: Program Health ──────────────────────────────────────────────────────
 function ProgramHealthView() {
+  const { entApps, scope } = useContext(AppDataCtx);
+  const count = (st: string) => entApps.filter(a => a.status === st).length;
+  const alumniCount = ALUMNI.filter(a => inScope(scope, a)).length;
+  const hasData = entApps.length > 0;
   const metrics = [
     { label: "Application Completion Rate", value: 87, color: "#059669", icon: CheckCircle },
     { label: "Mentor Matching Rate",         value: 73, color: TEAL,     icon: GitMerge    },
@@ -2870,21 +3024,27 @@ function ProgramHealthView() {
   ];
 
   const alerts = [
-    { level: "warning", msg: "3 applicants have not submitted business plans (deadline: 2026-02-15)." },
-    { level: "info",    msg: "Mentor matching for cohort 3 is 73% complete — 8 unmatched entrepreneurs remain." },
-    { level: "success", msg: "ARISE Youth cohort achieved 91% retention — highest in programme history." },
+    { level: "warning", programId: SAMPLE_CORE, msg: "3 applicants have not submitted business plans (deadline: 2026-02-15)." },
+    { level: "info",    programId: SAMPLE_CORE, msg: "Mentor matching for cohort 3 is 73% complete — 8 unmatched entrepreneurs remain." },
+    { level: "success", programId: SAMPLE_CORE, msg: "ARISE Youth cohort achieved 91% retention — highest in programme history." },
+  ];
+  const pendingCount = count("Pending");
+  const visibleAlerts: { level: string; programId?: string; msg: string }[] = [
+    ...alerts.filter(a => inScope(scope, a)),
+    ...(pendingCount > 0 ? [{ level: "info", msg: `${pendingCount} application${pendingCount === 1 ? " is" : "s are"} still awaiting review${scope.project ? ` in ${scope.project.name}` : ""}.` }] : []),
   ];
 
   return (
     <div className="im-fade space-y-6">
+      {!hasData && <ProjectEmptyNotice scope={scope} what="programme activity" />}
       {/* Alerts */}
       <div className="space-y-3">
-        {alerts.map((a, i) => {
+        {visibleAlerts.map((a, i) => {
           const config = {
             warning: { bg: "rgba(245,158,11,0.08)", border: "#d9770620", icon: AlertCircle, color: "#d97706" },
             info:    { bg: "rgba(59,130,246,0.08)",  border: "#2563eb20", icon: Clock,        color: "#2563eb" },
             success: { bg: "rgba(16,185,129,0.08)",  border: "#05996920", icon: CheckCircle,  color: "#059669" },
-          }[a.level]!;
+          }[a.level] ?? { bg: "rgba(59,130,246,0.08)", border: "#2563eb20", icon: Clock, color: "#2563eb" };
           return (
             <div key={i} className="flex items-start gap-3 rounded-md px-4 py-3"
               style={{ background: config.bg, border: `1px solid ${config.border}` }}>
@@ -2898,7 +3058,7 @@ function ProgramHealthView() {
       {/* Metric bars */}
       <div className="rounded-md p-5 space-y-4" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
         <h3 className="font-black text-sm mb-2" style={{ color: NAVY }}>Programme KPIs</h3>
-        {metrics.map(m => (
+        {(hasData ? metrics : []).map(m => (
           <div key={m.label} className="space-y-1">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2917,12 +3077,12 @@ function ProgramHealthView() {
       {/* Stage overview */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         {[
-          { icon: FileText,      label: "Applications",  value: 98,  color: NAVY  },
-          { icon: CheckCircle,   label: "Selected",       value: 52,  color: TEAL  },
-          { icon: UserCheck,     label: "Approved",       value: 38,  color: "#059669" },
-          { icon: GitMerge,      label: "Matched",        value: 31,  color: "#7c3aed" },
-          { icon: Activity,      label: "Active Cohort",  value: 28,  color: "#d97706" },
-          { icon: GraduationCap, label: "Alumni",          value: 8,   color: "#059669" },
+          { icon: FileText,      label: "Applications",  value: entApps.length,  color: NAVY  },
+          { icon: CheckCircle,   label: "Selected",       value: count("Selected"),  color: TEAL  },
+          { icon: UserCheck,     label: "Approved",       value: count("Approved"),  color: "#059669" },
+          { icon: GitMerge,      label: "Matched",        value: count("Matching"),  color: "#7c3aed" },
+          { icon: Activity,      label: "Active Cohort",  value: count("Selected") + count("Approved") + count("Matching"),  color: "#d97706" },
+          { icon: GraduationCap, label: "Alumni",          value: alumniCount,   color: "#059669" },
         ].map(c => (
           <div key={c.label} className="rounded-md p-4 flex flex-col gap-2"
             style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
@@ -2940,10 +3100,13 @@ function ProgramHealthView() {
 
 // ── View: Alumni ──────────────────────────────────────────────────────────────
 function AlumniView() {
+  const { scope } = useContext(AppDataCtx);
+  const alumni = ALUMNI.filter(a => inScope(scope, a));
+  if (alumni.length === 0) return <div className="im-fade"><ProjectEmptyNotice scope={scope} what="alumni" /></div>;
   return (
     <div className="im-fade space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {ALUMNI.map((a, i) => (
+        {alumni.map((a, i) => (
           <div key={i} className="rounded-md p-5 flex flex-col gap-3"
             style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)", animationDelay: `${i * 40}ms` }}>
             <div className="flex items-start justify-between">
@@ -3667,26 +3830,18 @@ function SettingsView() {
 
 // ── Admin Panel View Components ───────────────────────────────────────────────
 
-const INITIAL_MATCH_PAIRS: MentorPair[] = [
-  { id: 1, mentee: "Chisomo Banda", menteeVenture: "AgroConnect Malawi", mentor: "Dr. Tiwonge Banda", expertise: "AgriTech and Finance", stage: "Validation", matchScore: 91, status: "Active", sessions: 14, lastSession: "Jul 24", reMatchReq: false },
-  { id: 2, mentee: "Kondwani Phiri", menteeVenture: "EduBridge", mentor: "Prof. Patrick Likoswe", expertise: "EdTech & Curriculum", stage: "MVP", matchScore: 86, status: "Active", sessions: 9, lastSession: "Jul 21", reMatchReq: false },
-  { id: 3, mentee: "Tadala Chirwa", menteeVenture: "CleanHeat", mentor: "Limbani Gondwe", expertise: "CleanEnergy and Hardware", stage: "Idea", matchScore: 79, status: "Active", sessions: 5, lastSession: "Jul 18", reMatchReq: false },
-  { id: 4, mentee: "Madalitso Chiumia", menteeVenture: "FarmLink", mentor: "Unmatched", expertise: "—", stage: "Idea", matchScore: 0, status: "Pending", sessions: 0, lastSession: "—", reMatchReq: false },
-  { id: 5, mentee: "Grace Kamwendo", menteeVenture: "HealthTrack", mentor: "Dr. Chimwemwe Phiri", expertise: "HealthTech & UX", stage: "MVP", matchScore: 88, status: "Active", sessions: 11, lastSession: "Jul 22", reMatchReq: true },
-];
-
-const PAIR_HEALTH = [
-  { mentee: "Chisomo Banda", mentor: "Dr. Tiwonge Banda", health: "Healthy", sessions7d: 1, satisfaction: 95, goalPct: 71, flagged: false, trend: "up" },
-  { mentee: "Kondwani Phiri", mentor: "Prof. Patrick Likoswe", health: "Healthy", sessions7d: 1, satisfaction: 88, goalPct: 64, flagged: false, trend: "up" },
-  { mentee: "Tadala Chirwa", mentor: "Limbani Gondwe", health: "At Risk", sessions7d: 0, satisfaction: 62, goalPct: 22, flagged: true, trend: "down" },
-  { mentee: "Grace Kamwendo", mentor: "Dr. Chimwemwe Phiri", health: "Healthy", sessions7d: 1, satisfaction: 91, goalPct: 55, flagged: false, trend: "stable" },
-];
+// Admin decisions survive a refresh and leaving the page (applications themselves are stored by App)
+function loadDecisions(): { statusOverrides?: any; pairings?: any; notifications?: any } {
+  try { const v = JSON.parse(localStorage.getItem(DECISIONS_KEY) ?? "null"); return v && typeof v === "object" ? v : {}; } catch { return {}; }
+}
 
 const COHORTS_DATA = [
-  { id: 1, name: "Cohort 5 — 2025", status: "Active", startDate: "Jan 2025", endDate: "Dec 2025", mentees: 18, mentors: 8, avgProgress: 62, sector: "Mixed" },
-  { id: 2, name: "Cohort 4 — 2024", status: "Completed", startDate: "Jan 2024", endDate: "Dec 2024", mentees: 22, mentors: 10, avgProgress: 100, sector: "AgriTech" },
-  { id: 3, name: "Cohort 3 — 2023", status: "Completed", startDate: "Jan 2023", endDate: "Dec 2023", mentees: 16, mentors: 7, avgProgress: 100, sector: "CleanEnergy" },
+  { id: 1, programId: SAMPLE_CORE, name: "Cohort 5 — 2025", status: "Active", startDate: "Jan 2025", endDate: "Dec 2025", mentees: 18, mentors: 8, avgProgress: 62, sector: "Mixed" },
+  { id: 2, programId: SAMPLE_CORE, name: "Cohort 4 — 2024", status: "Completed", startDate: "Jan 2024", endDate: "Dec 2024", mentees: 22, mentors: 10, avgProgress: 100, sector: "AgriTech" },
+  { id: 3, programId: SAMPLE_CORE, name: "Cohort 3 — 2023", status: "Completed", startDate: "Jan 2023", endDate: "Dec 2023", mentees: 16, mentors: 7, avgProgress: 100, sector: "CleanEnergy" },
+  { id: 4, programId: SAMPLE_SHE,  name: "Cohort 1 — 2025", status: "Active", startDate: "Aug 2025", endDate: "Jan 2026", mentees: 8, mentors: 4, avgProgress: 48, sector: "Women-led" },
 ];
+type CohortRow = { id: number; programId?: string; name: string; status: string; startDate: string; endDate: string; mentees: number; mentors: number; avgProgress: number; sector: string };
 
 // ── AI Matching Engine — Data & Algorithm ─────────────────────────────────────
 interface EntMatchProfile {
@@ -4069,6 +4224,33 @@ const isRemovedPersonality = (val?: string) => {
 };
 
 // ── Mentor Profile Modal ───────────────────────────────────────────────────────
+/** The matching profiles ship with sample capacity numbers; what the engine and the screens use is the live count and the programme's own limit. */
+function withLiveCapacity<T extends { id: string; name: string; maxMenteeCount: number; currentMenteeCount: number }>(m: T, P: ReturnType<typeof useProgramme>): T {
+  return { ...m, currentMenteeCount: P.mentorLoad({ id: m.id, name: m.name }), maxMenteeCount: P.capacityOf(m.id, m.maxMenteeCount) };
+}
+
+/** Programme team: see and change how many mentees this mentor can take. */
+function CapacityEditor({ mentorId, name, fallback }: { mentorId: string; name: string; fallback: number }) {
+  const P = useProgramme();
+  const load = P.mentorLoad({ id: mentorId, name }), cap = P.capacityOf(mentorId, fallback);
+  const [draft, setDraft] = useState(String(cap));
+  useEffect(() => setDraft(String(cap)), [cap]);
+  const save = () => { const r = P.setMentorCapacity(mentorId, Number(draft), name); if (!r.ok) return toast.error(r.reason); toast.success(`${name} can now take up to ${draft} mentees.`); };
+  return (
+    <div className="rounded-lg border border-gray-200 overflow-hidden">
+      <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 font-bold text-gray-700 uppercase tracking-wider text-[10px]">Mentoring capacity</div>
+      <div className="p-3.5 flex items-center gap-3 flex-wrap text-xs text-gray-700">
+        <span><strong>{load}</strong> of <strong>{cap}</strong> mentee slots used{load >= cap ? " (full)" : ""}</span>
+        <span className="flex items-center gap-2 ml-auto">
+          <label htmlFor={`cap-${mentorId}`} className="text-[10px] font-bold text-gray-500 uppercase">Limit</label>
+          <input id={`cap-${mentorId}`} aria-label="Mentee limit" type="number" min={1} max={MAX_MENTOR_CAPACITY} value={draft} onChange={e => setDraft(e.target.value)} className="w-16 border border-gray-300 rounded px-2 py-1" />
+          <button onClick={save} disabled={Number(draft) === cap} className="px-3 py-1 rounded text-white font-bold disabled:opacity-40" style={{ background: TEAL }}>Save</button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function MentorProfileModal({
   mentor,
   matchContext,
@@ -4084,7 +4266,9 @@ function MentorProfileModal({
   onClose: () => void;
 }) {
   const { mntApps } = useContext(AppDataCtx);
-  const appData = mntApps.find(m => m.id === mentor.id || m.name.toLowerCase() === mentor.name.toLowerCase());
+  const PM = useProgramme();
+  const appData = mntApps.find(m => m.id === mentor.id);
+  const liveMentor = mentor.id ? withLiveCapacity(mentor, PM) : mentor;
 
   const email = appData?.email || `${mentor.name.toLowerCase().replace(/[^a-z]/g, "")}@brandplus.mw`;
   const phone = appData?.phone || "+265 992 500 005";
@@ -4186,9 +4370,11 @@ function MentorProfileModal({
             </div>
             <div className="p-2.5 rounded-lg border text-center shadow-xs" style={{ background: "#4C808A", borderColor: "#4C808A" }}>
               <span className="text-[9px] font-bold uppercase tracking-wider text-white/85 block mb-0.5">Active Capacity</span>
-              <span className="text-sm font-black text-white">{mentor.currentMenteeCount} / {mentor.maxMenteeCount} Mentees</span>
+              <span className="text-sm font-black text-white">{liveMentor.currentMenteeCount} / {liveMentor.maxMenteeCount} Mentees</span>
             </div>
           </div>
+
+          {mentor.id && <CapacityEditor mentorId={mentor.id} name={mentor.name} fallback={appData?.capacity ?? mentor.maxMenteeCount} />}
 
           {/* Professional Summary */}
           <div className="rounded-lg border border-gray-200 overflow-hidden">
@@ -4321,6 +4507,7 @@ function MentorProfileModal({
 
 function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: string | null }) {
   const { matchPairs, confirmPairing, entApps, pairings } = useContext(AppDataCtx);
+  const PE = useProgramme();
   const [selectedEntId, setSelectedEntId] = useState<string | null>(initialSelectedEntId || null);
   const [confirmedPairs, setConfirmedPairs] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState(false);
@@ -4400,7 +4587,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
 
   const recommendations: MatchResult[] = selectedEnt
     ? MENTOR_MATCH_PROFILES
-        .map(m => computeMatch(selectedEnt, m))
+        .map(m => computeMatch(selectedEnt, withLiveCapacity(m, PE)))
         .filter((r): r is MatchResult => r !== null)
         .sort((a, b) => b.score - a.score)
         .slice(0, 3)
@@ -4752,14 +4939,15 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
   );
 }
 
-const HEALTH_COLOR: Record<string, string> = { "Healthy": "#059669", "At Risk": "#f59e0b", "Stalled": "#ef4444" };
-const HEALTH_BG: Record<string, string> = { "Healthy": "#f0fdf4", "At Risk": "#fffbeb", "Stalled": "#fef2f2" };
+const HEALTH_COLOR: Record<string, string> = { "Healthy": "#059669", "At Risk": "#f59e0b", "Stalled": "#ef4444", "New": "#4C808A" };
+const HEALTH_BG: Record<string, string> = { "Healthy": "#f0fdf4", "At Risk": "#fffbeb", "Stalled": "#fef2f2", "New": "#eef5f6" };
 
 function AdminPairingView() {
-  const { matchPairs, setMatchPairs, entApps, confirmPairing } = useContext(AppDataCtx);
+  const { matchPairs, entApps, confirmPairing } = useContext(AppDataCtx);
+  const P = useProgramme();
   const [search, setSearch] = useState("");
   const [showReMatchOnly, setShowReMatchOnly] = useState(false);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<string | number | null>(null);
   const [pairingTab, setPairingTab] = useState<"pairs" | "ai-engine">("pairs");
   const [selectedEntId, setSelectedEntId] = useState<string | null>(null);
   const [viewingMentorModal, setViewingMentorModal] = useState<{ mentor: MentorMatchProfile } | null>(null);
@@ -4927,6 +5115,14 @@ function AdminPairingView() {
                             Review Re-match
                           </button>
                         )}
+                        {p.reMatchReq && p.rematchId && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); P.declineRematch(p.rematchId!); toast.success(`Re-match request for ${p.mentee} declined. Both people were notified.`); }}
+                            style={{ background: "#fff", border: "1px solid #d1d5db", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#6b7280", cursor: "pointer", fontWeight: 700 }}
+                          >
+                            Keep Pair
+                          </button>
+                        )}
                         {p.status === "Pending" && !p.reMatchReq && (
                           <button
                             onClick={(e) => {
@@ -4942,7 +5138,7 @@ function AdminPairingView() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              const found = MENTOR_MATCH_PROFILES.find(m => m.name.toLowerCase().includes(p.mentor.toLowerCase())) || {
+                              const found = MENTOR_MATCH_PROFILES.find(m => (p.mentorId ? m.id === p.mentorId : m.name.toLowerCase() === p.mentor.toLowerCase())) || {
                                 id: "",
                                 name: p.mentor,
                                 district: "Lilongwe",
@@ -5013,12 +5209,15 @@ function AdminPairingView() {
 }
 
 function AdminRelHealthView() {
+  const { scope, pairHealth } = useContext(AppDataCtx);
+  const P = useProgramme();
+  const HEALTH = pairHealth;
   const [filterHealth, setFilterHealth] = useState<string | null>(null);
 
-  const filtered = filterHealth ? PAIR_HEALTH.filter(p => p.health === filterHealth) : PAIR_HEALTH;
-  const healthyCnt = PAIR_HEALTH.filter(p => p.health === "Healthy").length;
-  const atRiskCnt = PAIR_HEALTH.filter(p => p.health === "At Risk").length;
-  const stalledCnt = PAIR_HEALTH.filter(p => p.health === "Stalled").length;
+  const filtered = filterHealth ? HEALTH.filter(p => filterHealth === "Healthy" ? (p.health === "Healthy" || p.health === "New") : p.health === filterHealth) : HEALTH;
+  const healthyCnt = HEALTH.filter(p => p.health === "Healthy" || p.health === "New").length;
+  const atRiskCnt = HEALTH.filter(p => p.health === "At Risk").length;
+  const stalledCnt = HEALTH.filter(p => p.health === "Stalled").length;
 
   return (
     <div className="im-fade" style={{ display: "grid", gap: 16 }}>
@@ -5030,16 +5229,16 @@ function AdminRelHealthView() {
       {/* Summary gauges */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
         {[
-          { label: "Healthy Pairs", val: healthyCnt, total: PAIR_HEALTH.length, color: "#059669", desc: "≥ 1 session/wk, satisfaction > 80%" },
-          { label: "At Risk Pairs", val: atRiskCnt, total: PAIR_HEALTH.length, color: "#f59e0b", desc: "< 1 session/wk or satisfaction < 70%" },
-          { label: "Stalled Pairs", val: stalledCnt, total: PAIR_HEALTH.length, color: "#ef4444", desc: "0 sessions in 2+ weeks, flagged" },
+          { label: "Healthy Pairs", val: healthyCnt, total: HEALTH.length, color: "#059669", desc: "≥ 1 session/wk, satisfaction > 80%" },
+          { label: "At Risk Pairs", val: atRiskCnt, total: HEALTH.length, color: "#f59e0b", desc: "< 1 session/wk or satisfaction < 70%" },
+          { label: "Stalled Pairs", val: stalledCnt, total: HEALTH.length, color: "#ef4444", desc: "0 sessions in 2+ weeks, flagged" },
         ].map(g => (
           <button key={g.label} onClick={() => setFilterHealth(filterHealth === g.label.split(" ")[0] + " " + g.label.split(" ")[1] ? null : g.label.replace("Pairs", "").trim())}
             style={{ background: "#fff", borderRadius: 6, padding: "18px 20px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${filterHealth && g.label.includes(filterHealth) ? g.color : "transparent"}`, textAlign: "left" }}>
             <p style={{ color: "#888", fontSize: 10, margin: "0 0 6px" }}>{g.label}</p>
-            <p style={{ color: g.color, fontSize: 28, fontWeight: 800, margin: "0 0 4px" }}>{g.val}<span style={{ fontSize: 14, fontWeight: 400, color: "#bbb" }}>/{PAIR_HEALTH.length}</span></p>
+            <p style={{ color: g.color, fontSize: 28, fontWeight: 800, margin: "0 0 4px" }}>{g.val}<span style={{ fontSize: 14, fontWeight: 400, color: "#bbb" }}>/{HEALTH.length}</span></p>
             <div style={{ height: 4, background: "#f0f0f0", borderRadius: 4, marginBottom: 6 }}>
-              <div style={{ height: "100%", width: `${(g.val / PAIR_HEALTH.length) * 100}%`, background: g.color, borderRadius: 4 }} />
+              <div style={{ height: "100%", width: `${HEALTH.length ? (g.val / HEALTH.length) * 100 : 0}%`, background: g.color, borderRadius: 4 }} />
             </div>
             <p style={{ color: "#aaa", fontSize: 9, margin: 0 }}>{g.desc}</p>
           </button>
@@ -5047,21 +5246,23 @@ function AdminRelHealthView() {
       </div>
 
       {/* Alert Banner for at-risk pairs */}
-      {PAIR_HEALTH.some(p => p.flagged) && (
+      {HEALTH.some(p => p.flagged) && (
         <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start" }}>
           <AlertCircle size={16} color="#f59e0b" style={{ flexShrink: 0, marginTop: 1 }} />
           <div>
             <p style={{ color: "#92600a", fontSize: 12, fontWeight: 700, margin: "0 0 2px" }}>Alert: Engagement below threshold</p>
-            <p style={{ color: "#a16207", fontSize: 11, margin: 0 }}>Tadala Chirwa & Limbani Gondwe — 0 sessions in the past 2 weeks, satisfaction at 62%. Programme staff review recommended.</p>
+            <p style={{ color: "#a16207", fontSize: 11, margin: 0 }}>{HEALTH.filter(p => p.flagged).map(p => `${p.mentee} & ${p.mentor} (${p.reasons[0] ?? "engagement below threshold"})`).join("; ")}. Programme staff review recommended.</p>
           </div>
-          <button style={{ marginLeft: "auto", background: "#f59e0b", border: "none", borderRadius: 6, padding: "6px 12px", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 700, whiteSpace: "nowrap" }}>Send Nudge</button>
+          <button style={{ marginLeft: "auto", background: "#f59e0b", border: "none", borderRadius: 6, padding: "6px 12px", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 700, whiteSpace: "nowrap" }}
+            onClick={() => { const f = HEALTH.filter(p => p.flagged); f.forEach(p => P.sendNudge(p.pairId)); toast.success(`Nudged ${f.length} pair${f.length === 1 ? "" : "s"} (mentor and mentee notified)`); }}>Send Nudge</button>
         </div>
       )}
 
+      {HEALTH.length === 0 && <ProjectEmptyNotice scope={scope} what="mentor–mentee pairs" />}
       {/* Pair Cards */}
       <div style={{ display: "grid", gap: 12 }}>
         {filtered.map(p => (
-          <div key={p.mentee} style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderLeft: `4px solid ${HEALTH_COLOR[p.health]}` }}>
+          <div key={p.pairId} style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderLeft: `4px solid ${HEALTH_COLOR[p.health]}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
@@ -5072,13 +5273,15 @@ function AdminRelHealthView() {
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button style={{ background: "#f8f9fb", border: "1px solid #e0e0e0", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#666", cursor: "pointer" }}>View Pair</button>
-                {p.flagged && <button style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#ef4444", cursor: "pointer", fontWeight: 700 }}>Intervene</button>}
+                {p.flagged && (p.intervention
+                  ? <button onClick={() => { P.resolveIntervention(p.pairId); toast.success("Intervention resolved"); }} style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#059669", cursor: "pointer", fontWeight: 700 }}>Resolve</button>
+                  : <button onClick={() => { P.openIntervention(p.pairId); toast("Intervention opened"); }} style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#ef4444", cursor: "pointer", fontWeight: 700 }}>Intervene</button>)}
               </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 12 }}>
               {[
                 { label: "Sessions (7 days)", val: p.sessions7d, unit: "", good: p.sessions7d >= 1 },
-                { label: "Satisfaction Score", val: p.satisfaction, unit: "%", good: p.satisfaction >= 80 },
+                { label: "Satisfaction Score", val: p.satisfaction ?? "\u2014", unit: p.satisfaction == null ? "" : "%", good: (p.satisfaction ?? 100) >= 80 },
                 { label: "Goal Progress", val: p.goalPct, unit: "%", good: p.goalPct >= 50 },
                 { label: "Trend", val: p.trend === "up" ? "↑ Improving" : p.trend === "down" ? "↓ Declining" : "→ Stable", unit: "", good: p.trend !== "down" },
               ].map(m => (
@@ -5096,7 +5299,26 @@ function AdminRelHealthView() {
 }
 
 function AdminCohortView() {
-  const [selectedCohort, setSelectedCohort] = useState(COHORTS_DATA[0]);
+  const { scope, entApps, mntApps } = useContext(AppDataCtx);
+  const cohorts: CohortRow[] = useMemo(() => {
+    const tagged = COHORTS_DATA.filter(c => inScope(scope, c));
+    if (!scope.project || tagged.length) return tagged;
+    // A project without a stored cohort gets one built from its own setup and applicants
+    const proj = scope.project;
+    const inProgramme = (a: { status: string }) => ["Selected", "Approved", "Matching"].includes(a.status);
+    const done = isCompletedProject(proj);
+    return [{
+      id: -1, programId: proj.id, name: `${proj.name} — Cohort 1`, status: done ? "Completed" : "Active",
+      startDate: proj.startDate?.trim() || proj.timelineEntries.find(e => /commence|start|begin/i.test(e.title))?.date || "—",
+      endDate: proj.timelineEntries[proj.timelineEntries.length - 1]?.date ?? "—",
+      mentees: entApps.filter(inProgramme).length,
+      mentors: mntApps.filter(a => a.programId === proj.id && inProgramme(a)).length,
+      avgProgress: done ? 100 : 0, sector: proj.sector || "Mixed",
+    }];
+  }, [scope, entApps, mntApps]);
+  const [selectedCohortId, setSelectedCohortId] = useState<number | null>(null);
+  const selectedCohort = cohorts.find(c => c.id === selectedCohortId) ?? cohorts[0];
+  if (!selectedCohort) return <div className="im-fade"><ProjectEmptyNotice scope={scope} what="cohorts" /></div>;
 
   return (
     <div className="im-fade" style={{ display: "grid", gap: 16 }}>
@@ -5112,8 +5334,8 @@ function AdminCohortView() {
 
       {/* Cohort cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-        {COHORTS_DATA.map(c => (
-          <button key={c.id} onClick={() => setSelectedCohort(c)}
+        {cohorts.map(c => (
+          <button key={c.id} onClick={() => setSelectedCohortId(c.id)}
             style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${selectedCohort.id === c.id ? TEAL : "transparent"}`, textAlign: "left" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
               <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: 0 }}>{c.name}</p>
@@ -5191,9 +5413,24 @@ function AdminCohortView() {
 }
 
 function AdminReportingView() {
+  const { scope, matchPairs, totalPairs } = useContext(AppDataCtx);
   const [period, setPeriod] = useState<"month" | "quarter" | "year">("month");
+  // Sample activity figures scale with the number of mentoring pairs the selected project has
+  const livePairs = matchPairs.filter(p => p.mentor !== "Unmatched");
+  const share = scope.project ? (totalPairs ? Math.min(1, livePairs.length / totalPairs) : 0) : 1;
+  const sc = (n: number) => (n > 0 && share > 0 ? Math.max(1, Math.round(n * share)) : 0);
+  const pairMentors = new Set(livePairs.map(p => p.mentor));
+  const projectLabel = scope.project ? scope.project.name : "Cohort 5";
 
   const periodLabel = period === "month" ? "This Month" : period === "quarter" ? "This Quarter" : "This Year";
+  if (scope.project && livePairs.length === 0) {
+    return (
+      <div className="im-fade" style={{ display: "grid", gap: 16 }}>
+        <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: 0 }}>Reporting & Analytics</h2>
+        <ProjectEmptyNotice scope={scope} what="mentoring activity to report on" />
+      </div>
+    );
+  }
 
   return (
     <div className="im-fade" style={{ display: "grid", gap: 16 }}>
@@ -5220,7 +5457,7 @@ function AdminReportingView() {
       {/* KPI Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         {[
-          { label: "Sessions Conducted", val: "38", sub: "+12% vs last period", color: TEAL, trend: "up" },
+          { label: "Sessions Conducted", val: String(sc(38)), sub: "+12% vs last period", color: TEAL, trend: "up" },
           { label: "Goal Completion Rate", val: "71%", sub: "Cohort 5 avg", color: "#059669", trend: "up" },
           { label: "Avg Satisfaction Score", val: "84%", sub: "Post-session ratings", color: NAVY, trend: "stable" },
           { label: "Programme Impact Score", val: "847", sub: "Composite metric", color: "#f59e0b", trend: "up" },
@@ -5244,7 +5481,7 @@ function AdminReportingView() {
               { mentor: "Prof. Patrick Likoswe", sessions: 9, max: 16 },
               { mentor: "Dr. Chimwemwe Phiri", sessions: 11, max: 16 },
               { mentor: "Limbani Gondwe", sessions: 4, max: 16 },
-            ].map(m => (
+            ].filter(m => !scope.project || pairMentors.has(m.mentor)).map(m => (
               <div key={m.mentor}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
                   <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{m.mentor}</p>
@@ -5280,7 +5517,7 @@ function AdminReportingView() {
 
       {/* Monthly sessions chart */}
       <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-        <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Monthly Session Frequency — Cohort 5</p>
+        <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Monthly Session Frequency — {projectLabel}</p>
         <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 100 }}>
           {[
             { month: "Jan", sessions: 12 },
@@ -5292,7 +5529,7 @@ function AdminReportingView() {
             { month: "Jul", sessions: 20, current: true },
           ].map(m => (
             <div key={m.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-              <p style={{ color: m.current ? TEAL : "#aaa", fontSize: 9, fontWeight: m.current ? 700 : 400, margin: "0 0 2px" }}>{m.sessions}</p>
+              <p style={{ color: m.current ? TEAL : "#aaa", fontSize: 9, fontWeight: m.current ? 700 : 400, margin: "0 0 2px" }}>{sc(m.sessions)}</p>
               <div style={{ width: "100%", height: `${(m.sessions / 24) * 80}px`, background: m.current ? TEAL : `${TEAL}40`, borderRadius: "4px 4px 0 0", transition: "height 0.8s ease" }} />
               <p style={{ color: "#bbb", fontSize: 8, margin: 0 }}>{m.month}</p>
             </div>
@@ -5302,14 +5539,14 @@ function AdminReportingView() {
 
       {/* Outcome Metrics */}
       <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-        <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Business Outcome Metrics — Cohort 5</p>
+        <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Business Outcome Metrics — {projectLabel}</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
           {[
-            { label: "Businesses Registered", val: "11/18", pct: 61, color: "#059669" },
-            { label: "Reached MVP Stage", val: "6/18", pct: 33, color: TEAL },
-            { label: "First Revenue", val: "4/18", pct: 22, color: NAVY },
-            { label: "Grant Applications", val: "8/18", pct: 44, color: "#f59e0b" },
-            { label: "Programme Graduation", val: "0/18", pct: 0, color: "#bbb" },
+            { label: "Businesses Registered", val: `${sc(11)}/${sc(18)}`, pct: 61, color: "#059669" },
+            { label: "Reached MVP Stage", val: `${sc(6)}/${sc(18)}`, pct: 33, color: TEAL },
+            { label: "First Revenue", val: `${sc(4)}/${sc(18)}`, pct: 22, color: NAVY },
+            { label: "Grant Applications", val: `${sc(8)}/${sc(18)}`, pct: 44, color: "#f59e0b" },
+            { label: "Programme Graduation", val: `${sc(0)}/${sc(18)}`, pct: 0, color: "#bbb" },
           ].map(m => (
             <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 6, padding: "12px 14px", textAlign: "center" }}>
               <p style={{ color: m.color, fontSize: 18, fontWeight: 800, margin: "0 0 2px" }}>{m.val}</p>
@@ -5406,16 +5643,18 @@ function AdminIntegrationView() {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export function IncubationManagementPage({
-  onBack, onSignOut,
+  onBack,
   adminPrograms = [],
   onCreateProgram = () => {},
   onUpdateProgram = () => {},
   onDeleteProgram = () => {},
   liveApplications = [],
   liveMentorApplications = [],
+  manager = null,
 }: {
   onBack: () => void;
-  onSignOut?: () => void;
+  /** The signed-in programme manager. `adminPrograms` must already be limited to the programs they champion. */
+  manager?: Manager | null;
   adminPrograms?: AdminProgram[];
   onCreateProgram?: (p: AdminProgram) => void;
   onUpdateProgram?: (p: AdminProgram) => void;
@@ -5423,27 +5662,45 @@ export function IncubationManagementPage({
   liveApplications?: EntrepreneurApplication[];
   liveMentorApplications?: MentorApplication[];
 }) {
-  const handleSignOut = onSignOut ?? onBack;
   const [active, setActive] = useState<NavKey>("Applications");
   const [mgmtOpen, setMgmtOpen] = useState(true);
   const [adminOpen, setAdminOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [statusOverrides, setStatusOverrides] = useState<Record<string, { status: string; reason?: string; date?: string }>>({});
-  const [matchPairs, setMatchPairs] = useState<MentorPair[]>(INITIAL_MATCH_PAIRS);
+  // ── Project selection (navbar "All Projects" dropdown) ──
+  const [projectId, setProjectId] = useState<string>(() => {
+    try { return sessionStorage.getItem(SELECTED_PROJECT_KEY) ?? ALL_PROJECTS; } catch { return ALL_PROJECTS; }
+  });
+  // A project that was unpublished/removed silently falls back to "All Projects"
+  const project = useMemo(() => adminPrograms.find(p => p.published && p.id === projectId) ?? null, [adminPrograms, projectId]);
+  // With a manager signed in, "All Projects" is limited to the projects they champion; other managers' records never appear.
+  const allowedIds = useMemo(() => (manager ? adminPrograms.map(p => p.id) : undefined), [manager, adminPrograms]);
+  const scope: ProjectScope = useMemo(() => project ? { projectId: project.id, project, allowed: allowedIds } : { ...ALL_SCOPE, allowed: allowedIds }, [project, allowedIds]);
+  const selectProject = (id: string) => {
+    setProjectId(id);
+    try { sessionStorage.setItem(SELECTED_PROJECT_KEY, id); } catch { /* ignore */ }
+  };
+  const inProject = (n: IncubationNotification) => !n.programId || inScope(scope, n);
+  const P = useProgramme();
+  const [savedDecisions] = useState(loadDecisions);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, { status: string; reason?: string; date?: string }>>(savedDecisions.statusOverrides ?? {});
   const [pairings, setPairings] = useState<Record<string, {
     partnerName: string;
     matchScore: number;
     matchingStage: string;
     introSession: string;
     approvalStatus: "Approved" | "Pending Approval" | "Re-match Requested";
-  }>>({});
-  const [notifications, setNotifications] = useState<IncubationNotification[]>(INITIAL_NOTIFICATIONS);
+  }>>(savedDecisions.pairings ?? {});
+  const [notifications, setNotifications] = useState<IncubationNotification[]>(savedDecisions.notifications ?? INITIAL_NOTIFICATIONS);
+  useEffect(() => {
+    try { localStorage.setItem(DECISIONS_KEY, JSON.stringify({ statusOverrides, pairings, notifications })); } catch { /* storage full or blocked */ }
+  }, [statusOverrides, pairings, notifications]);
 
   const addNotification = (
     notif: Omit<IncubationNotification, "id" | "createdAt" | "read" | "timestamp"> & { timestamp?: string }
   ) => {
     const newNotif: IncubationNotification = {
       ...notif,
+      programId: notif.programId ?? [...liveApplications, ...liveMentorApplications, ...MOCK_ENT_APPS, ...MOCK_MNT_APPS].find(a => a.id === notif.candidateId)?.programId,
       id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       createdAt: Date.now(),
       timestamp: notif.timestamp || "Just now",
@@ -5457,12 +5714,12 @@ export function IncubationManagementPage({
   };
 
   const markAllNotificationsAsRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    setNotifications(prev => prev.map(n => inProject(n) ? { ...n, read: true } : n));
     toast.success("All notifications marked as read.");
   };
 
   const clearNotifications = () => {
-    setNotifications([]);
+    setNotifications(prev => prev.filter(n => !inProject(n)));
     toast.info("Notifications cleared.");
   };
 
@@ -5496,6 +5753,25 @@ export function IncubationManagementPage({
 
     const app = [...liveApplications, ...liveMentorApplications, ...MOCK_ENT_APPS, ...MOCK_MNT_APPS].find(a => a.id === id);
     const candidateName = app?.name || id;
+
+    // Keep the programme store (what mentors and entrepreneurs see) in step with the decision
+    const entApp = [...liveApplications, ...MOCK_ENT_APPS].find(a => a.id === id);
+    if (entApp) {
+      const me = { menteeId: id, mentee: entApp.name };
+      const pair = P.pairs.find(x => sameMentee(x, me));
+      const queued = P.waiting.some(w => sameMentee(w, me));
+      if (status === "Matching" && !pair && !queued) {
+        P.addWaiting({ menteeId: id, mentee: entApp.name, venture: (entApp as any).businessName || entApp.name, sector: entApp.sector, stage: (entApp as any).stage || "Idea", programId: entApp.programId });
+      } else if (status !== "Matching" && queued) {
+        P.removeWaiting(entApp.name, id);
+      }
+      if ((status === "Dropouts" || status === "Rejected") && pair) {
+        P.endPair(pair.id, reason || (status === "Dropouts" ? "Mentee dropped out of the programme" : "Mentee disqualified"), { requeue: false });
+      }
+    } else if (app && status === "Dropouts") {
+      // A mentor leaving ends their pairs and puts those mentees back in the queue
+      P.pairs.filter(x => isMentorOf(x, { id, name: app.name })).forEach(x => P.endPair(x.id, reason || "Mentor withdrew from the programme", { requeue: true }));
+    }
 
     if (status === "Selected") {
       addNotification({
@@ -5572,11 +5848,20 @@ export function IncubationManagementPage({
     const today = new Date().toISOString().split("T")[0];
 
     // Resolve accurate IDs for both sides
-    const actualEnt = entApps.find(e => e.id === entId || e.name.toLowerCase() === entName.toLowerCase());
+    const actualEnt = entApps.find(e => e.id === entId); // by ID only: two people can share a name
     const resolvedEntId = actualEnt ? actualEnt.id : entId;
 
-    const actualMentor = mntApps.find(m => m.id === mentorId || m.name.toLowerCase() === mentorName.toLowerCase());
+    const actualMentor = mntApps.find(m => m.id === mentorId);
     const resolvedMentorId = actualMentor ? actualMentor.id : mentorId;
+
+    // The programme store is the single record of who is paired, so it goes first: if it refuses (mentor full, not allowed), nothing else changes.
+    const added = P.addPair({
+      menteeId: resolvedEntId, mentorId: resolvedMentorId, mentee: entName, mentor: mentorName,
+      venture: (actualEnt as any)?.businessName || entName, sector: actualEnt?.sector || entSector,
+      expertise: mentorExpertise, matchScore, stage: (actualEnt as any)?.stage || undefined,
+      programId: actualEnt?.programId ?? scope.project?.id, capacity: actualMentor?.capacity ?? MENTOR_MATCH_PROFILES.find(m => m.id === resolvedMentorId)?.maxMenteeCount,
+    });
+    if (!added.ok) { toast.error(added.reason); return; }
 
     setPairings(prev => ({
       ...prev,
@@ -5601,43 +5886,6 @@ export function IncubationManagementPage({
       [resolvedEntId]: { status: "Matching", date: today },
       [resolvedMentorId]: { status: "Matching", date: today },
     }));
-
-    setMatchPairs(prev => {
-      const idx = prev.findIndex(p =>
-        p.mentee.toLowerCase() === entName.toLowerCase() ||
-        p.mentee.toLowerCase().includes(entName.toLowerCase()) ||
-        entName.toLowerCase().includes(p.mentee.toLowerCase())
-      );
-      if (idx >= 0) {
-        const updated = [...prev];
-        updated[idx] = {
-          ...updated[idx],
-          mentor: mentorName,
-          expertise: mentorExpertise,
-          matchScore,
-          status: "Active",
-          reMatchReq: false,
-          lastSession: "Intro Scheduled",
-        };
-        return updated;
-      }
-      return [
-        {
-          id: Date.now(),
-          mentee: entName,
-          menteeVenture: entSector,
-          mentor: mentorName,
-          expertise: mentorExpertise,
-          stage: "MVP",
-          matchScore,
-          status: "Active",
-          sessions: 0,
-          lastSession: "Intro Scheduled",
-          reMatchReq: false,
-        },
-        ...prev,
-      ];
-    });
 
     addNotification({
       section: "Matching",
@@ -5709,38 +5957,10 @@ export function IncubationManagementPage({
       [appId]: { status: "Matching", date: today },
     }));
 
-    // 3. Update matchPairs inside Pairing & Matching:
-    setMatchPairs(prev => {
-      const existingIndex = prev.findIndex(p =>
-        p.mentee.toLowerCase() === appName.toLowerCase() ||
-        p.mentor.toLowerCase().includes(appName.toLowerCase())
-      );
-
-      if (existingIndex >= 0) {
-        const updated = [...prev];
-        updated[existingIndex] = {
-          ...updated[existingIndex],
-          reMatchReq: true,
-          status: "Pending",
-        };
-        return updated;
-      }
-
-      const newPair: MentorPair = {
-        id: Date.now(),
-        mentee: isEnt ? appName : ((app as any).matchedMentee?.split(" (")[0] || "Unassigned"),
-        menteeVenture: isEnt ? ((app as any).businessName || (app as any).sector || "Enterprise") : "Venture",
-        mentor: isEnt ? ((app as any).matchedMentor?.split(" (")[0] || "Pending Re-assignment") : appName,
-        expertise: (app as any).sector || (app as any).expertise || "Services",
-        stage: (app as any).stage || "MVP",
-        matchScore: (app as any).matchScore || 88,
-        status: "Pending",
-        sessions: 1,
-        lastSession: "Today",
-        reMatchReq: true,
-      };
-      return [newPair, ...prev];
-    });
+    // 3. Open a re-match review in the programme store (both people are told; it shows in Pairing & Matching)
+    const menteeName = isEnt ? appName : String((app as any).matchedMentee ?? "").split(" (")[0];
+    const pair = P.pairs.find(x => (isEnt ? x.menteeId === appId : x.mentorId === appId) || x.mentee.toLowerCase() === menteeName.toLowerCase() || (!isEnt && x.mentor.toLowerCase() === appName.toLowerCase()));
+    if (pair) P.requestRematch(pair.id, "Partner re-assigned by the programme team", "admin");
 
     addNotification({
       section: "Matching",
@@ -5756,7 +5976,7 @@ export function IncubationManagementPage({
   };
 
   // Merge mockup data with live submissions (filter to Incubation only), apply overrides & pairings
-  const entApps = useMemo(() =>
+  const allEntApps = useMemo(() =>
     [...MOCK_ENT_APPS, ...liveApplications.filter(a => a.program === "Incubation")]
       .map(a => {
         let item = { ...a };
@@ -5803,7 +6023,7 @@ export function IncubationManagementPage({
       }),
     [liveApplications, statusOverrides, pairings]
   );
-  const mntApps = useMemo(() =>
+  const allMntApps = useMemo(() =>
     [...MOCK_MNT_APPS, ...liveMentorApplications.filter(a => a.program === "Incubation")]
       .map(a => {
         let item = { ...a };
@@ -5850,6 +6070,47 @@ export function IncubationManagementPage({
       }),
     [liveMentorApplications, statusOverrides, pairings]
   );
+
+  // Pairs come from the programme store, the same data the mentor and entrepreneur dashboards read
+  const projectOfPair = (name: string, menteeId?: string, own?: string) =>
+    own ?? allEntApps.find(a => (menteeId && a.id === menteeId) || a.name.toLowerCase() === name.toLowerCase())?.programId;
+  const allPairs: MentorPair[] = useMemo(() => {
+    const open = new Map(P.rematches.filter(r => r.status === "open").map(r => [r.pairId, r.id]));
+    const rows: MentorPair[] = P.pairs.map(p => {
+      const st = P.stats[p.id]; const rid = open.get(p.id);
+      return {
+        id: p.id, mentee: p.mentee, menteeVenture: p.venture, mentor: p.mentor, expertise: p.expertise, stage: p.stage,
+        matchScore: p.matchScore, status: rid ? "Pending" : "Active", sessions: st?.sessionsTotal ?? 0,
+        lastSession: st?.lastSession ? fmtDate(st.lastSession) : p.introDate ? `Intro ${fmtDate(p.introDate)}` : "Intro not scheduled",
+        reMatchReq: !!rid, rematchId: rid, programId: projectOfPair(p.mentee, p.menteeId, p.programId),
+      } as MentorPair;
+    });
+    const queue: MentorPair[] = P.waiting.map(w => ({
+      id: w.id, mentee: w.mentee, menteeVenture: w.venture, mentor: "Unmatched", expertise: "\u2014", stage: w.stage,
+      matchScore: 0, status: "Pending", sessions: 0, lastSession: "\u2014", reMatchReq: false,
+      programId: projectOfPair(w.mentee, w.menteeId, w.programId),
+    } as MentorPair));
+    return [...rows, ...queue];
+  }, [P.pairs, P.waiting, P.rematches, P.stats, allEntApps]);
+  const pairHealth: PairHealthRow[] = useMemo(() => allPairs.filter(mp => P.stats[mp.id as string] && inScope(scope, mp)).map(mp => {
+    const st = P.stats[mp.id as string];
+    return {
+      pairId: mp.id as string, programId: mp.programId, mentee: mp.mentee, mentor: mp.mentor, health: st.health,
+      sessions7d: st.sessions7d, satisfaction: st.satisfaction, goalPct: st.goalPct, flagged: st.health === "At Risk" || st.health === "Stalled",
+      trend: st.trend, reasons: st.reasons, intervention: P.interventions.some(i => i.pairId === mp.id && !i.resolved),
+    };
+  }), [allPairs, P.stats, P.interventions, scope]);
+
+  // Everything below this line sees only the selected project (or everything for "All Projects")
+  const entApps = useMemo(() => allEntApps.filter(a => inScope(scope, a)), [allEntApps, scope]);
+  const mntApps = useMemo(() => allMntApps.filter(a => mentorInScope(scope, a)), [allMntApps, scope]);
+  const scopedPairs = useMemo(() => allPairs.filter(p => inScope(scope, p)), [allPairs, scope]);
+  const scopedNotifications = useMemo(() => notifications.filter(inProject), [notifications, scope]);
+  const projectCounts = useMemo(() => {
+    const out: Record<string, number> = {};
+    allEntApps.forEach(a => { if (a.programId) out[a.programId] = (out[a.programId] ?? 0) + 1; });
+    return out;
+  }, [allEntApps]);
 
   const entStatusCounts = useMemo(() =>
     entApps.reduce((acc, a) => { acc[a.status] = (acc[a.status] || 0) + 1; return acc; }, {} as Record<string, number>),
@@ -5903,6 +6164,18 @@ export function IncubationManagementPage({
   function SidebarBody({ onSelect }: { onSelect: () => void }) {
     return (
       <>
+        {/* Logo (left) + Back (far right) */}
+        <div className="flex items-center justify-between gap-3 px-2 pb-4 mb-3 shrink-0" style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+          <img src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
+            alt="Emerge Livelihoods" className="h-7 brightness-0 invert min-w-0" />
+          <button onClick={onBack} aria-label="Back to Program Managers" title="Back to Program Managers"
+            className="flex items-center gap-1 text-white text-[11px] font-bold shrink-0 transition-opacity opacity-80 hover:opacity-100"
+            style={{ background: "none", border: "none", padding: 0 }}>
+            <ChevronLeft size={14} color="#fff" />
+            <span>Back</span>
+          </button>
+        </div>
+
         {/* Management section */}
         <div className="mb-1">
           <button
@@ -5960,16 +6233,6 @@ export function IncubationManagementPage({
         {/* Bottom */}
         <div className="mt-auto pt-4 space-y-0.5" style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
           <NavItem icon={Settings} label="Settings" active={active === "Settings"} onClick={() => { setActive("Settings"); onSelect(); }} />
-          <button
-            onClick={handleSignOut}
-            className="flex items-center gap-2.5 w-full text-left rounded-md px-3 py-2.5 transition-all text-[12px] font-medium"
-            style={{ color: "#f87171" }}
-            onMouseEnter={e => (e.currentTarget.style.background = "rgba(248,113,113,0.1)")}
-            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-          >
-            <LogOut size={14} color="#f87171" />
-            Sign out
-          </button>
         </div>
       </>
     );
@@ -5982,16 +6245,19 @@ export function IncubationManagementPage({
       setStatusOverride,
       confirmPairing,
       setActiveNav: setActive,
-      matchPairs,
-      setMatchPairs,
+      matchPairs: scopedPairs,
+      // all pairs this manager can see (not narrowed to the selected project: it is the denominator for "share of pairs")
+      totalPairs: P.pairs.filter(p => inScope({ ...ALL_SCOPE, allowed: allowedIds }, p)).length,
+      pairHealth,
       pairings,
       reassignPartner,
-      notifications,
+      notifications: scopedNotifications,
       addNotification,
       markNotificationAsRead,
       markAllNotificationsAsRead,
       clearNotifications,
       removeNotification,
+      scope,
     }}>
     <div className="min-h-screen flex" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif", background: "#f5f5f5" }}>
       <style>{css}</style>
@@ -6030,11 +6296,14 @@ export function IncubationManagementPage({
             <LayoutGrid size={14} color="#fff" />
           </button>
 
-          {/* Logo */}
-          <div className="shrink-0 relative z-10">
-            <img src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
-              alt="Emerge Livelihoods" className="h-7 brightness-0 invert" />
-          </div>
+          {/* Project switcher */}
+          <ProjectSwitcher
+            programs={adminPrograms}
+            selectedId={scope.projectId}
+            counts={projectCounts}
+            onSelect={selectProject}
+            allLabel={manager ? "All my projects" : "All Projects"}
+          />
 
           {/* Spacer */}
           <div className="flex-1" />
@@ -6047,7 +6316,7 @@ export function IncubationManagementPage({
               <input placeholder="Search…" className="bg-transparent text-white text-[11px] w-24 focus:outline-none placeholder-white/50" />
             </div>
             <NotificationBellDropdown
-              notifications={notifications}
+              notifications={scopedNotifications}
               onMarkRead={markNotificationAsRead}
               onMarkAllRead={markAllNotificationsAsRead}
               onClearAll={clearNotifications}
@@ -6056,7 +6325,7 @@ export function IncubationManagementPage({
                 setActive(target);
               }}
             />
-            <ProfileDropdown onSignOut={handleSignOut} />
+            <ProfileDropdown name={manager?.name} title={manager?.title} />
           </div>
         </header>
 
@@ -6067,6 +6336,8 @@ export function IncubationManagementPage({
             <div className="mb-6">
               <div className="flex items-center gap-1.5 text-[10px] font-semibold mb-1" style={{ color: "#9ca3af" }}>
                 <span>Incubation</span>
+                <ChevronRight size={10} />
+                <span>{scope.project ? scope.project.name : manager ? "All my projects" : "All Projects"}</span>
                 <ChevronRight size={10} />
                 <span style={{ color: TEAL }}>{active}</span>
               </div>

@@ -1,4 +1,9 @@
 import { useState, useEffect } from "react";
+import { authenticate, authenticateManager, registerCredential } from "./data/auth";
+import { SEED_MANAGERS, managerById, programsFor, withSeedOwners, type Manager } from "./data/managers";
+import { DirectoryProvider, buildPeople, type Person } from "./data/directory";
+import { loadOverrides } from "./data/applicationTracker";
+import { MOCK_ENT_APPS, MOCK_MNT_APPS } from "./components/IncubationManagementPage";
 import { Toaster, toast } from "sonner";
 import { Navbar } from "./components/Navbar";
 import { Hero } from "./components/Hero";
@@ -39,13 +44,15 @@ const MENTOR_APPS_KEY = "emerge.mentorApplications.v1";
 const APPS_KEY = "emerge.applications.v1";  // incubation applications (kept so programName and the rest survive a refresh)
 const APPLY_KEY = "emerge.applyTo";          // which programme the applicant clicked "Apply" on (per tab)
 
+const MANAGER_KEY = "emerge.manager.v1";
+
 function loadPrograms(): AdminProgram[] {
   try {
     const raw = localStorage.getItem(PROGRAMS_KEY);
-    if (!raw) return legacyPrograms;
+    if (!raw) return withSeedOwners(legacyPrograms);
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as AdminProgram[]) : legacyPrograms;
-  } catch { return legacyPrograms; }
+    return Array.isArray(parsed) ? withSeedOwners(parsed as AdminProgram[]) : withSeedOwners(legacyPrograms);
+  } catch { return withSeedOwners(legacyPrograms); }
 }
 
 function loadApplications(): EntrepreneurApplication[] {
@@ -69,6 +76,14 @@ function AppInner() {
   });
   const setPage = (p: Page) => { setPageState(p); try { sessionStorage.setItem(PAGE_KEY, p); } catch { /* ignore */ } };
   const [adminPrograms, setAdminPrograms] = useState<AdminProgram[]>(loadPrograms);
+  // The signed-in programme manager (per browser tab, so two tabs can be two different managers)
+  const [manager, setManagerState] = useState<Manager | null>(() => {
+    try { return managerById(sessionStorage.getItem(MANAGER_KEY)) ?? null; } catch { return null; }
+  });
+  const setManager = (m: Manager | null) => {
+    setManagerState(m);
+    try { m ? sessionStorage.setItem(MANAGER_KEY, m.id) : sessionStorage.removeItem(MANAGER_KEY); } catch { /* ignore */ }
+  };
   const [applyTo, setApplyToState] = useState<{ id: string; name: string } | null>(() => {
     try { const r = sessionStorage.getItem(APPLY_KEY); return r ? JSON.parse(r) : null; } catch { return null; }
   });
@@ -115,24 +130,56 @@ function AppInner() {
 
   const navigate = (p: Page) => {
     if (p !== "incubation-apply") setApplyTo(null); // a stale programme must not leak into a later generic apply
-    // Demo sign-in: entering a dashboard sets the current user; leaving clears it
-    if (p === "mentee-dashboard") programme.signIn("mentee", programme.currentUser?.role === "mentee" ? programme.currentUser.name : undefined);
-    else if (p === "mentor-dashboard") programme.signIn("mentor", programme.currentUser?.role === "mentor" ? programme.currentUser.name : undefined);
-    else if (p === "login" || p === "mentor-login" || p === "home") programme.signIn(null);
+    // Leaving for a public/login page signs the person out. Signing in happens only through the login pages (see below).
+    if (p === "login" || p === "mentor-login" || p === "home") { programme.signIn(null); setManager(null); }
     setPage(p);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  // Projects live on the admin page; the store needs them so pairs and cohorts can belong to one.
+  useEffect(() => {
+    programme.registerProjects(adminPrograms.map(p => ({ id: p.id, name: p.name })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminPrograms]);
+
+  // ── Sign-in ──────────────────────────────────────────────────────────────────────────────
+  const peopleNow = () => buildPeople({ entApps: [...MOCK_ENT_APPS, ...incubationApplications], mntApps: [...MOCK_MNT_APPS, ...mentorApplications], overrides: loadOverrides() });
+  const enter = (role: "mentee" | "mentor", person: Person) => {
+    programme.signIn({ role, id: person.id, name: person.name });
+    setPage(role === "mentee" ? "mentee-dashboard" : "mentor-dashboard");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const loginEntrepreneur = async (email: string, password: string) => {
+    const res = await authenticate("mentee", email, password, peopleNow().mentees);
+    if (res.ok) enter("mentee", res.person);
+    return res;
+  };
+  const checkMentor = (email: string, password: string) => authenticate("mentor", email, password, peopleNow().mentors);
+
+  const loginManager = async (email: string, password: string) => {
+    const res = await authenticateManager(email, password, SEED_MANAGERS);
+    if (res.ok) { setManager(res.manager); setPage("program-managers"); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    return res;
+  };
+
+  // A program belongs to the manager who creates it (more managers can share it later). Editing never changes who champions it.
   const handleCreateProgram = (p: AdminProgram) => {
-    setAdminPrograms(prev => [...prev, p]);
+    setAdminPrograms(prev => [...prev, { ...p, managerIds: manager ? [manager.id] : p.managerIds }]);
   };
 
   const handleUpdateProgram = (p: AdminProgram) => {
-    setAdminPrograms(prev => prev.map(x => x.id === p.id ? p : x));
+    setAdminPrograms(prev => prev.map(x => x.id === p.id ? { ...p, managerIds: x.managerIds } : x));
   };
 
   const handleDeleteProgram = (id: string) => {
     setAdminPrograms(prev => prev.map(x => x.id === id ? { ...x, published: false } : x));
+  };
+
+  /** Programs that nobody champions yet (created before manager accounts existed) can be taken on by any manager. */
+  const handleClaimProgram = (id: string) => {
+    if (!manager) return;
+    setAdminPrograms(prev => prev.map(x => (x.id === id && (!x.managerIds || x.managerIds.length === 0) ? { ...x, managerIds: [manager.id] } : x)));
+    toast.success("You now champion this project");
   };
 
   if (page === "track") {
@@ -160,7 +207,7 @@ function AppInner() {
         <MentorRegistrationForm
           onBack={() => navigate("mentors")}
           onNavigateHome={() => navigate("home")}
-          onSubmitMentorApplication={(app) => setMentorApplications(prev => [...prev, app])}
+          onSubmitMentorApplication={(app, password) => { setMentorApplications(prev => [...prev, app]); if (app.email) void registerCredential("mentor", app.email, app.id, password); }}
         />
       </div>
     );
@@ -170,34 +217,35 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <LoginPage onBack={() => navigate("home")} onNavigate={(p) => navigate(p as Page)} />
+        <LoginPage onBack={() => navigate("home")} onNavigate={(p) => navigate(p as Page)} onEntrepreneurLogin={loginEntrepreneur} onManagerLogin={loginManager} />
       </div>
     );
   }
 
-  if (page === "mentee-dashboard") {
+  // A dashboard only renders for a signed-in person of that role; otherwise it is the login page.
+  if (page === "mentee-dashboard" || page === "mentor-dashboard") {
+    const role = page === "mentee-dashboard" ? "mentee" : "mentor";
+    if (programme.currentUser?.role !== role) { setTimeout(() => navigate(role === "mentee" ? "login" : "mentor-login"), 0); return null; }
     return (
-      <>
+      <DirectoryProvider entApps={[...MOCK_ENT_APPS, ...incubationApplications]} mntApps={[...MOCK_MNT_APPS, ...mentorApplications]}>
         <Toaster richColors position="top-right" />
-        <MenteeDashboard onSignOut={() => navigate("login")} />
-      </>
+        {role === "mentee" ? <MenteeDashboard onSignOut={() => navigate("login")} /> : <MentorDashboard onSignOut={() => navigate("mentor-login")} />}
+      </DirectoryProvider>
     );
   }
 
-  if (page === "mentor-dashboard") {
-    return (
-      <>
-        <Toaster richColors position="top-right" />
-        <MentorDashboard onSignOut={() => navigate("mentor-login")} />
-      </>
-    );
+  // Both manager pages need a signed-in programme manager; otherwise it is the login page.
+  if ((page === "program-managers" || page === "incubation-management") && !manager) {
+    setTimeout(() => navigate("login"), 0);
+    return null;
   }
 
   if (page === "program-managers") {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <ProgramManagersPage onBack={() => navigate("login")} onNavigate={navigate} />
+        <ProgramManagersPage onBack={() => navigate("login")} onSignOut={() => navigate("login")} onNavigate={navigate}
+          manager={manager} programs={adminPrograms} onClaimProgram={handleClaimProgram} />
       </div>
     );
   }
@@ -208,8 +256,8 @@ function AppInner() {
         <Toaster richColors position="top-right" />
         <IncubationManagementPage
           onBack={() => navigate("program-managers")}
-          onSignOut={() => navigate("login")}
-          adminPrograms={adminPrograms}
+          manager={manager}
+          adminPrograms={programsFor(adminPrograms, manager?.id)}
           onCreateProgram={handleCreateProgram}
           onUpdateProgram={handleUpdateProgram}
           onDeleteProgram={handleDeleteProgram}
@@ -224,7 +272,7 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <MentorLoginPage onBack={() => navigate("mentors")} onApplyMentor={() => navigate("mentor-register")} onSignIn={() => navigate("mentor-dashboard")} />
+        <MentorLoginPage onBack={() => navigate("mentors")} onApplyMentor={() => navigate("mentor-register")} onAuthenticate={checkMentor} onSignIn={person => enter("mentor", person)} />
       </div>
     );
   }
@@ -233,7 +281,7 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onTrack={() => navigate("track")} />
+        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => navigate("track")} />
         <IncubationPage
           onBack={() => navigate("home")}
           onApply={(id, name) => { setApplyTo({ id, name }); navigate("incubation-apply"); }}
@@ -254,7 +302,7 @@ function AppInner() {
           onBack={() => navigate("incubation")}
           programId={applyTo?.id}
           programName={applyTo?.name}
-          onSubmitApplication={(app) => setIncubationApplications(prev => [...prev, app])}
+          onSubmitApplication={(app, password) => { setIncubationApplications(prev => [...prev, app]); if (app.email) void registerCredential("mentee", app.email, app.id, password); }}
         />
       </div>
     );
@@ -264,7 +312,7 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onTrack={() => navigate("track")} />
+        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => navigate("track")} />
         <AccelerationPage onBack={() => navigate("home")} onApply={() => navigate("acceleration-apply")} onLogin={() => navigate("login")} />
         <Footer />
       </div>
@@ -275,7 +323,7 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <AccelerationApplicationForm onBack={() => navigate("acceleration")} onSubmitApplication={(app) => setIncubationApplications(prev => [...prev, app])} />
+        <AccelerationApplicationForm onBack={() => navigate("acceleration")} onSubmitApplication={(app, password) => { setIncubationApplications(prev => [...prev, app]); if (app.email) void registerCredential("mentee", app.email, app.id, password); }} />
       </div>
     );
   }
@@ -283,7 +331,7 @@ function AppInner() {
   return (
     <div className="min-h-screen" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
       <Toaster richColors position="top-right" />
-      <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onTrack={() => navigate("track")} />
+      <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => navigate("track")} />
       <Hero />
       <Programs onNavigateIncubation={() => navigate("incubation")} onNavigateAcceleration={() => navigate("acceleration")} />
       <MentorshipSection onBecomeMentor={() => navigate("mentors")} />

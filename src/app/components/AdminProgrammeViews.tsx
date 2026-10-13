@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { AlertCircle, Download, Plus, X } from "lucide-react";
-import { useProgramme, cohortEnrolled, buildReport, PERIODS, AS_OF, fmtDate, daysBetween, type Health, type Period } from "../data/programmeStore";
+import { useProgramme, mentorKey, cohortEnrolled, buildReport, PERIODS, todayISO, isUpcoming, fmtDate, daysBetween, type Health, type Period } from "../data/programmeStore";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
@@ -30,7 +30,7 @@ export function AdminRelHealthView() {
 
   return (
     <div className="im-fade" style={{ display: "grid", gap: 16 }}>
-      <Head t="Relationship Health Dashboard" s={`Computed live from session logs, tasks, goals and mentee ratings (as of ${fmtDate(AS_OF)})`} />
+      <Head t="Relationship Health Dashboard" s={`Computed live from session logs, tasks, goals and mentee ratings (as of ${fmtDate(todayISO())})`} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         {([["Healthy", "Session in last 14 days, tasks ≥ 50%, satisfaction ≥ 70%"], ["At Risk", "> 14 days since session, tasks < 50%, satisfaction < 70% or goals < 30%"], ["Stalled", "45+ days without a session, or rated < 3.0 twice in a row"], ["New", "Matched in last 21 days, no session yet"]] as [Health, string][]).map(([h, desc]) => (
           <button key={h} onClick={() => setFilter(filter === h ? null : h)} style={{ ...card, padding: "16px 18px", cursor: "pointer", textAlign: "left", border: `2px solid ${filter === h ? HC[h] : "transparent"}` }}>
@@ -103,7 +103,7 @@ export function AdminRelHealthView() {
                   <div><p style={{ fontWeight: 700, color: NAVY, margin: "0 0 6px" }}>Goals & tasks</p>
                     {P.goals.filter(g => g.pairId === p.id).map(g => <p key={g.id} style={{ margin: "0 0 3px" }}>{g.title} — {g.pct}% ({g.status})</p>)}
                     <p style={{ margin: "6px 0 0", color: "#888" }}>{s.openTasks} open task(s)</p>
-                    {P.bookings.filter(b => b.pairId === p.id && b.status === "confirmed" && b.date >= AS_OF).slice(0, 1).map(b => <p key={b.id} style={{ margin: "4px 0 0", color: "#059669" }}>Next session: {fmtDate(b.date)} {b.time}</p>)}
+                    {P.bookings.filter(b => b.pairId === p.id && isUpcoming(b)).slice(0, 1).map(b => <p key={b.id} style={{ margin: "4px 0 0", color: "#059669" }}>Next session: {fmtDate(b.date)} {b.time}</p>)}
                     {rematch && <div style={{ marginTop: 8, background: "#fef2f2", borderRadius: 3, padding: 8 }}><b style={{ color: "#ef4444" }}>Re-match reason:</b> {rematch.reason}<div><button style={{ ...btn("#fff", "#ef4444", "1px solid #fecaca"), marginTop: 6 }} onClick={() => { P.resolveRematch(rematch.id); toast("Re-match marked as handled"); }}>Mark handled</button></div></div>}
                     {notes.length > 0 && <div style={{ marginTop: 8, background: "#f5f3ff", borderRadius: 3, padding: 8 }}><b style={{ color: "#6d28d9" }}>Mentor private notes:</b>{notes.map(n => <p key={n.id} style={{ margin: "3px 0 0" }}>{fmtDate(n.at)}: {n.text}</p>)}</div>}</div>
                 </div>
@@ -126,10 +126,10 @@ export function AdminCohortView({ programmeByCohort = {} }: { programmeByCohort?
   const ps = P.pairs.filter(p => p.cohortId === cohort.id);
   const live = ps.length > 0;
   const hs = (h: Health) => ps.filter(p => P.stats[p.id].health === h).length;
-  const mentors = live ? new Set(ps.map(p => p.mentor)).size : cohort.snapshot?.mentors ?? 0;
+  const mentors = live ? new Set(ps.map(mentorKey)).size : cohort.snapshot?.mentors ?? 0;
   const avgProg = live ? Math.round(ps.reduce((a, p) => a + P.stats[p.id].goalPct, 0) / ps.length) : cohort.snapshot?.avgProgress ?? 0;
   // Enrolled can never be lower than the mentees actually in the cohort (paired + still waiting, who join the active cohort)
-  const enrolled = cohortEnrolled(cohort, P.pairs, P.waiting.length);
+  const enrolled = cohortEnrolled(cohort, P.pairs, P.waiting);
   const total = rubricTotal(cohort.rubric);
   const buckets = live
     ? [["Active (healthy / new)", hs("Healthy") + hs("New"), "#059669"], ["At Risk", hs("At Risk"), "#f59e0b"], ["Stalled", hs("Stalled"), "#ef4444"], ["Awaiting match", Math.max(0, enrolled - ps.length), "#94a3b8"]]
@@ -164,7 +164,7 @@ export function AdminCohortView({ programmeByCohort = {} }: { programmeByCohort?
                 <span style={{ background: c.status === "Active" ? "#f0fdf4" : "#f3f4f6", color: c.status === "Active" ? "#059669" : "#6b7280", fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 700 }}>{c.status}</span>
               </div>
               <p style={{ color: "#888", fontSize: 10, margin: 0 }}>{c.startDate} – {c.endDate}<span style={{ marginLeft: 12 }}>{c.sector}</span></p>
-              <p style={{ color: "#888", fontSize: 10, margin: "4px 0 0" }}>{cp.length ? `${cp.length} paired of ${cohortEnrolled(c, P.pairs, P.waiting.length)}` : `${cohortEnrolled(c, P.pairs, P.waiting.length)} mentees`}{programmeByCohort[c.id] ? <span style={{ marginLeft: 12 }}>{programmeByCohort[c.id]}</span> : null}</p>
+              <p style={{ color: "#888", fontSize: 10, margin: "4px 0 0" }}>{cp.length ? `${cp.length} paired of ${cohortEnrolled(c, P.pairs, P.waiting)}` : `${cohortEnrolled(c, P.pairs, P.waiting)} mentees`}{programmeByCohort[c.id] ? <span style={{ marginLeft: 12 }}>{programmeByCohort[c.id]}</span> : null}</p>
             </button>
           );
         })}
@@ -215,7 +215,7 @@ export function AdminReportingView() {
   const exportCsv = () => {
     const rows = [["Metric", "Value"], ["Period", PERIODS[period].label], ["Cohort", cohortId ? P.cohortName(cohortId) : "All"], ["Pairs", r.pairCount], ["Sessions", r.sessions], ["Avg goal progress %", r.avgGoal], ["Satisfaction %", r.satisfaction ?? ""], ["Impact score", r.impact], ["Task completion %", r.taskPct], ["Active pair rate %", r.activePairRate], ...r.outcomes.map(o => [o.label, o.val]), ...r.perMentor.map(m => [`Sessions – ${m.mentor}`, m.sessions])];
     const url = URL.createObjectURL(new Blob([rows.map(x => x.join(",")).join("\n")], { type: "text/csv" }));
-    Object.assign(document.createElement("a"), { href: url, download: `programme-report-${AS_OF}.csv` }).click();
+    Object.assign(document.createElement("a"), { href: url, download: `programme-report-${todayISO()}.csv` }).click();
     URL.revokeObjectURL(url); toast.success("Report exported");
   };
 
@@ -228,7 +228,7 @@ export function AdminReportingView() {
           {(Object.keys(PERIODS) as Period[]).map(k => <button key={k} onClick={() => setPeriod(k)} style={btn(period === k ? TEAL : "#f5f5f5", period === k ? "#fff" : "#666")}>{k[0].toUpperCase() + k.slice(1)}</button>)}
           <button style={{ ...btn(NAVY), display: "flex", gap: 5, alignItems: "center" }} onClick={exportCsv}><Download size={12} /> Export CSV</button>
         </div>} />
-      <p style={{ color: "#aaa", fontSize: 10, margin: "-8px 0 0" }}>Window: {PERIODS[period].label} to {fmtDate(AS_OF)}</p>
+      <p style={{ color: "#aaa", fontSize: 10, margin: "-8px 0 0" }}>Window: {PERIODS[period].label} to {fmtDate(todayISO())}</p>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
         {[
@@ -254,7 +254,7 @@ export function AdminReportingView() {
             </div>))}
         </div>
         <div style={{ ...card, padding: 18 }}>
-          <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Monthly Sessions, 2025</p>
+          <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Monthly Sessions, last 12 months</p>
           <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 100 }}>
             {r.monthly.map(m => (
               <div key={m.month} style={{ flex: 1, textAlign: "center" }}>

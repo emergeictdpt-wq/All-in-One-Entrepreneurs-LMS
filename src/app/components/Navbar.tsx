@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Menu, X, ChevronDown, LogIn, User, ClipboardList } from "lucide-react";
+import { Menu, X, ChevronDown, LogIn, User, Users, ClipboardList } from "lucide-react";
 
 const navItems = [
   { label: "Home", href: "#" },
@@ -13,7 +13,7 @@ const navItems = [
     href: "#learning",
     children: ["Courses", "Learning Tracks", "Certifications", "Workshops"],
   },
-  { label: "Mentors", href: "#mentors" },
+  { label: "Mentors", href: "#mentorship" },
   {
     label: "Funding",
     href: "#funding",
@@ -26,7 +26,7 @@ const navItems = [
   { label: "About Us", href: "#about" },
 ];
 
-export function Navbar({ onNavigate, onLogin, onTrack }: { onNavigate?: (page: "home" | "incubation" | "acceleration") => void; onLogin?: () => void; onTrack?: () => void }) {
+export function Navbar({ onNavigate, onLogin, onMentorLogin, onTrack }: { onNavigate?: (page: "home" | "incubation" | "acceleration") => void; onLogin?: () => void; onMentorLogin?: () => void; onTrack?: () => void }) {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
@@ -166,6 +166,18 @@ export function Navbar({ onNavigate, onLogin, onTrack }: { onNavigate?: (page: "
                   </div>
                 </button>
                 <button
+                  onClick={() => { setLoginDropdown(false); onMentorLogin?.(); }}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-[#4C808A]/8 transition-colors group"
+                >
+                  <div className="w-7 h-7 rounded-md bg-[#4C808A]/10 flex items-center justify-center shrink-0 group-hover:bg-[#4C808A]/20 transition-colors">
+                    <Users size={14} />
+                  </div>
+                  <div>
+                    <div className="text-[#3B4167] text-xs font-bold">Mentor</div>
+                    <div className="text-[#6b7280] text-[10px]">Guide and support entrepreneurs</div>
+                  </div>
+                </button>
+                <button
                   onClick={() => { setLoginDropdown(false); onLogin?.(); }}
                   className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-[#4C808A]/8 transition-colors group"
                 >
@@ -232,6 +244,12 @@ export function Navbar({ onNavigate, onLogin, onTrack }: { onNavigate?: (page: "
               className="w-full flex items-center gap-3 px-4 py-2.5 rounded-md bg-[#4C808A] text-white text-xs font-bold"
             >
               <User size={14} /> Entrepreneur Login
+            </button>
+            <button
+              onClick={() => { setMobileOpen(false); onMentorLogin?.(); }}
+              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-md border border-[#4C808A] text-[#4C808A] text-xs font-bold"
+            >
+              <Users size={14} /> Mentor Login
             </button>
             <button
               onClick={() => { setMobileOpen(false); onLogin?.(); }}

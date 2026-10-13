@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { EntrepreneurApplication } from "../types";
+import { AccountFields, accountProblem } from "./AccountFields";
 import {
   ArrowRight, CheckCircle, Rocket, Building, TrendingUp,
   DollarSign, Users, BarChart2, Globe, Zap, Target, ChevronDown
@@ -67,7 +68,7 @@ function YesNo({ label, value, onChange }: { label: string; value: string; onCha
   );
 }
 
-export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication) => void }) {
+export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication, password: string) => void }) {
   const [activeSection, setActiveSection] = useState("stage");
   const [submitted, setSubmitted] = useState(false);
   const [refId, setRefId] = useState("");
@@ -76,6 +77,7 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
   // Form state
   const [stage, setStage] = useState<GrowthStage | null>(null);
   const [company, setCompany] = useState({ name: "", regNumber: "", taxId: "", dateEstablished: "", country: "Malawi", industry: "", sector: "", businessModel: "", website: "", uniqueValue: "", ip: "", technology: "" });
+  const [account, setAccount] = useState({ password: "", confirm: "" });
   const [founder, setFounder] = useState({ name: "", email: "", position: "", education: "", entrepreneurialExp: "", industryYears: "" });
   const [executives, setExecutives] = useState([{ name: "", position: "", department: "", yearsExp: "", responsibilities: "" }]);
   const [traction, setTraction] = useState({ totalCustomers: "", payingCustomers: "", enterpriseCustomers: "", retentionRate: "", markets: "Local", segment: "B2C", competitors: "", competitiveAdvantage: "", marketShare: "" });
@@ -101,6 +103,7 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
 
   const setSD = (k: string, v: string | boolean) => setStageDetails(prev => ({ ...prev, [k]: v }));
 
+  const submitProblem = !founder.name.trim() ? "Add the founder's full name in Leadership Team." : accountProblem("mentee", founder.email, account.password, account.confirm);
   const markDone = (id: string) => setCompletedSections(prev => new Set([...prev, id]));
   const readiness = Math.round((completedSections.size / sections.length) * 100);
 
@@ -441,6 +444,7 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                 <Grid>
                   <div><Label required>Full Name</Label><input className={inputCls} value={founder.name} onChange={e => setFounder(f => ({ ...f, name: e.target.value }))} placeholder="Your full name" /></div>
                   <div><Label required>Email</Label><input type="email" className={inputCls} value={founder.email} onChange={e => setFounder(f => ({ ...f, email: e.target.value }))} placeholder="you@company.com" /></div>
+                  <AccountFields role="mentee" variant="dark" email={founder.email} password={account.password} confirm={account.confirm} onChange={setAccount} />
                   <div><Label>Position</Label><input className={inputCls} value={founder.position} onChange={e => setFounder(f => ({ ...f, position: e.target.value }))} placeholder="CEO and Co-founder" /></div>
                   <div><Label>Highest Education</Label><input className={inputCls} value={founder.education} onChange={e => setFounder(f => ({ ...f, education: e.target.value }))} placeholder="MBA, Finance" /></div>
                   <div><Label>Entrepreneurial Experience</Label><input className={inputCls} value={founder.entrepreneurialExp} onChange={e => setFounder(f => ({ ...f, entrepreneurialExp: e.target.value }))} placeholder="3 previous ventures" /></div>
@@ -765,8 +769,11 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                 </p>
               </div>
 
+              {submitProblem && <p className="text-xs text-[#f59e0b] mb-3">{submitProblem}</p>}
               <button
+                disabled={!!submitProblem}
                 onClick={() => {
+                  if (submitProblem) return;
                   markDone("goals");
                   const newId = `ACC-${Date.now()}`;
                   setRefId(newId);
@@ -784,10 +791,10 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                     email: founder.email,
                     businessName: company.name,
                     stage: stage ?? undefined,
-                  });
+                  }, account.password);
                   setSubmitted(true);
                 }}
-                className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-md text-sm font-bold bg-[#4C808A] text-white hover:bg-[#3d6b74] transition-all">
+                className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-md text-sm font-bold bg-[#4C808A] text-white hover:bg-[#3d6b74] transition-all disabled:opacity-50 disabled:cursor-not-allowed">
                 Submit Application <ArrowRight className="w-4 h-4" />
               </button>
             </div>

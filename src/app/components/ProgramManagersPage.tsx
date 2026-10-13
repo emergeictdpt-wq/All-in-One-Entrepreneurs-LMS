@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from "react";
+import type { AdminProgram } from "../types";
+import { isUnassigned, managerNames, manages, type Manager } from "../data/managers";
+import { SELECTED_PROJECT_KEY } from "../data/projectScope";
 import {
   LayoutDashboard, Users, MapPin, FileText, Award,
   Globe, Zap, Bell, Settings, Search, RefreshCw,
   ChevronRight, X, BarChart2, Briefcase, Filter,
   CheckCircle, UserCheck, GitMerge, Layers, GraduationCap,
-  Rocket, UserPlus, Shield, ChevronDown, TrendingUp, PieChart,
+  Rocket, UserPlus, Shield, ChevronDown, TrendingUp, PieChart, LogOut,
 } from "lucide-react";
 
 const TEAL = "#4C808A";
@@ -516,7 +519,7 @@ function SidebarContents({ sidebarOpen, activeNav, setActiveNav, onBack, onToggl
 }
 
 // ── Profile dropdown menu ─────────────────────────────────────────────────────
-function ProfileMenu() {
+function ProfileMenu({ onSignOut, name = "Program Manager", title = "My Profile" }: { onSignOut?: () => void; name?: string; title?: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -560,8 +563,8 @@ function ProfileMenu() {
               </svg>
             </div>
             <div className="min-w-0">
-              <div className="text-white text-xs font-bold truncate">Program Manager</div>
-              <div className="text-[10px] truncate" style={{color:`${TEAL}`}}>My Profile</div>
+              <div className="text-white text-xs font-bold truncate">{name}</div>
+              <div className="text-[10px] truncate" style={{color:`${TEAL}`}}>{title}</div>
             </div>
           </div>
 
@@ -585,6 +588,23 @@ function ProfileMenu() {
                 {label}
               </button>
             ))}
+          </div>
+
+          {/* Sign out */}
+          <div style={{borderTop:"1px solid rgba(255,255,255,0.07)"}}>
+            <button
+              onClick={() => { setOpen(false); onSignOut?.(); }}
+              className="flex items-center gap-3 w-full px-4 py-3 text-xs font-bold transition-all text-left"
+              style={{color:"#fca5a5"}}
+              onMouseEnter={e => (e.currentTarget.style.background = "rgba(220,38,38,0.18)")}
+              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+            >
+              <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
+                style={{background:"rgba(239,68,68,0.25)"}}>
+                <LogOut size={11} color="#fca5a5"/>
+              </div>
+              Sign Out
+            </button>
           </div>
 
         </div>
@@ -1032,8 +1052,47 @@ function SectorDistrictCard({ sectors, districts, project }: {
 }
 
 // ── Main page ──────────────────────────────────────────────────────────────────
-export function ProgramManagersPage({ onBack, onNavigate }: {
-  onBack:()=>void; onNavigate?:(page:string)=>void;
+/** Every implemented project, whoever champions it. A manager can open the ones they champion in Incubation Management. */
+function ProjectsDirectory({ programs, manager, onOpen, onClaim }: { programs: AdminProgram[]; manager: Manager | null; onOpen: (id: string) => void; onClaim?: (id: string) => void }) {
+  const list = programs.filter(p => p.published);
+  if (!list.length) return null;
+  const mine = list.filter(p => manages(p, manager?.id)).length;
+  return (
+    <div data-testid="projects-directory">
+      <div className="mb-4 flex items-center justify-between">
+        <span className="text-xs font-bold uppercase tracking-wider" style={{color:TEAL}}>All Projects ({list.length})</span>
+        <span className="text-[11px]" style={{color:"#6b7280"}}>You champion {mine} of {list.length}</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {list.map(p => {
+          const mineP = manages(p, manager?.id), none = isUnassigned(p), names = managerNames(p);
+          return (
+            <div key={p.id} data-testid={`project-${p.id}`} className="rounded-md bg-white p-4 flex flex-col gap-2" style={{border: mineP ? `1.5px solid ${TEAL}` : "1px solid #e5e7eb"}}>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm font-black" style={{color:NAVY}}>{p.name}</p>
+                {mineP && <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md text-white shrink-0" style={{background:TEAL}}>You champion this</span>}
+              </div>
+              <p className="text-[11px]" style={{color:"#6b7280"}}>{p.status}{p.sector ? ` · ${p.sector}` : ""}</p>
+              <p className="text-[11px]" style={{color:"#374151"}}>{none ? "No manager yet" : `Managed by ${names.join(", ")}`}</p>
+              <div className="mt-auto pt-2">
+                {mineP && <button onClick={()=>onOpen(p.id)} className="text-[11px] font-bold px-3 py-1.5 rounded-md text-white" style={{background:TEAL}}>Open in Incubation Management</button>}
+                {none && onClaim && <button onClick={()=>onClaim(p.id)} className="text-[11px] font-bold px-3 py-1.5 rounded-md" style={{background:"#f3f4f6",color:NAVY}}>Take on this project</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function ProgramManagersPage({ onBack, onNavigate, onSignOut, manager = null, programs = [], onClaimProgram }: {
+  onBack:()=>void; onNavigate?:(page:string)=>void; onSignOut?:()=>void;
+  /** The signed-in programme manager. */
+  manager?: Manager | null;
+  /** Every program (all managers'). Incubation Management only shows the ones this manager champions. */
+  programs?: AdminProgram[];
+  onClaimProgram?: (programId: string) => void;
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -1145,7 +1204,7 @@ export function ProgramManagersPage({ onBack, onNavigate }: {
           </button>
 
           {/* Profile menu */}
-          <ProfileMenu />
+          <ProfileMenu onSignOut={onSignOut ?? onBack} name={manager?.name} title={manager?.title} />
         </header>
 
         {/* Body */}
@@ -1167,6 +1226,11 @@ export function ProgramManagersPage({ onBack, onNavigate }: {
               ))}
             </div>
           </div>
+
+          {/* All projects, with who champions each */}
+          <ProjectsDirectory programs={programs} manager={manager}
+            onOpen={(id)=>{ try { sessionStorage.setItem(SELECTED_PROJECT_KEY, id); } catch { /* ignore */ } onNavigate?.("incubation-management"); }}
+            onClaim={onClaimProgram} />
 
           {/* ── Analytics Visualizations: Gender Distribution & Sector/District Representation ── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

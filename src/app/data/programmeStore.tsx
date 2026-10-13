@@ -4,21 +4,32 @@
 // shows up everywhere. Swap the seed + actions for API calls when the backend exists.
 import { createContext, useContext, useMemo, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
+import { addDays, addMonths, daysBetween, fmtDate, fmtDateY, isIso, monthKey, monthShort, nowDate, nowHHMM, todayISO } from "./clock";
+import { DECISIONS_KEY } from "./applicationTracker";
+import { SAMPLE_CORE, SAMPLE_SHE } from "./directory";
 
-// The sample world "today". Replace with `new Date()` when real data arrives.
-export const AS_OF = "2025-07-28";
+// The platform runs on the real clock (see clock.ts). Re-exported so dashboards have one import.
+export { daysBetween, fmtDate, fmtDateY, fmtDue, todayISO } from "./clock";
 let TS = 0; // shared id counter (persisted so ids stay unique across reloads)
 const DAY = 86400000;
-const d = (iso: string) => new Date(iso + "T00:00:00Z").getTime();
-export const daysBetween = (a: string, b: string) => Math.round((d(b) - d(a)) / DAY);
-export const fmtDate = (iso: string) =>
-  new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
 
-// Demo logins (the dashboards have no auth yet)
-export const DEMO_MENTOR = "Dr. Tiwonge Banda";
-export const DEMO_MENTEE = "Chisomo Banda";
+// Sample data is written as if "today" were 28 Jul 2025, then shifted so that on first load it is
+// anchored to the real today. After that it ages normally (overdue tasks, stalled pairs, countdowns).
+const SEED_ANCHOR = "2025-07-28";
+const SHIFT = () => daysBetween(SEED_ANCHOR, todayISO());
+const sh = (iso: string) => addDays(iso, SHIFT());
+const MONTH_NUM: Record<string, string> = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06", Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
+/** "Jul 31" (2025 sample label) → shifted ISO date */
+const dd = (label: string) => { const m = /^([A-Z][a-z]{2}) (\d{1,2})$/.exec(label)!; return sh(`2025-${MONTH_NUM[m[1]]}-${m[2].padStart(2, "0")}`); };
+/** "Aug 15" → "15 Aug 2026" style label for the SMART "Time-bound" line */
+const tt = (label: string) => fmtDateY(dd(label));
+/** "Jul 20" message label → shifted short date */
+const ml = (label: string) => fmtDate(dd(label));
 
 export type Role = "mentor" | "mentee";
+/** Who is signed in on this tab. `id` is the application id (APP-… / MNT-…), the reliable key; names can repeat. */
+export interface CurrentUser { role: Role; id: string; name: string }
+export interface Project { id: string; name: string; status?: string }
 export type Health = "Healthy" | "At Risk" | "Stalled" | "New";
 export interface Milestones { registered: boolean; mvp: boolean; firstRevenue: boolean; grant: boolean; graduated: boolean }
 export interface Pair {
@@ -30,39 +41,54 @@ export interface Pair {
   matchedAt?: string;
   /** Application ids from the admin pipeline — pairs are linked by id, names are for display only */
   menteeId?: string; mentorId?: string;
+  /** admin project (programme) this pair belongs to */
+  programId?: string;
   /** Introductory call date (ISO). Undefined = not scheduled yet. */
   introDate?: string;
   /** only on archived pairs (see pastPairs) */
   endedAt?: string; endReason?: string; successorId?: string;
 }
 /** A mentee who is enrolled and waiting for a mentor (no Pair exists yet). */
-export interface Waiting { id: string; menteeId?: string; mentee: string; venture: string; sector: string; stage: string }
+export interface Waiting { id: string; menteeId?: string; mentee: string; venture: string; sector: string; stage: string; programId?: string }
 export interface Session {
   id: string; pairId: string; date: string; durationMin: number; mode: "Virtual" | "In-person";
   topics: string[]; tasks: string[]; notes: string; rating: number | null;
+  /** the scheduled booking this session was logged against (it is then marked completed) */
+  bookingId?: string;
 }
 export interface Goal {
   id: string; pairId: string; title: string; category: string; pct: number; due: string;
   status: "on-track" | "at-risk" | "complete" | "proposed";
   proposedBy?: Role;
   smart?: { S: string; M: string; A: string; R: string; T: string };
+  /** a progress update the mentee submitted that the mentor has not reviewed yet; only confirmed updates move `pct` */
+  pending?: { pct: number; note: string; at: string };
+  /** confirmed progress updates, newest first */
+  log?: { at: string; from: number; to: number; note: string; adjusted?: boolean }[];
 }
+/** `due` is an ISO date (YYYY-MM-DD) or free text such as "Next session". */
 export interface Task { id: string; pairId: string; title: string; due: string; status: "pending" | "in-progress" | "done"; from: string }
 export interface RubricRow { label: string; weight: number }
 export interface Cohort {
-  id: number; name: string; status: "Active" | "Completed"; startDate: string; endDate: string; sector: string;
+  id: number; /** the project (admin programme) this cohort belongs to */ programId?: string; name: string; status: "Active" | "Completed"; startDate: string; endDate: string; sector: string;
   enrolled: number; rubric: RubricRow[];
   snapshot?: { mentees: number; mentors: number; avgProgress: number }; // completed cohorts have no live pairs
 }
 /** Single source for "how many are enrolled" (Cohort Management, Program Setup and the public card all use this).
  *  Never lower than the mentees actually in the cohort: paired + still waiting (who join the active cohort). */
-export const cohortEnrolled = (c: Cohort, pairs: Pair[], waitingCount: number) => {
+export const cohortEnrolled = (c: Cohort, pairs: Pair[], waiting: Waiting[]) => {
   const ps = pairs.filter(p => p.cohortId === c.id);
+  const waitingHere = waiting.filter(w => !c.programId || !w.programId || w.programId === c.programId).length;
   return ps.length > 0
-    ? Math.max(c.enrolled, ps.length + (c.status === "Active" ? waitingCount : 0))
+    ? Math.max(c.enrolled, ps.length + (c.status === "Active" ? waitingHere : 0))
     : c.snapshot?.mentees ?? c.enrolled;
 };
-export interface Booking { id: string; pairId: string; date: string; time: string; durationMin: number; mode: "Virtual" | "In-person"; proposedBy: Role; status: "proposed" | "confirmed" | "declined" | "cancelled" }
+export interface Booking {
+  id: string; pairId: string; date: string; time: string; durationMin: number; mode: "Virtual" | "In-person"; proposedBy: Role;
+  /** "completed" = the mentor logged the session that took place in this slot */
+  status: "proposed" | "confirmed" | "declined" | "cancelled" | "completed";
+  sessionId?: string;
+}
 export interface Message { id: string; pairId: string; from: Role; text: string; time: string; ts: number; read: boolean }
 export interface AppEvent { id: string; to: Role; pairId: string; text: string; time: string; ts: number; tone: "info" | "warn" | "good" }
 export interface Rematch { id: string; pairId: string; mentee: string; reason: string; at: string; status: "open" | "handled" }
@@ -70,7 +96,6 @@ export interface PrivateNote { id: string; pairId: string; text: string; at: str
 export interface Course { id: string; pairId: string; title: string; done: number; total: number; goalId?: string }
 export interface Resource { id: string; title: string; type: string; tag: string }
 export interface Share { id: string; resourceId: string; pairId: string; by: string; at: string }
-export interface MentorProfile { title: string; expertise: string[]; bio: string; location: string; responseTime: string; email: string }
 export interface Nudge { id: string; pairId: string; at: string; text: string; channel: string }
 export interface Intervention { pairId: string; openedAt: string; resolved: boolean }
 export interface Integration {
@@ -78,18 +103,29 @@ export interface Integration {
 }
 
 const nowLabel = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const MONTHS: Record<string, string> = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06", Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
-/** "Jul 31" → "2025-07-31"; free text such as "Next session" → null */
-export const dueIso = (due: string) => { const m = /^([A-Z][a-z]{2}) (\d{1,2})$/.exec(due); return m && MONTHS[m[1]] ? `2025-${MONTHS[m[1]]}-${m[2].padStart(2, "0")}` : null; };
-export const isOverdue = (t: Task) => { const iso = dueIso(t.due); return t.status !== "done" && !!iso && iso < AS_OF; };
+/** ISO due date, or null for free text such as "Next session" (those never go overdue). */
+export const dueIso = (due: string) => (isIso(due) ? due : null);
+export const isOverdue = (t: Task) => { const iso = dueIso(t.due); return t.status !== "done" && !!iso && iso < todayISO(); };
 export type BookingResult = { ok: true } | { ok: false; reason: string };
 const toMin = (hhmm: string) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + (m || 0); };
 /** Same mentor, same day, overlapping time range (a 60-min session at 10:00 blocks 10:00–11:00). */
 export const overlaps = (a: { date: string; time: string; durationMin: number }, b: { date: string; time: string; durationMin: number }) =>
   a.date === b.date && toMin(a.time) < toMin(b.time) + b.durationMin && toMin(b.time) < toMin(a.time) + a.durationMin;
 export const fmtBooking = (b: Booking) => `${new Date(b.date + "T00:00:00Z").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short", timeZone: "UTC" })}, ${b.time}`;
-/** Countdown from the sample "now" (AS_OF 08:00) */
-export const countdown = (b: Booking) => { const ms = Math.max(0, new Date(`${b.date}T${b.time}:00Z`).getTime() - new Date(`${AS_OF}T08:00:00Z`).getTime()); return { days: Math.floor(ms / DAY), hrs: Math.floor((ms % DAY) / 3600000), min: Math.floor((ms % 3600000) / 60000) }; };
+/** Countdown to the start of a booking, from the real now (local time). */
+export const countdown = (b: Booking) => { const ms = Math.max(0, new Date(`${b.date}T${b.time}:00`).getTime() - nowDate().getTime()); return { days: Math.floor(ms / DAY), hrs: Math.floor((ms % DAY) / 3600000), min: Math.floor((ms % 3600000) / 60000) }; };
+/** Minutes since midnight at which the slot ends. */
+const endMin = (b: { time: string; durationMin: number }) => toMin(b.time) + b.durationMin;
+/** The slot has not finished yet (so it is still "upcoming"). */
+export const slotNotOver = (b: { date: string; time: string; durationMin: number }) => { const t = todayISO(); return b.date > t || (b.date === t && endMin(b) > toMin(nowHHMM())); };
+/** Confirmed, upcoming or in progress. */
+export const isUpcoming = (b: Booking) => b.status === "confirmed" && slotNotOver(b);
+/** A confirmed slot that has passed with no session logged against it yet: the mentor still owes a log. */
+export const awaitingLog = (b: Booking) => b.status === "confirmed" && !slotNotOver(b);
+/** A proposal nobody answered before its slot passed. */
+export const isStaleProposal = (b: Booking) => b.status === "proposed" && !slotNotOver(b);
+/** What the lists on both dashboards show: open proposals, upcoming sessions, and sessions waiting to be logged. */
+export const isLiveBooking = (b: Booking) => (b.status === "proposed" && !isStaleProposal(b)) || isUpcoming(b) || awaitingLog(b);
 
 const M = (o: Partial<Milestones> = {}): Milestones => ({ registered: false, mvp: false, firstRevenue: false, grant: false, graduated: false, ...o });
 const DEFAULT_RUBRIC: RubricRow[] = [
@@ -100,79 +136,79 @@ const DEFAULT_RUBRIC: RubricRow[] = [
 
 // Same four matched pairs as Pairing & Matching's sample data
 const PAIRS: Pair[] = [
-  { id: "p1", menteeId: "APP-001", mentorId: "MNT-017", introDate: "2025-07-30", mentee: "Chisomo Banda", mentor: "Dr. Tiwonge Banda", venture: "AgroConnect Malawi", sector: "AgriTech", stage: "Validation", expertise: "AgriTech and Finance", matchScore: 91, cohortId: 1, startDate: "2025-05-12", milestones: M() },
-  { id: "p2", menteeId: "APP-025", mentorId: "MNT-018", introDate: "2025-07-30", mentee: "Kondwani Phiri", mentor: "Prof. Patrick Likoswe", venture: "EduBridge", sector: "EdTech", stage: "MVP", expertise: "EdTech & Curriculum", matchScore: 86, cohortId: 1, startDate: "2025-05-12", milestones: M({ registered: true, mvp: true, firstRevenue: true }) },
-  { id: "p3", menteeId: "APP-026", mentorId: "MNT-019", mentee: "Tadala Chirwa", mentor: "Limbani Gondwe", venture: "CleanHeat", sector: "CleanEnergy", stage: "Idea", expertise: "CleanEnergy and Hardware", matchScore: 79, cohortId: 1, startDate: "2025-05-19", milestones: M() },
-  { id: "p6", menteeId: "APP-027", mentorId: "MNT-018", mentee: "Yamikani Mwale", mentor: "Prof. Patrick Likoswe", venture: "LearnLoop", sector: "EdTech", stage: "Idea", expertise: "EdTech & Curriculum", matchScore: 74, cohortId: 1, startDate: "2025-05-12", milestones: M() },
-  { id: "p5", menteeId: "APP-028", mentorId: "MNT-020", introDate: "2025-07-31", mentee: "Grace Kamwendo", mentor: "Dr. Chimwemwe Phiri", venture: "HealthTrack", sector: "HealthTech", stage: "MVP", expertise: "HealthTech & UX", matchScore: 88, cohortId: 1, startDate: "2025-05-12", milestones: M({ registered: true, mvp: true, grant: true }) },
+  { id: "p1", programId: SAMPLE_CORE, menteeId: "APP-001", mentorId: "MNT-017", introDate: sh("2025-07-30"), mentee: "Chisomo Banda", mentor: "Dr. Tiwonge Banda", venture: "AgroConnect Malawi", sector: "AgriTech", stage: "Validation", expertise: "AgriTech and Finance", matchScore: 91, cohortId: 1, startDate: sh("2025-05-12"), milestones: M() },
+  { id: "p2", programId: SAMPLE_CORE, menteeId: "APP-025", mentorId: "MNT-018", introDate: sh("2025-07-30"), mentee: "Kondwani Phiri", mentor: "Prof. Patrick Likoswe", venture: "EduBridge", sector: "EdTech", stage: "MVP", expertise: "EdTech & Curriculum", matchScore: 86, cohortId: 1, startDate: sh("2025-05-12"), milestones: M({ registered: true, mvp: true, firstRevenue: true }) },
+  { id: "p3", programId: SAMPLE_SHE, menteeId: "APP-026", mentorId: "MNT-019", mentee: "Tadala Chirwa", mentor: "Limbani Gondwe", venture: "CleanHeat", sector: "CleanEnergy", stage: "Idea", expertise: "CleanEnergy and Hardware", matchScore: 79, cohortId: 4, startDate: sh("2025-05-19"), milestones: M() },
+  { id: "p6", programId: SAMPLE_CORE, menteeId: "APP-027", mentorId: "MNT-018", mentee: "Yamikani Mwale", mentor: "Prof. Patrick Likoswe", venture: "LearnLoop", sector: "EdTech", stage: "Idea", expertise: "EdTech & Curriculum", matchScore: 74, cohortId: 1, startDate: sh("2025-05-12"), milestones: M() },
+  { id: "p5", programId: SAMPLE_SHE, menteeId: "APP-028", mentorId: "MNT-020", introDate: sh("2025-07-31"), mentee: "Grace Kamwendo", mentor: "Dr. Chimwemwe Phiri", venture: "HealthTrack", sector: "HealthTech", stage: "MVP", expertise: "HealthTech & UX", matchScore: 88, cohortId: 4, startDate: sh("2025-05-12"), milestones: M({ registered: true, mvp: true, grant: true }) },
   // Confirmed in the admin Matching pipeline, so they exist as real pairs (no sessions yet → "New" until the first one is logged)
-  { id: "p7", menteeId: "APP-005", mentorId: "MNT-005", introDate: "2025-08-01", mentee: "Lusungu Nyirenda", mentor: "Mrs. Faith Nyirenda", venture: "Nyirenda Logistics", sector: "Services", stage: "MVP", expertise: "Marketing", matchScore: 94, cohortId: 1, startDate: "2025-07-21", matchedAt: "2025-07-21", milestones: M() },
-  { id: "p8", menteeId: "APP-022", mentorId: "MNT-003", mentee: "Dalitso Mvula", mentor: "Ms. Rejoice Mwale", venture: "GreenSprout Hydroponics", sector: "Agri-Business", stage: "MVP", expertise: "Agriculture", matchScore: 95, cohortId: 1, startDate: "2025-07-21", matchedAt: "2025-07-21", milestones: M() },
-  { id: "p9", menteeId: "APP-024", mentorId: "MNT-010", mentee: "Enelesi Phiri", mentor: "Mr. Charles Nkosi", venture: "Zomba Weavers Co-op", sector: "Creative Arts", stage: "Early Traction", expertise: "Business Strategy", matchScore: 86, cohortId: 1, startDate: "2025-07-21", matchedAt: "2025-07-21", milestones: M() },
-  { id: "p10", menteeId: "APP-010", mentorId: "MNT-007", mentee: "Alinafe Gondwe", mentor: "Ms. Miriam Kamwana", venture: "Lakeside Hospitality Solutions", sector: "Services", stage: "Early Traction", expertise: "Social Enterprise", matchScore: 89, cohortId: 1, startDate: "2025-07-21", matchedAt: "2025-07-21", milestones: M() },
+  { id: "p7", programId: SAMPLE_SHE, menteeId: "APP-005", mentorId: "MNT-005", introDate: sh("2025-08-01"), mentee: "Lusungu Nyirenda", mentor: "Mrs. Faith Nyirenda", venture: "Nyirenda Logistics", sector: "Services", stage: "MVP", expertise: "Marketing", matchScore: 94, cohortId: 4, startDate: sh("2025-07-21"), matchedAt: sh("2025-07-21"), milestones: M() },
+  { id: "p8", programId: SAMPLE_CORE, menteeId: "APP-022", mentorId: "MNT-003", mentee: "Dalitso Mvula", mentor: "Ms. Rejoice Mwale", venture: "GreenSprout Hydroponics", sector: "Agri-Business", stage: "MVP", expertise: "Agriculture", matchScore: 95, cohortId: 1, startDate: sh("2025-07-21"), matchedAt: sh("2025-07-21"), milestones: M() },
+  { id: "p9", programId: SAMPLE_SHE, menteeId: "APP-024", mentorId: "MNT-010", mentee: "Enelesi Phiri", mentor: "Mr. Charles Nkosi", venture: "Zomba Weavers Co-op", sector: "Creative Arts", stage: "Early Traction", expertise: "Business Strategy", matchScore: 86, cohortId: 4, startDate: sh("2025-07-21"), matchedAt: sh("2025-07-21"), milestones: M() },
+  { id: "p10", programId: SAMPLE_SHE, menteeId: "APP-010", mentorId: "MNT-007", mentee: "Alinafe Gondwe", mentor: "Ms. Miriam Kamwana", venture: "Lakeside Hospitality Solutions", sector: "Services", stage: "Early Traction", expertise: "Social Enterprise", matchScore: 89, cohortId: 4, startDate: sh("2025-07-21"), matchedAt: sh("2025-07-21"), milestones: M() },
 ];
 
 const S = (pairId: string, date: string, durationMin: number, mode: Session["mode"], topics: string[], tasks: string[], rating: number | null, notes = ""): Session =>
   ({ id: `s${++TS}`, pairId, date, durationMin, mode, topics, tasks, notes, rating });
 const WAITING: Waiting[] = [
-  { id: "w1", menteeId: "APP-029", mentee: "Madalitso Chiumia", venture: "FarmLink", sector: "AgriTech", stage: "Idea" },
-  { id: "w2", menteeId: "APP-015", mentee: "Tamara Kachingwe", venture: "FinLit Mobile", sector: "Financial Services", stage: "MVP / Prototype" },
-  { id: "w3", menteeId: "APP-023", mentee: "Brian Kumwenda", venture: "Mzuzu Coders Hub", sector: "Technology", stage: "MVP / Prototype" },
+  { id: "w1", programId: SAMPLE_CORE, menteeId: "APP-029", mentee: "Madalitso Chiumia", venture: "FarmLink", sector: "AgriTech", stage: "Idea" },
+  { id: "w2", programId: SAMPLE_SHE, menteeId: "APP-015", mentee: "Tamara Kachingwe", venture: "FinLit Mobile", sector: "Financial Services", stage: "MVP / Prototype" },
+  { id: "w3", programId: SAMPLE_CORE, menteeId: "APP-023", mentee: "Brian Kumwenda", venture: "Mzuzu Coders Hub", sector: "Technology", stage: "MVP / Prototype" },
 ];
 const SESSIONS: Session[] = [
-  S("p1", "2025-07-24", 55, "Virtual", ["Pricing model", "Competitor analysis"], ["Survey 10 more farmers", "Draft pricing deck"], 5, "Discussed tiered pricing. Tiwonge shared template for competitive landscape mapping."),
-  S("p1", "2025-07-10", 60, "Virtual", ["Business registration", "Grant research"], ["File registration docs", "Apply to Malawi Agri Grant"], 4, "Mapped out registration timeline. Identified 3 grant opportunities matching our stage."),
-  S("p1", "2025-06-26", 45, "In-person", ["Product feedback", "Pilot expansion"], ["Pilot 5 new farmers"], 5, "Deep dive into pilot feedback — strong product signal. Agreed to expand to 15 farmers."),
-  S("p2", "2025-07-21", 60, "Virtual", ["School partnership pitch"], ["Send MOU template to schools in Lilongwe"], 4),
-  S("p2", "2025-07-07", 50, "Virtual", ["Pricing for schools"], ["Draft school pricing tiers"], 5),
-  S("p2", "2025-06-23", 45, "Virtual", ["Pilot review"], ["Collect teacher feedback"], 4),
-  S("p3", "2025-07-18", 45, "In-person", ["Prototype scoping", "Co-founder profile"], ["Post co-founder listing on StartHub Malawi"], 3),
-  S("p3", "2025-06-30", 40, "Virtual", ["Cookstove cost model"], ["Get 3 supplier quotes"], 3),
-  S("p6", "2025-05-30", 30, "Virtual", ["Idea validation"], ["Interview 10 teachers"], 2),
-  S("p6", "2025-05-16", 30, "Virtual", ["Problem framing"], ["Write problem statement"], 3),
-  S("p5", "2025-07-22", 50, "Virtual", ["User research", "Clinic pilot"], ["Interview 5 clinic staff"], 5),
-  S("p5", "2025-07-08", 45, "Virtual", ["MVP scope"], ["Finalise MVP feature list"], 4),
+  S("p1", sh("2025-07-24"), 55, "Virtual", ["Pricing model", "Competitor analysis"], ["Survey 10 more farmers", "Draft pricing deck"], 5, "Discussed tiered pricing. Tiwonge shared template for competitive landscape mapping."),
+  S("p1", sh("2025-07-10"), 60, "Virtual", ["Business registration", "Grant research"], ["File registration docs", "Apply to Malawi Agri Grant"], 4, "Mapped out registration timeline. Identified 3 grant opportunities matching our stage."),
+  S("p1", sh("2025-06-26"), 45, "In-person", ["Product feedback", "Pilot expansion"], ["Pilot 5 new farmers"], 5, "Deep dive into pilot feedback — strong product signal. Agreed to expand to 15 farmers."),
+  S("p2", sh("2025-07-21"), 60, "Virtual", ["School partnership pitch"], ["Send MOU template to schools in Lilongwe"], 4),
+  S("p2", sh("2025-07-07"), 50, "Virtual", ["Pricing for schools"], ["Draft school pricing tiers"], 5),
+  S("p2", sh("2025-06-23"), 45, "Virtual", ["Pilot review"], ["Collect teacher feedback"], 4),
+  S("p3", sh("2025-07-18"), 45, "In-person", ["Prototype scoping", "Co-founder profile"], ["Post co-founder listing on StartHub Malawi"], 3),
+  S("p3", sh("2025-06-30"), 40, "Virtual", ["Cookstove cost model"], ["Get 3 supplier quotes"], 3),
+  S("p6", sh("2025-05-30"), 30, "Virtual", ["Idea validation"], ["Interview 10 teachers"], 2),
+  S("p6", sh("2025-05-16"), 30, "Virtual", ["Problem framing"], ["Write problem statement"], 3),
+  S("p5", sh("2025-07-22"), 50, "Virtual", ["User research", "Clinic pilot"], ["Interview 5 clinic staff"], 5),
+  S("p5", sh("2025-07-08"), 45, "Virtual", ["MVP scope"], ["Finalise MVP feature list"], 4),
 ];
 
 const GOALS: Goal[] = [
-  { id: "g1", pairId: "p1", title: "Validate product-market fit with 50 farmers", category: "Market", pct: 64, due: "Aug 15", status: "on-track", smart: { S: "Conduct 50 structured interviews", M: "50 completed surveys", A: "Fieldwork in Mzimba district", R: "Core to revenue model", T: "Aug 15, 2025" } },
-  { id: "g2", pairId: "p1", title: "Register business with Malawi Registrar General", category: "Legal", pct: 90, due: "Jul 30", status: "on-track", smart: { S: "File registration docs with Malawi Registrar General", M: "Certificate received", A: "Paperwork ready", R: "Unlocks grant eligibility", T: "Jul 30, 2025" } },
-  { id: "g3", pairId: "p1", title: "Reach MWK 500,000 MRR milestone", category: "Revenue", pct: 28, due: "Sep 30", status: "at-risk", smart: { S: "Acquire 20 paying farmers", M: "MWK 500,000/month", A: "Pilot 5 farmers already", R: "Proves monetisation model", T: "Sep 30, 2025" } },
-  { id: "g4", pairId: "p1", title: "Complete AgriFinance Fundamentals course", category: "Learning", pct: 75, due: "Aug 1", status: "on-track", smart: { S: "Finish 4 remaining modules", M: "Certificate earned", A: "3 hrs/week available", R: "Strengthens investor pitch", T: "Aug 1, 2025" } },
-  { id: "g5", pairId: "p2", title: "3 school MOU partnerships", category: "Market", pct: 60, due: "Aug 10", status: "on-track" },
-  { id: "g6", pairId: "p2", title: "Reach 200 active learners", category: "Revenue", pct: 45, due: "Sep 15", status: "on-track" },
-  { id: "g7", pairId: "p3", title: "Prototype concept validation", category: "Product", pct: 25, due: "Aug 20", status: "at-risk" },
-  { id: "g8", pairId: "p3", title: "Find technical co-founder", category: "Team", pct: 20, due: "Aug 30", status: "at-risk" },
-  { id: "g11", pairId: "p6", title: "Validate problem with 10 teachers", category: "Market", pct: 10, due: "Jul 15", status: "at-risk" },
-  { id: "g12", pairId: "p6", title: "Draft lean canvas", category: "Product", pct: 20, due: "Jul 30", status: "at-risk" },
-  { id: "g9", pairId: "p5", title: "Pilot in 3 clinics", category: "Market", pct: 70, due: "Aug 25", status: "on-track" },
-  { id: "g10", pairId: "p5", title: "Register business", category: "Legal", pct: 100, due: "Jun 30", status: "complete" },
+  { id: "g1", pairId: "p1", title: "Validate product-market fit with 50 farmers", category: "Market", pct: 64, due: dd("Aug 15"), status: "on-track", smart: { S: "Conduct 50 structured interviews", M: "50 completed surveys", A: "Fieldwork in Mzimba district", R: "Core to revenue model", T: tt("Aug 15") } },
+  { id: "g2", pairId: "p1", title: "Register business with Malawi Registrar General", category: "Legal", pct: 90, due: dd("Jul 30"), status: "on-track", smart: { S: "File registration docs with Malawi Registrar General", M: "Certificate received", A: "Paperwork ready", R: "Unlocks grant eligibility", T: tt("Jul 30") } },
+  { id: "g3", pairId: "p1", title: "Reach MWK 500,000 MRR milestone", category: "Revenue", pct: 28, due: dd("Sep 30"), status: "at-risk", smart: { S: "Acquire 20 paying farmers", M: "MWK 500,000/month", A: "Pilot 5 farmers already", R: "Proves monetisation model", T: tt("Sep 30") } },
+  { id: "g4", pairId: "p1", title: "Complete AgriFinance Fundamentals course", category: "Learning", pct: 75, due: dd("Aug 1"), status: "on-track", smart: { S: "Finish 4 remaining modules", M: "Certificate earned", A: "3 hrs/week available", R: "Strengthens investor pitch", T: tt("Aug 1") } },
+  { id: "g5", pairId: "p2", title: "3 school MOU partnerships", category: "Market", pct: 60, due: dd("Aug 10"), status: "on-track" },
+  { id: "g6", pairId: "p2", title: "Reach 200 active learners", category: "Revenue", pct: 45, due: dd("Sep 15"), status: "on-track" },
+  { id: "g7", pairId: "p3", title: "Prototype concept validation", category: "Product", pct: 25, due: dd("Aug 20"), status: "at-risk" },
+  { id: "g8", pairId: "p3", title: "Find technical co-founder", category: "Team", pct: 20, due: dd("Aug 30"), status: "at-risk" },
+  { id: "g11", pairId: "p6", title: "Validate problem with 10 teachers", category: "Market", pct: 10, due: dd("Jul 15"), status: "at-risk" },
+  { id: "g12", pairId: "p6", title: "Draft lean canvas", category: "Product", pct: 20, due: dd("Jul 30"), status: "at-risk" },
+  { id: "g9", pairId: "p5", title: "Pilot in 3 clinics", category: "Market", pct: 70, due: dd("Aug 25"), status: "on-track" },
+  { id: "g10", pairId: "p5", title: "Register business", category: "Legal", pct: 100, due: dd("Jun 30"), status: "complete" },
 ];
 
 const TASKS: Task[] = [
-  { id: "t1", pairId: "p1", title: "Survey 10 more farmers in Mzimba district", due: "Jul 31", status: "in-progress", from: "Mentor" },
-  { id: "t2", pairId: "p1", title: "Draft tiered pricing deck (3 tiers)", due: "Aug 2", status: "pending", from: "Mentor" },
-  { id: "t3", pairId: "p1", title: "File business registration documents with BRS", due: "Jul 30", status: "done", from: "Mentor" },
-  { id: "t4", pairId: "p1", title: "Complete Module 4: AgriFinance Fundamentals", due: "Aug 1", status: "in-progress", from: "Learning Academy" },
-  { id: "t5", pairId: "p1", title: "Apply to Malawi Agri-Enterprise Grant (Round 2)", due: "Aug 5", status: "pending", from: "Self" },
-  { id: "t13", pairId: "p1", title: "Map 3 competitor pricing models", due: "Jul 12", status: "done", from: "Mentor" },
-  { id: "t14", pairId: "p1", title: "Share farmer interview script with field team", due: "Jul 5", status: "done", from: "Mentor" },
-  { id: "t6", pairId: "p2", title: "Send MOU template to schools in Lilongwe", due: "Jul 28", status: "done", from: "Mentor" },
-  { id: "t7", pairId: "p2", title: "Draft school pricing tiers", due: "Jul 20", status: "done", from: "Mentor" },
-  { id: "t8", pairId: "p3", title: "Post co-founder listing on StartHub Malawi", due: "Jul 25", status: "pending", from: "Mentor" },
-  { id: "t9", pairId: "p3", title: "Get 3 supplier quotes", due: "Jul 15", status: "pending", from: "Mentor" },
-  { id: "t10", pairId: "p3", title: "Sketch prototype BOM", due: "Aug 2", status: "in-progress", from: "Mentor" },
-  { id: "t15", pairId: "p6", title: "Interview 10 teachers", due: "Jun 10", status: "pending", from: "Mentor" },
-  { id: "t16", pairId: "p6", title: "Write problem statement", due: "May 30", status: "pending", from: "Mentor" },
-  { id: "t11", pairId: "p5", title: "Interview 5 clinic staff", due: "Jul 30", status: "in-progress", from: "Mentor" },
-  { id: "t12", pairId: "p5", title: "Finalise MVP feature list", due: "Jul 20", status: "done", from: "Mentor" },
+  { id: "t1", pairId: "p1", title: "Survey 10 more farmers in Mzimba district", due: dd("Jul 31"), status: "in-progress", from: "Mentor" },
+  { id: "t2", pairId: "p1", title: "Draft tiered pricing deck (3 tiers)", due: dd("Aug 2"), status: "pending", from: "Mentor" },
+  { id: "t3", pairId: "p1", title: "File business registration documents with BRS", due: dd("Jul 30"), status: "done", from: "Mentor" },
+  { id: "t4", pairId: "p1", title: "Complete Module 4: AgriFinance Fundamentals", due: dd("Aug 1"), status: "in-progress", from: "Learning Academy" },
+  { id: "t5", pairId: "p1", title: "Apply to Malawi Agri-Enterprise Grant (Round 2)", due: dd("Aug 5"), status: "pending", from: "Self" },
+  { id: "t13", pairId: "p1", title: "Map 3 competitor pricing models", due: dd("Jul 12"), status: "done", from: "Mentor" },
+  { id: "t14", pairId: "p1", title: "Share farmer interview script with field team", due: dd("Jul 5"), status: "done", from: "Mentor" },
+  { id: "t6", pairId: "p2", title: "Send MOU template to schools in Lilongwe", due: dd("Jul 28"), status: "done", from: "Mentor" },
+  { id: "t7", pairId: "p2", title: "Draft school pricing tiers", due: dd("Jul 20"), status: "done", from: "Mentor" },
+  { id: "t8", pairId: "p3", title: "Post co-founder listing on StartHub Malawi", due: dd("Jul 25"), status: "pending", from: "Mentor" },
+  { id: "t9", pairId: "p3", title: "Get 3 supplier quotes", due: dd("Jul 15"), status: "pending", from: "Mentor" },
+  { id: "t10", pairId: "p3", title: "Sketch prototype BOM", due: dd("Aug 2"), status: "in-progress", from: "Mentor" },
+  { id: "t15", pairId: "p6", title: "Interview 10 teachers", due: dd("Jun 10"), status: "pending", from: "Mentor" },
+  { id: "t16", pairId: "p6", title: "Write problem statement", due: dd("May 30"), status: "pending", from: "Mentor" },
+  { id: "t11", pairId: "p5", title: "Interview 5 clinic staff", due: dd("Jul 30"), status: "in-progress", from: "Mentor" },
+  { id: "t12", pairId: "p5", title: "Finalise MVP feature list", due: dd("Jul 20"), status: "done", from: "Mentor" },
 ];
 
 const BOOKINGS: Booking[] = [
-  { id: "b1", pairId: "p1", date: "2025-07-31", time: "10:00", durationMin: 60, mode: "Virtual", proposedBy: "mentor", status: "confirmed" },
-  { id: "b2", pairId: "p2", date: "2025-08-01", time: "14:00", durationMin: 60, mode: "Virtual", proposedBy: "mentor", status: "confirmed" },
-  { id: "b3", pairId: "p3", date: "2025-08-04", time: "11:00", durationMin: 45, mode: "In-person", proposedBy: "mentor", status: "confirmed" },
-  { id: "b4", pairId: "p5", date: "2025-08-05", time: "09:00", durationMin: 45, mode: "Virtual", proposedBy: "mentee", status: "confirmed" },
+  { id: "b1", pairId: "p1", date: sh("2025-07-31"), time: "10:00", durationMin: 60, mode: "Virtual", proposedBy: "mentor", status: "confirmed" },
+  { id: "b2", pairId: "p2", date: sh("2025-08-01"), time: "14:00", durationMin: 60, mode: "Virtual", proposedBy: "mentor", status: "confirmed" },
+  { id: "b3", pairId: "p3", date: sh("2025-08-04"), time: "11:00", durationMin: 45, mode: "In-person", proposedBy: "mentor", status: "confirmed" },
+  { id: "b4", pairId: "p5", date: sh("2025-08-05"), time: "09:00", durationMin: 45, mode: "Virtual", proposedBy: "mentee", status: "confirmed" },
 ];
 const MSG = (pairId: string, from: Role, text: string, time: string, read = true): Message => ({ id: `m${++TS}`, pairId, from, text, time, ts: TS, read });
 const MESSAGES: Message[] = [
@@ -182,10 +218,10 @@ const MESSAGES: Message[] = [
   MSG("p1", "mentee", "Got it, thank you! See you at our session on Thursday.", "10:42 AM", false),
   MSG("p2", "mentor", "How did the school meeting go?", "Yesterday"),
   MSG("p2", "mentee", "MOU template sent to 2 schools in Lilongwe!", "Yesterday"),
-  MSG("p3", "mentee", "Found a potential co-founder on StartHub Malawi!", "Jul 20", false),
-  MSG("p3", "mentor", "Excellent! Set up a coffee chat. I will share a co-founder alignment checklist.", "Jul 20"),
-  MSG("p6", "mentor", "Checking in. I have not heard from you since May. Can we book a session?", "Jun 12", false),
-  MSG("p5", "mentee", "Clinic pilot kicks off next week. Can we review the interview script?", "Jul 23", false),
+  MSG("p3", "mentee", "Found a potential co-founder on StartHub Malawi!", ml("Jul 20"), false),
+  MSG("p3", "mentor", "Excellent! Set up a coffee chat. I will share a co-founder alignment checklist.", ml("Jul 20")),
+  MSG("p6", "mentor", "Checking in. I have not heard from you in a while. Can we book a session?", ml("Jun 12"), false),
+  MSG("p5", "mentee", "Clinic pilot kicks off next week. Can we review the interview script?", ml("Jul 23"), false),
 ];
 
 const COURSES: Course[] = [
@@ -207,14 +243,6 @@ export const RESOURCES: Resource[] = [
   { id: "r7", title: "Malawi Business Registration Checklist", type: "Checklist", tag: "Legal" },
   { id: "r8", title: "SMART Goal Workbook v2", type: "Workbook", tag: "Planning" },
 ];
-const MENTOR_PROFILES: Record<string, MentorProfile> = {
-  "Dr. Tiwonge Banda": { title: "Serial Entrepreneur & AgriTech Advisor", expertise: ["Agricultural Finance", "Market Entry", "Product-Market Fit", "Impact Investing"], bio: "15+ years scaling agri-ventures across Africa. Founded 3 successful startups, exited 2. Passionate about food-system innovation.", location: "Mzimba, Malawi", responseTime: "< 2 hours", email: "tiwonge.banda@example.com" },
-  "Prof. Patrick Likoswe": { title: "EdTech & Curriculum Specialist", expertise: ["Curriculum Design", "School Partnerships", "EdTech Sales"], bio: "Former head of curriculum development. Helps education ventures win public-school partnerships.", location: "Blantyre, Malawi", responseTime: "< 4 hours", email: "patrick.likoswe@example.com" },
-  "Limbani Gondwe": { title: "CleanEnergy & Hardware Engineer", expertise: ["Cookstove Design", "Hardware Prototyping", "Supply Chains"], bio: "Hardware engineer who has shipped clean-energy products to rural households across Central Malawi.", location: "Lilongwe, Malawi", responseTime: "< 1 day", email: "limbani.gondwe@example.com" },
-  "Dr. Chimwemwe Phiri": { title: "HealthTech & UX Lead", expertise: ["Health Systems", "User Research", "Clinical Pilots"], bio: "Leads digital-health pilots with district hospitals; strong on user research and product usability.", location: "Zomba, Malawi", responseTime: "< 3 hours", email: "chimwemwe.phiri@example.com" },
-};
-export const mentorProfile = (name: string, expertise = "Business"): MentorProfile =>
-  MENTOR_PROFILES[name] ?? { title: "Programme Mentor", expertise: [expertise], bio: "Programme mentor.", location: "Malawi", responseTime: "< 1 day", email: "" };
 export const downloadResource = (r: Resource) => {
   const url = URL.createObjectURL(new Blob([`${r.title}\n${r.type} · ${r.tag}\n\n(Sample content. Replace with the real file when the backend is connected.)\n`], { type: "text/plain" }));
   Object.assign(document.createElement("a"), { href: url, download: `${r.title.replace(/[^a-z0-9]+/gi, "-")}.txt` }).click();
@@ -222,9 +250,10 @@ export const downloadResource = (r: Resource) => {
 };
 
 const COHORTS: Cohort[] = [
-  { id: 1, name: "Cohort 5 — 2025", status: "Active", startDate: "Jan 2025", endDate: "Dec 2025", sector: "Mixed", enrolled: 9, rubric: DEFAULT_RUBRIC },
-  { id: 2, name: "Cohort 4 — 2024", status: "Completed", startDate: "Jan 2024", endDate: "Dec 2024", sector: "AgriTech", enrolled: 22, rubric: DEFAULT_RUBRIC, snapshot: { mentees: 22, mentors: 10, avgProgress: 100 } },
-  { id: 3, name: "Cohort 3 — 2023", status: "Completed", startDate: "Jan 2023", endDate: "Dec 2023", sector: "CleanEnergy", enrolled: 16, rubric: DEFAULT_RUBRIC, snapshot: { mentees: 16, mentors: 7, avgProgress: 100 } },
+  { id: 1, programId: SAMPLE_CORE, name: "Cohort 5 — 2025", status: "Active", startDate: "Jan 2025", endDate: "Dec 2025", sector: "Mixed", enrolled: 9, rubric: DEFAULT_RUBRIC },
+  { id: 2, programId: SAMPLE_CORE, name: "Cohort 4 — 2024", status: "Completed", startDate: "Jan 2024", endDate: "Dec 2024", sector: "AgriTech", enrolled: 22, rubric: DEFAULT_RUBRIC, snapshot: { mentees: 22, mentors: 10, avgProgress: 100 } },
+  { id: 3, programId: SAMPLE_CORE, name: "Cohort 3 — 2023", status: "Completed", startDate: "Jan 2023", endDate: "Dec 2023", sector: "CleanEnergy", enrolled: 16, rubric: DEFAULT_RUBRIC, snapshot: { mentees: 16, mentors: 7, avgProgress: 100 } },
+  { id: 4, programId: SAMPLE_SHE, name: "Cohort 1 — 2025", status: "Active", startDate: "Aug 2025", endDate: "Jan 2026", sector: "Women-led", enrolled: 8, rubric: DEFAULT_RUBRIC },
 ];
 
 const INTEGRATIONS: Integration[] = [
@@ -239,9 +268,6 @@ const INTEGRATIONS: Integration[] = [
   { name: "Slack", category: "Communication", status: "Configurable", desc: "Nudges, session reminders and cohort announcements via Slack workspace", lastSync: "—" },
 ];
 
-// Jan–Apr session counts from before the tracked sample window (Sessions before May are not seeded individually)
-const ARCHIVED_MONTHLY: Record<string, number> = { "2025-01": 3, "2025-02": 5, "2025-03": 6, "2025-04": 8 };
-
 // ── Derived metrics (pure functions, so admin + dashboards agree) ──────────────
 export interface PairStats {
   health: Health; sessionsTotal: number; sessions7d: number; lastSession: string | null; daysSince: number | null;
@@ -249,17 +275,18 @@ export interface PairStats {
   goalsOnTrack: number; goalsAtRisk: number; trend: "up" | "down" | "stable"; reasons: string[];
 }
 export function computePairStats(pair: Pair, sessions: Session[], goals: Goal[], tasks: Task[]): PairStats {
+  const today = todayISO();
   const ss = sessions.filter(s => s.pairId === pair.id).sort((a, b) => b.date.localeCompare(a.date));
   const gs = goals.filter(g => g.pairId === pair.id && g.status !== "proposed");
   const ts = tasks.filter(t => t.pairId === pair.id && t.from === "Mentor");
   const rated = ss.filter(s => s.rating != null);
   const last3 = rated.slice(0, 3);
   const satisfaction = last3.length ? Math.round((last3.reduce((a, s) => a + (s.rating as number), 0) / last3.length) * 20) : null;
-  const daysSince = ss.length ? daysBetween(ss[0].date, AS_OF) : null;
+  const daysSince = ss.length ? daysBetween(ss[0].date, today) : null;
   const goalPct = gs.length ? Math.round(gs.reduce((a, g) => a + g.pct, 0) / gs.length) : 0;
   const taskPct = ts.length ? Math.round((ts.filter(t => t.status === "done").length / ts.length) * 100) : null;
   const relStart = pair.matchedAt ?? pair.startDate;
-  const overdueBase = daysSince ?? daysBetween(relStart, AS_OF);
+  const overdueBase = daysSince ?? daysBetween(relStart, today);
 
   // Thresholds follow spec §5.2 (stalled ≥45 days, satisfaction <3.0 twice) plus softer at-risk signals
   const stalled: string[] = [];
@@ -272,10 +299,10 @@ export function computePairStats(pair: Pair, sessions: Session[], goals: Goal[],
   if (gs.length && goalPct < 30) risk.push(`Goal progress ${goalPct}%`);
 
   let health: Health = stalled.length ? "Stalled" : risk.length ? "At Risk" : "Healthy";
-  if (!ss.length && daysBetween(relStart, AS_OF) <= 21) health = "New";
+  if (!ss.length && daysBetween(relStart, today) <= 21) health = "New";
   const trend = rated.length >= 2 ? (rated[0].rating! > rated[1].rating! ? "up" : rated[0].rating! < rated[1].rating! ? "down" : "stable") : "stable";
   return {
-    health, sessionsTotal: ss.length, sessions7d: ss.filter(s => daysBetween(s.date, AS_OF) <= 7).length,
+    health, sessionsTotal: ss.length, sessions7d: ss.filter(s => daysBetween(s.date, today) <= 7).length,
     lastSession: ss[0]?.date ?? null, daysSince, satisfaction, goalPct, taskPct,
     openTasks: tasks.filter(t => t.pairId === pair.id && t.status !== "done").length,
     goalsOnTrack: gs.filter(g => g.status !== "at-risk").length, goalsAtRisk: gs.filter(g => g.status === "at-risk").length,
@@ -298,10 +325,14 @@ export interface Ctx {
   stats: Record<string, PairStats>;
   courses: Course[]; shares: Share[];
   pastPairs: Pair[]; waiting: Waiting[];
-  mentorLoad: (mentor: string) => number;
+  mentorLoad: (mentor: MentorRef) => number;
+  /** How many mentees this mentor can take: the programme team's setting, else `fallback` (their application), else the default. */
+  capacityOf: (mentorId?: string, fallback?: number) => number;
+  /** Programme team only. The limit cannot go below the mentees the mentor already has. */
+  setMentorCapacity: (mentorId: string, limit: number, mentorName?: string) => BookingResult;
   declineRematch: (id: string) => void;
   addWaiting: (w: Omit<Waiting, "id">) => void;
-  removeWaiting: (mentee: string) => void;
+  removeWaiting: (mentee: string, menteeId?: string) => void;
   /** Set (or clear with "") the introductory-call date for a pair. */
   scheduleIntro: (pairId: string, date: string) => void;
   /** Ends a live pair (archives it, cancels open bookings/rematches, notifies both sides) and puts the mentee back in the waiting list. */
@@ -310,8 +341,13 @@ export interface Ctx {
   shareResource: (resourceId: string, pairIds: string[]) => void;
   resetDemo: () => void;
   bookings: Booking[]; messages: Message[]; events: AppEvent[]; rematches: Rematch[]; privateNotes: PrivateNote[];
-  currentUser: { role: Role; name: string } | null;
-  signIn: (role: Role | null, name?: string) => void;
+  currentUser: CurrentUser | null;
+  /** Sets who is signed in on this tab (null signs out). Proving who someone is happens in auth.ts, not here. */
+  signIn: (user: CurrentUser | null) => void;
+  /** Projects (admin programmes). Pairs, waiting mentees and cohorts each belong to one via programId. */
+  projects: Project[];
+  registerProjects: (projects: Project[]) => void;
+  projectName: (id?: string) => string | undefined;
   nextBooking: (pairId: string) => Booking | undefined;
   /** Refuses a slot that overlaps another session (proposed or confirmed) of the same mentor. */
   proposeBooking: (i: { pairId: string; date: string; time: string; durationMin: number; mode: Booking["mode"]; by: Role }) => BookingResult;
@@ -323,35 +359,81 @@ export interface Ctx {
   unread: (pairId: string, reader: Role) => number;
   proposeGoal: (i: { pairId: string; title: string; category: string; due: string; by: Role }) => void;
   approveGoal: (id: string) => void;
-  updateGoalProgress: (id: string, pct: number) => void;
-  assignTask: (pairId: string, title: string, due: string) => void;
+  /** Mentee reports progress with a note; it waits for the mentor and does not count until confirmed. */
+  submitProgress: (id: string, pct: number, note: string) => BookingResult;
+  /** Mentor answers a pending progress update: confirm as reported, confirm with a different %, or decline. */
+  reviewProgress: (id: string, decision: "confirm" | "adjust" | "decline", opts?: { pct?: number; comment?: string }) => BookingResult;
+  assignTask: (pairId: string, title: string, due: string) => BookingResult;
   requestRematch: (pairId: string, reason: string, by?: "mentee" | "admin") => void;
   resolveRematch: (id: string) => void;
-  addPrivateNote: (pairId: string, text: string) => void;
+  addPrivateNote: (pairId: string, text: string) => BookingResult;
   eventsFor: (role: Role, pairIds: string[]) => AppEvent[];
   cohortName: (id: number) => string;
   integrationOn: (name: string) => boolean;
   videoProvider: string | null; calendarProvider: string | null;
-  logSession: (i: { pairId: string; durationMin: number; mode: Session["mode"]; topics: string[]; notes: string; task?: string }) => void;
-  rateSession: (id: string, rating: number) => void;
+  /** Logs a session that took place. Pass `bookingId` for a scheduled slot (it is then marked completed and takes the booking's date);
+   *  without it the session is logged for `date` (default today), and a confirmed booking of the same pair on that day is closed automatically. */
+  logSession: (i: { pairId: string; durationMin: number; mode: Session["mode"]; topics: string[]; notes: string; task?: string; date?: string; bookingId?: string }) => BookingResult;
+  rateSession: (id: string, rating: number) => BookingResult;
   setTaskStatus: (id: string, status: Task["status"]) => void;
   signOffGoal: (id: string) => void;
   sendNudge: (pairId: string) => Nudge;
   openIntervention: (pairId: string) => void;
   resolveIntervention: (pairId: string) => void;
-  addCohort: (c: { name: string; startDate: string; endDate: string; sector: string; enrolled: number }) => void;
+  addCohort: (c: { name: string; startDate: string; endDate: string; sector: string; enrolled: number; programId?: string }) => void;
   setRubric: (cohortId: number, rubric: RubricRow[]) => void;
   /** New mentee → creates a pair. Mentee already paired → re-match: archives the old pair and carries goals, open tasks, courses and milestones over. */
-  addPair: (i: { menteeId?: string; mentorId?: string; mentee: string; mentor: string; venture: string; sector: string; expertise: string; matchScore: number; stage?: string }) => void;
+  addPair: (i: { menteeId?: string; mentorId?: string; programId?: string; mentee: string; mentor: string; venture: string; sector: string; expertise: string; matchScore: number; stage?: string; /** the mentor's own limit; defaults to DEFAULT_MENTOR_CAPACITY */ capacity?: number }) => BookingResult;
   connectIntegration: (name: string) => void;
   disconnectIntegration: (name: string) => void;
   syncIntegration: (name: string) => void;
 }
-const KEY = "emerge.programme.v3";
-const USER_KEY = "emerge.user.v2";
-type Saved = Partial<{ pairs: Pair[]; sessions: Session[]; goals: Goal[]; tasks: Task[]; cohorts: Cohort[]; integrations: Integration[]; nudges: Nudge[]; interventions: Intervention[]; bookings: Booking[]; messages: Message[]; events: AppEvent[]; rematches: Rematch[]; privateNotes: PrivateNote[]; courses: Course[]; shares: Share[]; pastPairs: Pair[]; waiting: Waiting[]; ts: number }>;
+const KEY = "emerge.programme.v4";
+const OLD_KEY = "emerge.programme.v3"; // saved while the clock was frozen at 28 Jul 2025
+const USER_KEY = "emerge.user.v3";
+type Saved = Partial<{ pairs: Pair[]; sessions: Session[]; goals: Goal[]; tasks: Task[]; cohorts: Cohort[]; integrations: Integration[]; nudges: Nudge[]; interventions: Intervention[]; bookings: Booking[]; messages: Message[]; events: AppEvent[]; rematches: Rematch[]; privateNotes: PrivateNote[]; courses: Course[]; shares: Share[]; pastPairs: Pair[]; waiting: Waiting[]; mentorCapacity: Record<string, number>; ts: number }>;
+
+/** Data saved by the old build was dated against the frozen 28 Jul 2025 clock. Shift it so it sits at today and keeps ageing from here. */
+function migrateV3(o: Saved): Saved {
+  const g = (iso?: string) => (iso && isIso(iso) ? sh(iso) : iso);
+  const lbl = (due: string) => { const m = /^([A-Z][a-z]{2}) (\d{1,2})$/.exec(due); return m && MONTH_NUM[m[1]] ? dd(due) : due; };
+  const pair = (p: Pair): Pair => ({ ...p, startDate: g(p.startDate)!, matchedAt: g(p.matchedAt), introDate: g(p.introDate), endedAt: g(p.endedAt) });
+  return {
+    ...o,
+    pairs: o.pairs?.map(pair), pastPairs: o.pastPairs?.map(pair),
+    sessions: o.sessions?.map(x => ({ ...x, date: g(x.date)! })),
+    bookings: o.bookings?.map(x => ({ ...x, date: g(x.date)! })),
+    tasks: o.tasks?.map(x => ({ ...x, due: lbl(x.due) })),
+    goals: o.goals?.map(x => ({ ...x, due: lbl(x.due) })),
+    rematches: o.rematches?.map(x => ({ ...x, at: g(x.at)! })),
+    privateNotes: o.privateNotes?.map(x => ({ ...x, at: g(x.at)! })),
+    nudges: o.nudges?.map(x => ({ ...x, at: g(x.at)! })),
+    interventions: o.interventions?.map(x => ({ ...x, openedAt: g(x.openedAt)! })),
+    shares: o.shares?.map(x => ({ ...x, at: g(x.at)! })),
+    // Sample pairs and cohorts gained a project in this version
+    cohorts: o.cohorts && !o.cohorts.some(c => c.id === 4) ? [...o.cohorts.map(c => (c.programId ? c : { ...c, programId: SAMPLE_CORE })), COHORTS.find(c => c.id === 4)!] : o.cohorts,
+  };
+}
 function loadSaved(): Saved {
-  try { const r = localStorage.getItem(KEY); const s: Saved = r ? JSON.parse(r) : {}; TS = Math.max(TS, s.ts ?? 0); return s; } catch { return {}; }
+  try {
+    const r = localStorage.getItem(KEY);
+    let s: Saved;
+    if (r) s = JSON.parse(r);
+    else {
+      const old = localStorage.getItem(OLD_KEY);
+      s = old ? migrateV3(JSON.parse(old)) : {};
+      // Old sample pairs/waiting records get their project from the new seed (matched by id)
+      s.pairs = s.pairs?.map(p => ({ ...p, ...(p.programId ? {} : seedProject(p.id, p.menteeId)) }));
+      s.waiting = s.waiting?.map(w => ({ ...w, programId: w.programId ?? WAITING.find(x => x.menteeId === w.menteeId)?.programId }));
+      s.pastPairs = s.pastPairs?.map(p => ({ ...p, ...(p.programId ? {} : seedProject(p.id, p.menteeId)) }));
+    }
+    TS = Math.max(TS, s.ts ?? 0); return s;
+  } catch { return {}; }
+}
+/** programId + cohortId for a sample pair that was saved before projects existed */
+function seedProject(pairId: string, menteeId?: string): Partial<Pair> {
+  const seed = PAIRS.find(x => x.id === pairId || (!!menteeId && x.menteeId === menteeId));
+  return seed ? { programId: seed.programId, cohortId: seed.cohortId } : {};
 }
 const ProgrammeCtx = createContext<Ctx | null>(null);
 export const useProgramme = () => {
@@ -375,17 +457,23 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
   const [events, setEvents] = useState<AppEvent[]>(saved.events ?? []);
   const [rematches, setRematches] = useState<Rematch[]>(saved.rematches ?? []);
   const [privateNotes, setPrivateNotes] = useState<PrivateNote[]>(saved.privateNotes ?? []);
+  /** Mentee limits the programme team has set per mentor ID; overrides the limit on the mentor's application. */
+  const [mentorCapacity, setMentorCapacityMap] = useState<Record<string, number>>(saved.mentorCapacity ?? {});
   const [courses, setCourses] = useState<Course[]>(saved.courses ?? COURSES);
   const [shares, setShares] = useState<Share[]>(saved.shares ?? []);
   const [pastPairs, setPastPairs] = useState<Pair[]>(saved.pastPairs ?? []);
   const [waiting, setWaiting] = useState<Waiting[]>(saved.waiting ?? WAITING);
   // The signed-in user is per browser TAB (sessionStorage) so two tabs can be two different people.
-  const [currentUser, setCurrentUser] = useState<{ role: Role; name: string } | null>(() => { try { const r = sessionStorage.getItem(USER_KEY); return r ? JSON.parse(r) : null; } catch { return null; } });
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
+    try { const u = JSON.parse(sessionStorage.getItem(USER_KEY) ?? "null"); return u && u.id && u.name && (u.role === "mentor" || u.role === "mentee") ? u : null; } catch { return null; }
+  });
+  // Projects are owned by the admin page (Program Setup); App registers them here so pairs and cohorts can belong to one.
+  const [projects, setProjects] = useState<Project[]>([]);
 
   // Persist shared data on every change
   useEffect(() => {
-    try { localStorage.setItem(KEY, JSON.stringify({ pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting, ts: TS })); } catch { /* storage full or blocked */ }
-  }, [pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting]);
+    try { localStorage.setItem(KEY, JSON.stringify({ pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting, mentorCapacity, ts: TS })); } catch { /* storage full or blocked */ }
+  }, [pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting, mentorCapacity]);
 
   // Live sync: another tab wrote new data → adopt it (this is the "two-person" test path)
   const live = useRef({ events, pairs, pastPairs, currentUser });
@@ -398,7 +486,7 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
       const u = live.current.currentUser;
       if (u && s.events) {
         const known = new Set(live.current.events.map(x => x.id));
-        const mine = new Set([...(s.pairs ?? live.current.pairs), ...(s.pastPairs ?? live.current.pastPairs)].filter(p => (u.role === "mentor" ? p.mentor : p.mentee) === u.name).map(p => p.id));
+        const mine = new Set([...(s.pairs ?? live.current.pairs), ...(s.pastPairs ?? live.current.pastPairs)].filter(p => (u.role === "mentor" ? (p.mentorId === u.id || (!p.mentorId && p.mentor === u.name)) : (p.menteeId === u.id || (!p.menteeId && p.mentee === u.name)))).map(p => p.id));
         s.events.filter(x => !known.has(x.id) && x.to === u.role && mine.has(x.pairId)).slice(0, 3).forEach(x => toast(x.text));
       }
       s.pairs && setPairs(s.pairs); s.sessions && setSessions(s.sessions); s.goals && setGoals(s.goals); s.tasks && setTasks(s.tasks);
@@ -406,7 +494,7 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
       s.interventions && setInterventions(s.interventions); s.bookings && setBookings(s.bookings); s.messages && setMessages(s.messages);
       s.events && setEvents(s.events); s.rematches && setRematches(s.rematches); s.privateNotes && setPrivateNotes(s.privateNotes);
       s.courses && setCourses(s.courses); s.shares && setShares(s.shares);
-      s.pastPairs && setPastPairs(s.pastPairs); s.waiting && setWaiting(s.waiting);
+      s.pastPairs && setPastPairs(s.pastPairs); s.waiting && setWaiting(s.waiting); s.mentorCapacity && setMentorCapacityMap(s.mentorCapacity);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -415,15 +503,36 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
     setEvents(p => [{ id: `e${++TS}`, to, pairId, text, time: nowLabel(), ts: TS, tone }, ...p]);
   const other = (r: Role): Role => (r === "mentor" ? "mentee" : "mentor");
   const who = (pairId: string) => pairs.find(x => x.id === pairId);
+  // Ownership guards. A signed-in mentor may only act on their own pairs and a mentee only on their own pairing. With nobody signed in
+  // (admin and demo tooling have no CurrentUser) the call is allowed, as before. The backend must enforce this again once it exists.
+  const NOT_YOURS = { ok: false, reason: "That pairing is not yours." } as const;
+  const mayAct = (pairId: string, as: "mentor" | "mentee"): boolean => {
+    const u = live.current.currentUser, p = who(pairId); if (!p) return false;
+    if (!u) return true;
+    if (u.role !== as) return false;
+    return as === "mentor" ? isMentorOf(p, { id: u.id, name: u.name }) : (p.menteeId ? p.menteeId === u.id : p.mentee === u.name);
+  };
+  /** Which side of this pairing the signed-in user is, or null (not theirs). With nobody signed in (admin, demo tooling) callers decide. */
+  const sideOf = (pairId: string): Role | null => {
+    const u = live.current.currentUser, p = who(pairId); if (!u || !p) return null;
+    if (u.role === "mentor") return isMentorOf(p, { id: u.id, name: u.name }) ? "mentor" : null;
+    return (p.menteeId ? p.menteeId === u.id : p.mentee === u.name) ? "mentee" : null;
+  };
+  /** Either participant of the pairing may act (or nobody is signed in: admin/demo). */
+  const inPair = (pairId: string) => !live.current.currentUser || sideOf(pairId) !== null;
+  /** Programme-team actions: only when no mentor or mentee is signed in. */
+  const adminOnly = () => !live.current.currentUser;
+  const ADMIN_ONLY = { ok: false, reason: "Only the programme team can do that." } as const;
   /** Another live session of the same mentor that overlaps this slot (ignores the booking being answered). */
   const mentorClash = (pairId: string, slot: { date: string; time: string; durationMin: number }, ignoreId?: string) => {
-    const mentor = who(pairId)?.mentor; if (!mentor) return undefined;
-    const ids = new Map(pairs.filter(p => p.mentor === mentor).map(p => [p.id, p.mentee] as [string, string]));
+    const me = who(pairId); if (!me) return undefined;
+    const ids = new Map(pairs.filter(p => isMentorOf(p, { id: me.mentorId, name: me.mentor })).map(p => [p.id, p.mentee] as [string, string]));
     const hit = bookings.find(x => x.id !== ignoreId && ids.has(x.pairId) && (x.status === "confirmed" || x.status === "proposed") && overlaps(slot, x));
     return hit ? { mentee: ids.get(hit.pairId) as string } : undefined;
   };
 
-  const stats = useMemo(() => Object.fromEntries(pairs.map(p => [p.id, computePairStats(p, sessions, goals, tasks)])), [pairs, sessions, goals, tasks]);
+  const today = todayISO(); // health, overdue and "days since" age with the calendar
+  const stats = useMemo(() => Object.fromEntries(pairs.map(p => [p.id, computePairStats(p, sessions, goals, tasks)])), [pairs, sessions, goals, tasks, today]);
   const integrationOn = useCallback((n: string) => integrations.some(i => i.name === n && i.status === "Connected"), [integrations]);
   const videoProvider = ["Zoom", "Google Meet"].find(integrationOn) ?? null;
   const calendarProvider = ["Google Calendar", "Microsoft Outlook"].find(integrationOn) ?? null;
@@ -433,60 +542,98 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
     pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, stats,
     cohortName: id => cohorts.find(c => c.id === id)?.name ?? "—",
     integrationOn, videoProvider, calendarProvider,
-    // Mentor logs a session → mentee sees it, can rate it; health/reports recompute.
-    logSession: ({ pairId, durationMin, mode, topics, notes, task }) => {
-      setSessions(p => [S(pairId, AS_OF, durationMin, mode, topics, task ? [task] : [], null, notes), ...p]);
-      emit("mentee", pairId, `${who(pairId)?.mentor} logged your session. Please rate it.`, "info");
-      if (task) emit("mentee", pairId, `New task from ${who(pairId)?.mentor}: ${task}`, "warn");
-      if (task) setTasks(p => [...p, { id: uid(), pairId, title: task, due: "Next session", status: "pending", from: "Mentor" }]);
+    // Mentor logs a session that happened → the booking it came from is completed, the mentee can rate it, health/reports recompute.
+    logSession: ({ pairId, durationMin, mode, topics, notes, task, date, bookingId }) => {
+      const pair = who(pairId); if (!pair) return { ok: false, reason: "This pairing no longer exists." };
+      if (!mayAct(pairId, "mentor")) return NOT_YOURS;
+      const t = todayISO();
+      const linked = bookingId
+        ? bookings.find(b => b.id === bookingId && b.pairId === pairId)
+        : bookings.find(b => b.pairId === pairId && b.status === "confirmed" && b.date === (date ?? t));
+      if (bookingId && !linked) return { ok: false, reason: "That scheduled session could not be found." };
+      if (linked && linked.status === "completed") return { ok: false, reason: "That session has already been logged." };
+      if (linked && linked.status !== "confirmed") return { ok: false, reason: "Only a confirmed session can be logged." };
+      const when = linked?.date ?? date ?? t;
+      if (!isIso(when)) return { ok: false, reason: "Choose the date the session took place." };
+      if (when > t) return { ok: false, reason: "A session can only be logged once it has taken place. Schedule it instead." };
+      if (when < (pair.matchedAt ?? pair.startDate)) return { ok: false, reason: "That date is before this pairing began." };
+      if (!(durationMin > 0)) return { ok: false, reason: "Enter how long the session lasted." };
+      const session = S(pairId, when, durationMin, mode, topics, task ? [task] : [], null, notes);
+      if (linked) session.bookingId = linked.id;
+      setSessions(p => [session, ...p]);
+      if (linked) setBookings(p => p.map(b => (b.id === linked.id ? { ...b, status: "completed", sessionId: session.id } : b)));
+      emit("mentee", pairId, `${pair.mentor} logged your session. Please rate it.`, "info");
+      if (task) { emit("mentee", pairId, `New task from ${pair.mentor}: ${task}`, "warn"); setTasks(p => [...p, { id: uid(), pairId, title: task, due: "Next session", status: "pending", from: "Mentor" }]); }
+      return { ok: true };
     },
     rateSession: (id, rating) => {
-      const s = sessions.find(x => x.id === id);
+      const s = sessions.find(x => x.id === id); if (!s) return { ok: false, reason: "That session could not be found." };
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) return { ok: false, reason: "Choose a rating from 1 to 5." };
+      if (!mayAct(s.pairId, "mentee")) return { ok: false, reason: "Only the mentee of this session can rate it." };
+      if (s.rating != null) return { ok: false, reason: "This session has already been rated." };
       setSessions(p => p.map(x => (x.id === id ? { ...x, rating } : x)));
-      if (s) emit("mentor", s.pairId, `${who(s.pairId)?.mentee} rated your ${fmtDate(s.date)} session ${"★".repeat(rating)}`, rating >= 4 ? "good" : "warn");
+      emit("mentor", s.pairId, `${who(s.pairId)?.mentee} rated your ${fmtDate(s.date)} session ${"★".repeat(rating)}`, rating >= 4 ? "good" : "warn");
+      return { ok: true };
     },
     setTaskStatus: (id, status) => {
       const t = tasks.find(x => x.id === id);
+      if (!t || !inPair(t.pairId)) return;
       setTasks(p => p.map(x => (x.id === id ? { ...x, status } : x)));
       if (t && status === "done" && t.from === "Mentor") emit("mentor", t.pairId, `${who(t.pairId)?.mentee} completed: ${t.title}`, "good");
     },
     signOffGoal: id => {
       const g = goals.find(x => x.id === id);
-      setGoals(p => p.map(x => (x.id === id ? { ...x, pct: 100, status: "complete" } : x)));
+      if (!g || !mayAct(g.pairId, "mentor")) return;
+      setGoals(p => p.map(x => (x.id === id ? { ...x, pct: 100, status: "complete", pending: undefined, log: [{ at: todayISO(), from: x.pct, to: 100, note: "Signed off by mentor" }, ...(x.log ?? [])] } : x)));
       if (g) emit("mentee", g.pairId, `Goal signed off: ${g.title}`, "good");
     },
     sendNudge: pairId => {
       const pair = pairs.find(x => x.id === pairId)!;
       const slack = integrationOn("Slack");
-      const n: Nudge = { id: uid(), pairId, at: AS_OF, channel: slack ? "In-app + Slack" : "In-app", text: `Programme team: no recent session between ${pair.mentee} and ${pair.mentor}. Please book your next session.` };
+      const n: Nudge = { id: uid(), pairId, at: todayISO(), channel: slack ? "In-app + Slack" : "In-app", text: `Programme team: no recent session between ${pair.mentee} and ${pair.mentor}. Please book your next session.` };
       setNudges(p => [n, ...p]);
       emit("mentor", pairId, n.text, "warn"); emit("mentee", pairId, n.text, "warn");
       return n;
     },
-    openIntervention: pairId => setInterventions(p => [...p.filter(i => i.pairId !== pairId), { pairId, openedAt: AS_OF, resolved: false }]),
+    openIntervention: pairId => setInterventions(p => [...p.filter(i => i.pairId !== pairId), { pairId, openedAt: todayISO(), resolved: false }]),
     resolveIntervention: pairId => setInterventions(p => p.map(i => (i.pairId === pairId ? { ...i, resolved: true } : i))),
     addCohort: c => setCohorts(p => [{ id: Math.max(0, ...p.map(x => x.id)) + 1, status: "Active", rubric: DEFAULT_RUBRIC, ...c }, ...p]),
     setRubric: (cohortId, rubric) => setCohorts(p => p.map(c => (c.id === cohortId ? { ...c, rubric } : c))),
     // Called from Pairing & Matching when a pairing is confirmed → appears in Health, Cohorts, dashboards.
     addPair: i => {
-      const old = pairs.find(x => x.mentee.toLowerCase() === i.mentee.toLowerCase());
-      if (old && old.mentor === i.mentor) return; // already matched with this mentor
-      const wait = waiting.find(w => w.mentee.toLowerCase() === i.mentee.toLowerCase());
-      const active = cohorts.find(c => c.status === "Active");
+      if (!adminOnly()) return ADMIN_ONLY;
+      const old = pairs.find(x => sameMentee(x, i));
+      if (old && isMentorOf(old, { id: i.mentorId, name: i.mentor })) return { ok: true }; // already matched with this mentor
+      // Capacity: the mentor's current mentees (not counting the pair being replaced) must be under their limit.
+      const cap = (i.mentorId && mentorCapacity[i.mentorId]) || i.capacity || DEFAULT_MENTOR_CAPACITY;
+      const load = pairs.filter(x => x.id !== old?.id && isMentorOf(x, { id: i.mentorId, name: i.mentor })).length;
+      if (load >= cap) return { ok: false, reason: `${i.mentor} already has ${load} mentee${load === 1 ? "" : "s"} (limit ${cap}). Choose another mentor or raise their limit.` };
+      const wait = waiting.find(w => sameMentee(w, i));
+      const projectId = i.programId ?? old?.programId ?? wait?.programId;
+      // The cohort comes from the pair's own project; a project that has none yet gets one the first time someone is matched in it.
+      let cohort = old ? cohorts.find(c => c.id === old.cohortId) : undefined;
+      cohort = cohort ?? (projectId ? cohorts.find(c => c.status === "Active" && c.programId === projectId) : undefined);
+      if (!cohort && projectId) {
+        const nm = projects.find(x => x.id === projectId)?.name;
+        cohort = { id: Math.max(0, ...cohorts.map(x => x.id)) + 1, programId: projectId, name: `${nm ?? "Project"} — Cohort 1`, status: "Active", startDate: fmtDateY(todayISO()), endDate: "—", sector: i.sector || "Mixed", enrolled: 0, rubric: DEFAULT_RUBRIC };
+        setCohorts(p => [cohort!, ...p]);
+      }
+      cohort = cohort ?? cohorts.find(c => c.status === "Active" && !c.programId) ?? cohorts.find(c => c.status === "Active");
+      const active = cohort;
       const id = `p-${uid()}`;
       const next: Pair = {
-        id, mentee: i.mentee, mentor: i.mentor, menteeId: i.menteeId ?? old?.menteeId ?? wait?.menteeId, mentorId: i.mentorId, expertise: i.expertise, matchScore: i.matchScore,
+        id, mentee: i.mentee, mentor: i.mentor, menteeId: i.menteeId ?? old?.menteeId ?? wait?.menteeId, mentorId: i.mentorId, programId: projectId, expertise: i.expertise, matchScore: i.matchScore,
         venture: old?.venture ?? wait?.venture ?? i.venture, sector: old?.sector ?? wait?.sector ?? i.sector,
         stage: old?.stage ?? i.stage ?? wait?.stage ?? "Idea",
-        cohortId: old?.cohortId ?? active?.id ?? 1, startDate: old?.startDate ?? AS_OF, matchedAt: AS_OF, milestones: old?.milestones ?? M(),
+        cohortId: old?.cohortId ?? active?.id ?? 1, startDate: old?.startDate ?? todayISO(), matchedAt: todayISO(), milestones: old?.milestones ?? M(),
         ...(old ? { predecessorId: old.id } : {}),
       };
       setPairs(p => [...p.filter(x => x.id !== old?.id), next]);
-      setWaiting(w => w.filter(x => x.mentee.toLowerCase() !== i.mentee.toLowerCase()));
-      setRematches(r => r.map(x => (x.mentee.toLowerCase() === i.mentee.toLowerCase() ? { ...x, status: "handled" } : x)));
+      setWaiting(w => w.filter(x => !sameMentee(x, i)));
+      setRematches(r => r.map(x => (old && x.pairId === old.id ? { ...x, status: "handled" } : x)));
       if (old) {
         const reason = rematches.find(r => r.pairId === old.id && r.status === "open")?.reason ?? "Re-matched by the programme team";
-        setPastPairs(p => [{ ...old, endedAt: AS_OF, endReason: reason, successorId: id }, ...p]);
+        setPastPairs(p => [{ ...old, endedAt: todayISO(), endReason: reason, successorId: id }, ...p]);
         // The mentee's own record moves with them; the old mentor's sessions, messages and private notes stay with the archived pair.
         setGoals(p => p.map(g => (g.pairId === old.id ? { ...g, pairId: id } : g)));
         setTasks(p => p.map(x => (x.pairId === old.id && x.status !== "done" ? { ...x, pairId: id } : x)));
@@ -499,33 +646,45 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
         emit("mentee", id, `You have been matched with ${i.mentor}`, "good");
       }
       emit("mentor", id, `New mentee matched: ${i.mentee} (${next.venture})`, "good");
+      return { ok: true };
     },
     connectIntegration: name => setIntegrations(p => p.map(i => (i.name === name ? { ...i, status: "Connected", lastSync: "Just now" } : i))),
     disconnectIntegration: name => setIntegrations(p => p.map(i => (i.name === name ? { ...i, status: "Not Connected", lastSync: "—" } : i))),
     bookings, messages, events, rematches, privateNotes, currentUser,
-    signIn: (role, name) => {
-      const u = role ? { role, name: name ?? (role === "mentor" ? DEMO_MENTOR : DEMO_MENTEE) } : null;
-      setCurrentUser(u);
-      try { u ? sessionStorage.setItem(USER_KEY, JSON.stringify(u)) : sessionStorage.removeItem(USER_KEY); } catch { /* ignore */ }
+    signIn: user => {
+      setCurrentUser(user);
+      try { user ? sessionStorage.setItem(USER_KEY, JSON.stringify(user)) : sessionStorage.removeItem(USER_KEY); } catch { /* ignore */ }
     },
+    projects, projectName: id => (id ? projects.find(x => x.id === id)?.name : undefined),
+    registerProjects: list => setProjects(prev => (JSON.stringify(prev) === JSON.stringify(list) ? prev : list)),
     courses, shares, pastPairs, waiting,
-    mentorLoad: m => pairs.filter(p => p.mentor === m).length,
-    addWaiting: w => setWaiting(p => (p.some(x => x.mentee.toLowerCase() === w.mentee.toLowerCase()) ? p : [...p, { id: `w${++TS}`, ...w }])),
+    mentorLoad: m => pairs.filter(p => isMentorOf(p, m)).length,
+    capacityOf: (id, fallback) => (id && mentorCapacity[id]) || fallback || DEFAULT_MENTOR_CAPACITY,
+    setMentorCapacity: (id, limit, name) => {
+      if (!adminOnly()) return ADMIN_ONLY;
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MENTOR_CAPACITY) return { ok: false, reason: `Enter a whole number from 1 to ${MAX_MENTOR_CAPACITY}.` };
+      const load = pairs.filter(p => isMentorOf(p, { id, name: name ?? "" })).length;
+      if (limit < load) return { ok: false, reason: `This mentor already has ${load} mentees. Re-match one first, or set the limit to ${load} or more.` };
+      setMentorCapacityMap(m => ({ ...m, [id]: limit }));
+      return { ok: true };
+    },
+    addWaiting: w => setWaiting(p => (p.some(x => sameMentee(x, w)) ? p : [...p, { id: `w${++TS}`, ...w }])),
     scheduleIntro: (pairId, date) => setPairs(p => p.map(x => (x.id === pairId ? { ...x, introDate: date || undefined } : x))),
-    removeWaiting: mentee => setWaiting(p => p.filter(x => x.mentee.toLowerCase() !== mentee.toLowerCase())),
+    removeWaiting: (mentee, menteeId) => setWaiting(p => p.filter(x => !sameMentee(x, { mentee, menteeId }))),
     endPair: (pairId, reason, opts) => {
-      const old = pairs.find(x => x.id === pairId); if (!old) return;
+      const old = pairs.find(x => x.id === pairId); if (!old || !adminOnly()) return;
       const requeue = opts?.requeue ?? true;
       setPairs(p => p.filter(x => x.id !== pairId));
-      setPastPairs(p => [{ ...old, endedAt: AS_OF, endReason: reason }, ...p]);
+      setPastPairs(p => [{ ...old, endedAt: todayISO(), endReason: reason }, ...p]);
       setRematches(r => r.map(x => (x.pairId === pairId && x.status === "open" ? { ...x, status: "handled" } : x)));
       setBookings(p => p.map(b => (b.pairId === pairId && (b.status === "confirmed" || b.status === "proposed") ? { ...b, status: "cancelled" } : b)));
       setInterventions(p => p.filter(x => x.pairId !== pairId));
-      if (requeue) setWaiting(w => (w.some(x => x.mentee.toLowerCase() === old.mentee.toLowerCase()) ? w : [...w, { id: `w${++TS}`, mentee: old.mentee, venture: old.venture, sector: old.sector, stage: old.stage }]));
+      if (requeue) setWaiting(w => (w.some(x => sameMentee(x, old)) ? w : [...w, { id: `w${++TS}`, menteeId: old.menteeId, mentee: old.mentee, venture: old.venture, sector: old.sector, stage: old.stage }]));
       emit("mentor", pairId, `Your mentoring pair with ${old.mentee} has ended. ${reason}`, "warn");
       emit("mentee", pairId, `Your pairing with ${old.mentor} has ended. The programme team will match you again.`, "info");
     },
     declineRematch: id => {
+      if (!adminOnly()) return;
       const r = rematches.find(x => x.id === id); if (!r || r.status !== "open") return;
       setRematches(p => p.map(x => (x.id === id ? { ...x, status: "handled" } : x)));
       const p = who(r.pairId);
@@ -540,14 +699,18 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
     },
     shareResource: (resourceId, pairIds) => {
       const r = RESOURCES.find(x => x.id === resourceId); if (!r) return;
-      const fresh = pairIds.filter(pid => !shares.some(s => s.resourceId === resourceId && s.pairId === pid));
+      const fresh = pairIds.filter(pid => mayAct(pid, "mentor") && !shares.some(s => s.resourceId === resourceId && s.pairId === pid));
       if (!fresh.length) return;
-      setShares(p => [...fresh.map(pid => ({ id: `sh${++TS}`, resourceId, pairId: pid, by: who(pid)?.mentor ?? "Mentor", at: AS_OF })), ...p]);
+      setShares(p => [...fresh.map(pid => ({ id: `sh${++TS}`, resourceId, pairId: pid, by: who(pid)?.mentor ?? "Mentor", at: todayISO() })), ...p]);
       fresh.forEach(pid => emit("mentee", pid, `${who(pid)?.mentor} shared a resource: ${r.title}`, "info"));
     },
-    resetDemo: () => { try { localStorage.removeItem(KEY); localStorage.removeItem("emerge.admin.v2"); sessionStorage.removeItem(USER_KEY); sessionStorage.removeItem("emerge.page"); } catch { /* ignore */ } window.location.reload(); },
-    nextBooking: pairId => bookings.filter(b => b.pairId === pairId && b.status === "confirmed" && b.date >= AS_OF).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0],
+    resetDemo: () => { try { localStorage.removeItem(KEY); localStorage.removeItem(OLD_KEY); localStorage.removeItem("emerge.admin.v2"); localStorage.removeItem(DECISIONS_KEY); sessionStorage.removeItem(USER_KEY); sessionStorage.removeItem("emerge.page"); } catch { /* ignore */ } window.location.reload(); },
+    nextBooking: pairId => bookings.filter(b => b.pairId === pairId && isUpcoming(b)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0],
     proposeBooking: ({ pairId, by, ...rest }) => {
+      if (!mayAct(pairId, by)) return NOT_YOURS;
+      if (!isIso(rest.date) || !/^\d{2}:\d{2}$/.test(rest.time)) return { ok: false, reason: "Choose a date and time." };
+      if (!slotNotOver(rest)) return { ok: false, reason: "That time has already passed. Pick a future time." };
+      if (!(rest.durationMin > 0)) return { ok: false, reason: "Enter how long the session will be." };
       const clash = mentorClash(pairId, rest);
       if (clash) return { ok: false, reason: by === "mentee" ? "Your mentor is not available at that time. Please pick another time." : `You already have a session with ${clash.mentee} at that time. Please pick another time.` };
       setBookings(p => [...p, { id: `b${++TS}`, pairId, proposedBy: by, status: "proposed", ...rest }]);
@@ -556,6 +719,10 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
     },
     respondBooking: (id, accept) => {
       const b = bookings.find(x => x.id === id);
+      if (!b) return { ok: false, reason: "That session could not be found." };
+      if (!mayAct(b.pairId, other(b.proposedBy))) return { ok: false, reason: "Only the other person can answer this proposal." };
+      if (b && b.status !== "proposed") return { ok: false, reason: "This proposal was already answered." };
+      if (b && isStaleProposal(b)) return { ok: false, reason: "That time has passed, so it can no longer be answered. Propose a new time." };
       if (b && accept) {
         const clash = mentorClash(b.pairId, b, id);
         if (clash) return { ok: false, reason: `This overlaps another session (${clash.mentee}). Decline it or ask for a different time.` };
@@ -566,41 +733,73 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
     },
     cancelBooking: id => {
       const b = bookings.find(x => x.id === id);
+      if (b && !inPair(b.pairId)) return;
       setBookings(p => p.map(x => (x.id === id ? { ...x, status: "cancelled" } : x)));
       if (b) { emit("mentor", b.pairId, `Session on ${fmtDate(b.date)} was cancelled`, "warn"); emit("mentee", b.pairId, `Session on ${fmtDate(b.date)} was cancelled`, "warn"); }
     },
-    sendMessage: (pairId, from, text) => setMessages(p => [...p, { id: `m${++TS}`, pairId, from, text, time: nowLabel(), ts: TS, read: false }]),
-    markRead: (pairId, reader) => setMessages(p => (p.some(m => m.pairId === pairId && m.from !== reader && !m.read) ? p.map(m => (m.pairId === pairId && m.from !== reader ? { ...m, read: true } : m)) : p)),
+    sendMessage: (pairId, from, text) => !mayAct(pairId, from) ? undefined : setMessages(p => [...p, { id: `m${++TS}`, pairId, from, text, time: nowLabel(), ts: TS, read: false }]),
+    markRead: (pairId, reader) => !mayAct(pairId, reader) ? undefined : setMessages(p => (p.some(m => m.pairId === pairId && m.from !== reader && !m.read) ? p.map(m => (m.pairId === pairId && m.from !== reader ? { ...m, read: true } : m)) : p)),
     unread: (pairId, reader) => messages.filter(m => m.pairId === pairId && m.from !== reader && !m.read).length,
     proposeGoal: ({ pairId, by, ...rest }) => {
+      if (!mayAct(pairId, by)) return;
       setGoals(p => [...p, { id: `g${++TS}`, pairId, pct: 0, status: "proposed", proposedBy: by, ...rest }]);
       emit(other(by), pairId, `${by === "mentor" ? who(pairId)?.mentor : who(pairId)?.mentee} proposed a goal: ${rest.title}`, "warn");
     },
     approveGoal: id => {
       const g = goals.find(x => x.id === id);
+      if (!g || g.status !== "proposed" || (g.proposedBy && !mayAct(g.pairId, other(g.proposedBy)))) return;
       setGoals(p => p.map(x => (x.id === id ? { ...x, status: "on-track" } : x)));
       if (g?.proposedBy) emit(g.proposedBy, g.pairId, `Goal approved: ${g.title}`, "good");
     },
-    updateGoalProgress: (id, pct) => {
-      const g = goals.find(x => x.id === id); const v = Math.max(0, Math.min(99, pct));
-      setGoals(p => p.map(x => (x.id === id ? { ...x, pct: v } : x)));
-      if (g) emit("mentor", g.pairId, `${who(g.pairId)?.mentee} updated "${g.title}" to ${v}%`, "info");
+    submitProgress: (id, pct, note) => {
+      const g = goals.find(x => x.id === id); if (!g) return { ok: false, reason: "Goal not found." };
+      if (g.status === "proposed" || g.status === "complete") return { ok: false, reason: g.status === "complete" ? "This goal is already complete." : "This goal has not been approved yet." };
+      const v = Math.round(pct);
+      if (!Number.isFinite(v) || v < 0 || v > 99) return { ok: false, reason: "Progress must be between 0% and 99%. Your mentor signs a goal off at 100%." };
+      if (v === g.pct) return { ok: false, reason: "That is the same as the current progress." };
+      if (!note.trim()) return { ok: false, reason: "Say what you did or achieved so your mentor can confirm it." };
+      setGoals(p => p.map(x => (x.id === id ? { ...x, pending: { pct: v, note: note.trim(), at: todayISO() } } : x)));
+      emit("mentor", g.pairId, `${who(g.pairId)?.mentee} reported "${g.title}" at ${v}% (was ${g.pct}%). Please review.`, "warn");
+      return { ok: true };
+    },
+    reviewProgress: (id, decision, opts) => {
+      const g = goals.find(x => x.id === id); if (!g || !g.pending) return { ok: false, reason: "There is no update waiting for review." };
+      const pending = g.pending;
+      if (decision === "decline") {
+        setGoals(p => p.map(x => (x.id === id ? { ...x, pending: undefined } : x)));
+        emit("mentee", g.pairId, `Your update on "${g.title}" was not confirmed.${opts?.comment?.trim() ? ` Mentor says: ${opts.comment.trim()}` : " Talk to your mentor about what is still needed."}`, "warn");
+        return { ok: true };
+      }
+      const to = decision === "adjust" ? Math.round(opts?.pct ?? NaN) : pending.pct;
+      if (!Number.isFinite(to) || to < 0 || to > 99) return { ok: false, reason: "Enter a percentage between 0 and 99. Use sign-off to complete a goal." };
+      setGoals(p => p.map(x => (x.id === id ? { ...x, pct: to, pending: undefined, log: [{ at: todayISO(), from: g.pct, to, note: pending.note, adjusted: to !== pending.pct }, ...(x.log ?? [])] } : x)));
+      emit("mentee", g.pairId, to === pending.pct ? `Your update on "${g.title}" was confirmed at ${to}%.` : `Your mentor set "${g.title}" to ${to}% (you reported ${pending.pct}%).${opts?.comment?.trim() ? ` ${opts.comment.trim()}` : ""}`, "good");
+      return { ok: true };
     },
     assignTask: (pairId, title, due) => {
+      if (!who(pairId)) return { ok: false, reason: "This pairing no longer exists." };
+      if (!mayAct(pairId, "mentor")) return NOT_YOURS;
       setTasks(p => [...p, { id: `t${++TS}`, pairId, title, due, status: "pending", from: "Mentor" }]);
       emit("mentee", pairId, `New task from ${who(pairId)?.mentor}: ${title}`, "warn");
+      return { ok: true };
     },
     requestRematch: (pairId, reason, by = "mentee") => {
       const p = who(pairId); if (!p) return;
+      if (by === "admin" ? !adminOnly() : !mayAct(pairId, "mentee")) return;
       if (rematches.some(r => r.pairId === pairId && r.status === "open")) return;
-      setRematches(r => [{ id: `r${++TS}`, pairId, mentee: p.mentee, reason, at: AS_OF, status: "open" }, ...r.filter(x => x.pairId !== pairId)]);
+      setRematches(r => [{ id: `r${++TS}`, pairId, mentee: p.mentee, reason, at: todayISO(), status: "open" }, ...r.filter(x => x.pairId !== pairId)]);
       if (by === "admin") {
         emit("mentor", pairId, `The programme team has started a re-match review for ${p.mentee}.`, "warn");
         emit("mentee", pairId, "The programme team has started a re-match review for your pairing. You will be told the outcome.", "info");
       } else emit("mentor", pairId, `${p.mentee} has requested a re-match. The programme team will review.`, "warn");
     },
-    resolveRematch: id => setRematches(r => r.map(x => (x.id === id ? { ...x, status: "handled" } : x))),
-    addPrivateNote: (pairId, text) => setPrivateNotes(p => [{ id: `n${++TS}`, pairId, text, at: AS_OF }, ...p]),
+    resolveRematch: id => !adminOnly() ? undefined : setRematches(r => r.map(x => (x.id === id ? { ...x, status: "handled" } : x))),
+    addPrivateNote: (pairId, text) => {
+      if (!who(pairId)) return { ok: false, reason: "This pairing no longer exists." };
+      if (!mayAct(pairId, "mentor")) return NOT_YOURS;
+      setPrivateNotes(p => [{ id: `n${++TS}`, pairId, text, at: todayISO() }, ...p]);
+      return { ok: true };
+    },
     eventsFor: (role, pairIds) => events.filter(e => e.to === role && pairIds.includes(e.pairId)),
     syncIntegration: name => setIntegrations(p => p.map(i => (i.name === name ? { ...i, lastSync: "Just now" } : i))),
   };
@@ -616,18 +815,20 @@ export function buildReport(c: Ctx, period: Period, cohortId?: number) {
   const past = c.pastPairs.filter(p => cohortId == null || p.cohortId === cohortId);
   const allPs = [...ps, ...past], allIds = new Set(allPs.map(p => p.id));
   const ss = c.sessions.filter(s => allIds.has(s.pairId));
-  const inWin = (s: Session, from: number, to: number) => { const a = daysBetween(s.date, AS_OF); return a >= from && a < to; };
+  const today = todayISO();
+  const inWin = (s: Session, from: number, to: number) => { const a = daysBetween(s.date, today); return a >= from && a < to; };
   const cur = ss.filter(s => inWin(s, 0, days + 1)), prev = ss.filter(s => inWin(s, days + 1, days * 2 + 2));
   const rated = cur.filter(s => s.rating != null);
   const gs = c.goals.filter(g => ids.has(g.pairId) && g.status !== "proposed"), ts = c.tasks.filter(t => allIds.has(t.pairId) && t.from === "Mentor");
   const ms = ps.map(p => effectiveMilestones(p, c.goals));
   const tasksDone = ts.filter(t => t.status === "done").length, goalsDone = gs.filter(g => g.status === "complete").length;
   const milestoneCount = ms.reduce((a, m) => a + Object.values(m).filter(Boolean).length, 0);
-  const perMentor = [...new Set(allPs.map(p => p.mentor))].map(mentor => ({ mentor, sessions: cur.filter(s => allPs.find(p => p.id === s.pairId)?.mentor === mentor).length }));
-  const monthly: { month: string; sessions: number; current?: boolean }[] = [];
-  for (let m = 1; m <= Number(AS_OF.slice(5, 7)); m++) {
-    const key = `2025-${String(m).padStart(2, "0")}`;
-    monthly.push({ month: new Date(2025, m - 1, 1).toLocaleString("en-GB", { month: "short" }), sessions: ARCHIVED_MONTHLY[key] ?? ss.filter(s => s.date.startsWith(key)).length, current: key === AS_OF.slice(0, 7) });
+  const perMentor = Object.values(Object.fromEntries(allPs.map(p => [mentorKey(p), p]))).map(m => ({ mentor: m.mentor, sessions: cur.filter(s => { const q = allPs.find(p => p.id === s.pairId); return !!q && mentorKey(q) === mentorKey(m); }).length }));
+  // Trailing 12 months ending this month, from the real session log
+  const monthly: { month: string; year: number; sessions: number; current?: boolean }[] = [];
+  for (let k = 11; k >= 0; k--) {
+    const first = addMonths(today, -k), key = monthKey(first);
+    monthly.push({ month: monthShort(first), year: Number(first.slice(0, 4)), sessions: ss.filter(x => monthKey(x.date) === key).length, current: k === 0 });
   }
   const n = ps.length || 1;
   const withRecent = ps.filter(p => c.stats[p.id]?.daysSince != null && c.stats[p.id].daysSince! <= 30).length;
@@ -652,10 +853,29 @@ export function buildReport(c: Ctx, period: Period, cohortId?: number) {
   };
 }
 
+/** Default number of mentees one mentor can take when the mentor has no capacity set. */
+export const DEFAULT_MENTOR_CAPACITY = 4;
+export const MAX_MENTOR_CAPACITY = 20;
+/** Same person? By ID when both sides have one; name is only used for legacy records that never had an ID. */
+export const sameMentee = (a: { menteeId?: string; mentee: string }, b: { menteeId?: string; mentee: string }) =>
+  a.menteeId && b.menteeId ? a.menteeId === b.menteeId : a.mentee.trim().toLowerCase() === b.mentee.trim().toLowerCase();
+
+/** A mentor is identified by ID. The name is only a fallback for legacy pairs that never recorded a mentorId, so two mentors with the same name are never merged. */
+export type MentorRef = { id?: string; name: string };
+export const isMentorOf = (p: { mentorId?: string; mentor: string }, m: MentorRef) => (p.mentorId ? p.mentorId === m.id : p.mentor === m.name);
+/** Stable key for grouping pairs by mentor: the ID, else a name-based key for legacy pairs. */
+export const mentorKey = (p: { mentorId?: string; mentor: string }) => p.mentorId ?? `name:${p.mentor}`;
+/** First name for greetings: skips titles like "Dr." or "Prof.", so "Dr. Tiwonge Banda" is "Tiwonge" and "Limbani Gondwe" is "Limbani". */
+export const firstName = (full: string) => {
+  const parts = full.trim().split(/\s+/).filter(Boolean);
+  while (parts.length > 1 && /^(dr|prof|professor|mr|mrs|ms|miss|mx|eng|engr|hon|rev|pastor|sir|madam)\.?$/i.test(parts[0])) parts.shift();
+  return parts[0] ?? "";
+};
+
 /** Same weighting as the admin Impact Score, scoped to one mentor. Sessions and tasks from pairs later re-matched still credit the mentor who did the work. */
-export function mentorImpact(c: Ctx, mentor: string) {
-  const ps = c.pairs.filter(p => p.mentor === mentor), ids = new Set(ps.map(p => p.id));
-  const allIds = new Set([...ps, ...c.pastPairs.filter(p => p.mentor === mentor)].map(p => p.id));
+export function mentorImpact(c: Ctx, mentor: MentorRef) {
+  const ps = c.pairs.filter(p => isMentorOf(p, mentor)), ids = new Set(ps.map(p => p.id));
+  const allIds = new Set([...ps, ...c.pastPairs.filter(p => isMentorOf(p, mentor))].map(p => p.id));
   return c.sessions.filter(s => allIds.has(s.pairId)).length * 10
     + c.tasks.filter(x => allIds.has(x.pairId) && x.from === "Mentor" && x.status === "done").length * 5
     + c.goals.filter(g => ids.has(g.pairId) && g.status === "complete").length * 15

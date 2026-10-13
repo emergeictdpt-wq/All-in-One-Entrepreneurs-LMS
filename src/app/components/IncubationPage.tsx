@@ -285,7 +285,7 @@ export function IncubationPage({ onBack, onApply, onLogin, extraPrograms = [], a
   const [carouselStart, setCarouselStart] = useState(0);
 
   const P = useProgramme();
-  const cohortRows = P.cohorts.map(c => ({ id: c.id, name: c.name, startDate: c.startDate, enrolled: cohortEnrolled(c, P.pairs, P.waiting.length) }));
+  const cohortRows = P.cohorts.map(c => ({ id: c.id, name: c.name, startDate: c.startDate, enrolled: cohortEnrolled(c, P.pairs, P.waiting) }));
   const allPrograms = extraPrograms.map(p => adminToCard(p, cohortRows));
   const PAGE_SIZE = 3;
   const visiblePrograms = allPrograms.slice(carouselStart, carouselStart + PAGE_SIZE);

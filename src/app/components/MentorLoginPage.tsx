@@ -1,4 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import type { AuthResult } from "../data/auth";
+import type { Person } from "../data/directory";
+import { DEMO_MODE, DEMO_PASSWORD } from "../data/auth";
 import { Eye, EyeOff, Lightbulb, TrendingUp, Target, Rocket, BookOpen, Award, ChevronRight, Users } from "lucide-react";
 
 const PHOTO_URL =
@@ -78,12 +81,17 @@ const styles = `
 interface Props {
   onBack: () => void;
   onApplyMentor?: () => void;
-  onSignIn?: () => void;
+  /** Checks email + password and the application status. Does not sign in; that happens after the verification step. */
+  onAuthenticate?: (email: string, password: string) => Promise<AuthResult>;
+  /** Called once the person has passed every step. */
+  onSignIn?: (person: Person) => void;
 }
 
 type View = "login" | "forgot" | "mfa" | "success";
 
-export function MentorLoginPage({ onBack, onApplyMentor, onSignIn }: Props) {
+export function MentorLoginPage({ onBack, onApplyMentor, onAuthenticate, onSignIn }: Props) {
+  const [authed, setAuthed] = useState<Person | null>(null);
+  const [checking, setChecking] = useState(false);
   const [view, setView] = useState<View>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -115,14 +123,23 @@ export function MentorLoginPage({ onBack, onApplyMentor, onSignIn }: Props) {
     return () => clearInterval(interval);
   }, [locked]);
 
-  const handleSignIn = (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (locked) return;
-    if (!email.trim()) { setError("Email or username is required."); return; }
+    if (locked || checking) return;
+    if (!email.trim()) { setError("Email is required."); return; }
     if (!password.trim()) { setError("Password is required."); return; }
-    // Demo: any credentials navigate to dashboard
-    setView("mfa");
+    setChecking(true);
+    const res = onAuthenticate ? await onAuthenticate(email, password) : null;
+    setChecking(false);
+    if (res?.ok) { setError(""); setAuthed(res.person); setView("mfa"); return; }
+    setLockShake(true); setTimeout(() => setLockShake(false), 600);
+    if (res && res.code !== "invalid") { setError(res.message); return; } // right password, not allowed in (yet)
+    const next = attempts + 1;
+    setAttempts(next);
+    if (next >= 5) { setLocked(true); setError("Too many failed attempts. Please wait before trying again."); }
+    else setError(`Incorrect email or password. ${5 - next} attempt${5 - next !== 1 ? "s" : ""} remaining.`);
   };
+  const finishSignIn = useCallback(() => { if (authed) onSignIn?.(authed); }, [authed, onSignIn]);
 
   const handleMfaChange = (idx: number, val: string) => {
     if (val.length > 1) return;
@@ -200,7 +217,7 @@ export function MentorLoginPage({ onBack, onApplyMentor, onSignIn }: Props) {
               onBack={() => setView("login")}
             />
           )}
-          {view === "success" && <SuccessView onDashboard={onSignIn} />}
+          {view === "success" && <SuccessView onDashboard={finishSignIn} />}
         </div>
 
         {/* Social providers */}
@@ -309,6 +326,12 @@ function LoginView({
           Sign in to manage your startups, schedule sessions and track entrepreneurial impact.
         </p>
       </div>
+
+      {DEMO_MODE && (
+        <p className="mb-4 text-[11px] leading-relaxed" style={{ color: "rgba(255,255,255,0.45)" }}>
+          Demo build: sample mentors use the password <span className="font-mono text-white/70">{DEMO_PASSWORD}</span>, e.g. tiwonge.banda@example.com. Mentors who registered here sign in with the password they chose.
+        </p>
+      )}
 
       {/* Error */}
       {error && (

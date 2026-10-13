@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { scoreMentor } from "../data/applicationScoring";
 import type { MentorApplication } from "../types";
+import { accountProblem } from "./AccountFields";
 import {
   ChevronRight, ChevronLeft, Check, Plus, Trash2, Upload, Eye, EyeOff,
   User, Briefcase, BookOpen, Star, Target, Globe, FileText,
@@ -178,7 +179,7 @@ function StrengthGauge({ pct }: { pct: number }) {
 
 // ─── Main Form ────────────────────────────────────────────────────────────────
 
-export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorApplication }: { onBack: () => void; onNavigateHome?: () => void; onSubmitMentorApplication?: (app: MentorApplication) => void }) {
+export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorApplication }: { onBack: () => void; onNavigateHome?: () => void; onSubmitMentorApplication?: (app: MentorApplication, password: string) => void }) {
   const [step, setStep] = useState(1);
   const [submitted, setSubmitted] = useState(false);
   const [refId, setRefId] = useState("");
@@ -188,6 +189,7 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
 
   // ── Form state ──
   const [acct, setAcct] = useState({ firstName: "", middleName: "", lastName: "", preferredName: "", gender: "", dob: "", nationality: "", nationalId: "", email: "", mobile: "", altPhone: "", password: "", confirmPassword: "", program: "" });
+  const acctProblem = accountProblem("mentor", acct.email, acct.password, acct.confirmPassword);
   const [profile, setProfile] = useState({ photo: "", title: "", occupation: "", employer: "", yearsExp: "", country: "", region: "", district: "", address: "" });
   const [bio, setBio] = useState({ biography: "", career: "", interests: "", motivation: "" });
   const [qualifications, setQualifications] = useState<Qualification[]>([{ qualification: "", field: "", institution: "", country: "", year: "" }]);
@@ -1022,8 +1024,11 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                   </label>
                 </div>
 
+                {acctProblem && <p className="text-xs text-amber-300 mb-3">{acctProblem} Go back to step 1 (Account) to fix it.</p>}
                 <button
+                  disabled={!!acctProblem}
                   onClick={() => {
+                    if (acctProblem) return;
                     const newId = `MNT-${Date.now()}`;
                     setRefId(newId);
                     const app: MentorApplication = {
@@ -1043,11 +1048,15 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                       email: acct.email,
                       title: profile.title,
                       employer: profile.employer,
+                      bio: bio.career || bio.biography || undefined,
+                      expertiseAreas: [...industryExp, ...funcExp].slice(0, 6),
+                      location: [profile.district, profile.country || "Malawi"].filter(Boolean).join(", "),
+                      preferredStages: stageExp, industries: industryExp, hoursPerMonth: hoursPerMonth || undefined,
                     };
-                    onSubmitMentorApplication?.(app);
+                    onSubmitMentorApplication?.(app, acct.password);
                     setSubmitted(true);
                   }}
-                  className="w-full py-4 rounded-md font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-xl"
+                  className="w-full py-4 rounded-md font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{ background: "#4C808A", color: "white", border: "2px solid rgba(255,255,255,0.3)" }}
                 >
                   Submit Mentor Registration <ArrowRight className="w-4 h-4" />

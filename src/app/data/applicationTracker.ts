@@ -3,8 +3,11 @@ import type { EntrepreneurApplication, MentorApplication } from "../types";
 export type AnyApplication = EntrepreneurApplication | MentorApplication;
 export const isMentorApp = (a: AnyApplication) => a.id.startsWith("MNT") || "expertise" in a;
 
-/** Same key the admin page writes status changes to, so the public tracker reads what admin decides. */
-export const ADMIN_KEY = "emerge.admin.v2";
+/** The key the admin page writes its decisions to ({ statusOverrides, pairings, notifications }).
+ *  The tracker, sign-in and the waiting screen all read the admin's status decisions from here.
+ *  (This used to point at "emerge.admin.v2", which nothing writes, so the tracker never saw a decision.) */
+export const DECISIONS_KEY = "emerge.admin.decisions.v1";
+export const ADMIN_KEY = DECISIONS_KEY;
 export const APPS_KEY = "emerge.applications.v1";
 export const MENTOR_APPS_KEY = "emerge.mentorApplications.v1";
 

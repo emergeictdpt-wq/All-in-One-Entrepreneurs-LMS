@@ -7,7 +7,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { DemoTools } from "./DemoTools";
-import { useProgramme, DEMO_MENTEE, AS_OF, RESOURCES as LIBRARY, mentorProfile, downloadResource, daysBetween, fmtDate, fmtBooking, countdown, isOverdue } from "../data/programmeStore";
+import { useProgramme, RESOURCES as LIBRARY, downloadResource, daysBetween, fmtDate, fmtDateY, fmtDue, todayISO, fmtBooking, countdown, isOverdue, isLiveBooking, awaitingLog, type Pair } from "../data/programmeStore";
+import { addDays } from "../data/clock";
+import { useDirectory, type Person } from "../data/directory";
+import { WaitingForMatch } from "./WaitingForMatch";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
@@ -51,7 +54,6 @@ function RingProgress({ pct, size = 80, stroke = 7, color = TEAL, label = "" }: 
 type NavSection = "overview" | "mentor" | "goals" | "sessions" | "tasks" | "resources" | "profile";
 
 // Contact details are not part of the programme store yet; only the demo mentee has them.
-const DEMO_CONTACT = { email: "gift.chimwendo@emergelivelihoods.org", phone: "+265 888 567 890", city: "Mzimba, Malawi" };
 const TOTAL_WEEKS = 24;
 const initials = (n: string) => n.replace(/^(Dr\.|Prof\.)\s*/, "").split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
 const TYPE_ICON: Record<string, typeof BookOpen> = { Template: BarChart2, Guide: Map, Checklist: CheckSquare, Workbook: BookOpen };
@@ -60,30 +62,87 @@ const STATUS_COLORS: Record<string, string> = { "on-track": "#059669", "at-risk"
 const STATUS_LABELS: Record<string, string> = { "on-track": "ON TRACK", "at-risk": "AT RISK", "complete": "COMPLETE ✓", "proposed": "PROPOSED" };
 const TASK_STATUS_COLORS: Record<string, string> = { "done": "#059669", "in-progress": TEAL, "pending": "#9ca3af" };
 
+/** Report progress on a goal with a note. It counts only after the mentor confirms it. */
+function ProgressUpdate({ goal }: { goal: { id: string; pct: number; pending?: { pct: number; note: string }; log?: { at: string; from: number; to: number; note: string; adjusted?: boolean }[] } }) {
+  const P = useProgramme();
+  const [open, setOpen] = useState(false);
+  const [pct, setPct] = useState(String(Math.min(99, goal.pct + 10)));
+  const [note, setNote] = useState("");
+  const send = () => {
+    const r = P.submitProgress(goal.id, Number(pct), note);
+    if (!r.ok) return toast.error(r.reason);
+    toast.success("Sent to your mentor to confirm"); setOpen(false); setNote("");
+  };
+  const box = { border: "1px solid #e0e0e0", borderRadius: 3, padding: "7px 10px", fontSize: 11 } as const;
+  return (
+    <div style={{ width: "100%" }}>
+      {goal.pending && (
+        <p style={{ margin: "0 0 8px", fontSize: 10, color: "#b45309", background: "#fffbeb", borderRadius: 3, padding: "6px 10px" }}>
+          Waiting for your mentor: {goal.pct}% → {goal.pending.pct}% ("{goal.pending.note}")
+        </p>
+      )}
+      {!open ? (
+        <button onClick={() => { setPct(String(Math.min(99, (goal.pending?.pct ?? goal.pct) + 10))); setOpen(true); }} style={{ background: `${TEAL}15`, border: "none", borderRadius: 3, padding: "6px 12px", fontSize: 10, color: TEAL, cursor: "pointer", fontWeight: 700 }}>
+          {goal.pending ? "Change my update" : "Report progress"}
+        </button>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="number" min={0} max={99} value={pct} onChange={e => setPct(e.target.value)} aria-label="New progress percentage" style={{ ...box, width: 70 }} /><span style={{ fontSize: 10, color: "#888" }}>% complete (max 99, your mentor signs off the rest)</span>
+          </div>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="What did you do or achieve since the last update?" aria-label="What changed" style={{ ...box, resize: "vertical" }} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={send} style={{ background: TEAL, color: "#fff", border: "none", borderRadius: 3, padding: "6px 14px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>Send for confirmation</button>
+            <button onClick={() => setOpen(false)} style={{ background: "#f5f5f5", border: "none", borderRadius: 3, padding: "6px 12px", fontSize: 10, color: "#666", cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {!!goal.log?.length && <p style={{ margin: "8px 0 0", fontSize: 9, color: "#9aa0b4" }}>Last confirmed: {goal.log[0].from}% → {goal.log[0].to}% on {fmtDate(goal.log[0].at)}{goal.log[0].adjusted ? " (adjusted by your mentor)" : ""}</p>}
+    </div>
+  );
+}
+
+/** Signed-in entrepreneur: the dashboard if they have a mentor, otherwise the waiting screen. */
 export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
   const P = useProgramme();
-  const myName = P.currentUser?.role === "mentee" ? P.currentUser.name : DEMO_MENTEE;
-  const myPair = P.pairs.find(p => p.mentee === myName);
-  const pid = myPair?.id;
-  const cohortLabel = P.cohortName(myPair?.cohortId ?? 1);
-  const mp = mentorProfile(myPair?.mentor ?? "", myPair?.expertise);
+  const dir = useDirectory();
+  const u = P.currentUser;
+  if (!u || u.role !== "mentee") return null;
+  const me: Person = dir.mentee(u.id, u.name) ?? { id: u.id, role: "mentee", name: u.name, email: "", phone: "", district: "", status: "Matching", appliedOn: "", seeded: false };
+  const pair = P.pairs.find(p => p.menteeId === u.id || (!p.menteeId && p.mentee === u.name));
+  if (!pair) return <WaitingForMatch me={me} onSignOut={onSignOut} />;
+  return <MenteePortal me={me} myPair={pair} onSignOut={onSignOut} />;
+}
+
+function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onSignOut: () => void }) {
+  const P = useProgramme();
+  const dir = useDirectory();
+  const myName = me.name;
+  const pid = myPair.id;
+  const cohortLabel = [P.projectName(myPair.programId), P.cohortName(myPair.cohortId)].filter(Boolean).join(" · ");
+  const mentorP = dir.mentor(myPair.mentorId, myPair.mentor);
+  const mentorTitle = mentorP?.title ? `${mentorP.title}${mentorP.employer ? `, ${mentorP.employer}` : ""}` : `${myPair.expertise || "Programme"} mentor`;
   const MENTOR = {
-    name: myPair?.mentor ?? "Your mentor", title: mp.title, expertise: mp.expertise, avatar: initials(myPair?.mentor ?? "M"),
-    matchScore: myPair?.matchScore ?? 0, location: mp.location, bio: mp.bio, responseTime: mp.responseTime,
+    name: myPair.mentor, title: mentorTitle, avatar: initials(myPair.mentor),
+    expertise: mentorP?.expertiseAreas?.length ? mentorP.expertiseAreas : (mentorP?.expertise || myPair.expertise || "").split(/,| and | & /).map(x => x.trim()).filter(Boolean),
+    matchScore: myPair.matchScore ?? 0, location: mentorP?.location ?? "Malawi", responseTime: mentorP?.responseTime ?? "not set",
+    bio: mentorP?.bio ?? `${myPair.mentor} is a volunteer mentor${myPair.expertise ? ` in ${myPair.expertise}` : ""}. They have not added a biography yet.`,
     sessionCount: P.sessions.filter(s => s.pairId === pid).length,
   };
-  const weekInProgram = myPair ? Math.min(TOTAL_WEEKS, Math.floor(daysBetween(myPair.startDate, AS_OF) / 7) + 1) : 1;
-  const isDemo = myName === DEMO_MENTEE;
+  // The countdowns and "overdue" flags follow the clock; re-render every 30s so they stay current.
+  const [, setTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 30000); return () => clearInterval(t); }, []);
+  const weekInProgram = Math.max(1, Math.min(TOTAL_WEEKS, Math.floor(daysBetween(myPair.startDate, todayISO()) / 7) + 1));
   const MENTEE = {
-    name: myName, venture: myPair?.venture ?? "—", sector: myPair?.sector ?? "—", stage: myPair?.stage ?? "—", weekInProgram, totalWeeks: TOTAL_WEEKS,
-    email: isDemo ? DEMO_CONTACT.email : "—", phone: isDemo ? DEMO_CONTACT.phone : "—", city: isDemo ? DEMO_CONTACT.city : "—",
+    name: myName, venture: myPair.venture || me.businessName || "—", sector: myPair.sector || me.sector || "—", stage: myPair.stage || me.stage || "—", weekInProgram, totalWeeks: TOTAL_WEEKS,
+    email: me.email || "—", phone: me.phone || "—", city: me.district || "—",
   };
   const myCourses = P.courses.filter(c => c.pairId === pid);
   const sharedIds = new Set(P.shares.filter(s => s.pairId === pid).map(s => s.resourceId));
   const libraryRows = [...LIBRARY].sort((a, b) => Number(sharedIds.has(b.id)) - Number(sharedIds.has(a.id)));
-  const GOALS = P.goals.filter(g => g.pairId === pid).map(g => ({ ...g, smart: g.smart ?? { S: "—", M: "—", A: "—", R: "—", T: g.due } }));
+  const GOALS = P.goals.filter(g => g.pairId === pid).map(g => ({ ...g, smart: g.smart ?? { S: "—", M: "—", A: "—", R: "—", T: fmtDue(g.due) } }));
   const SESSIONS = P.sessions.filter(s => s.pairId === pid).sort((a, b) => b.date.localeCompare(a.date)).map(s => ({
-    id: s.id, date: `${fmtDate(s.date)}, 2025`, duration: `${s.durationMin} min`, mode: s.mode, topics: s.topics, tasks: s.tasks, rating: s.rating, notes: s.notes || "No notes shared yet.",
+    id: s.id, date: fmtDateY(s.date), duration: `${s.durationMin} min`, mode: s.mode, topics: s.topics, tasks: s.tasks, rating: s.rating, notes: s.notes || "No notes shared yet.",
   }));
   const lms = P.integrationOn("LMS (Moodle)");
   const TASKS = P.tasks.filter(t => t.pairId === pid && (lms || t.from !== "Learning Academy"));
@@ -91,7 +150,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
   const addToCal = () => toast.success(`Added to ${P.calendarProvider}`);
   const rateWidget = (id: string) => (
     <span onClick={e => e.stopPropagation()} style={{ fontSize: 10, color: "#888" }}>
-      Rate: {[1, 2, 3, 4, 5].map(n => <span key={n} onClick={() => { P.rateSession(id, n); toast.success("Thanks for rating this session"); }} style={{ cursor: "pointer", color: "#f59e0b", fontSize: 14 }}>☆</span>)}
+      Rate: {[1, 2, 3, 4, 5].map(n => <span key={n} onClick={() => { const r = P.rateSession(id, n); if (!r.ok) return toast.error(r.reason); toast.success("Thanks for rating this session"); }} style={{ cursor: "pointer", color: "#f59e0b", fontSize: 14 }}>☆</span>)}
     </span>
   );
   const [nav, setNav] = useState<NavSection>("overview");
@@ -119,11 +178,11 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
   const msgs = P.messages.filter(x => x.pairId === pid).map(x => ({ id: x.id, from: x.from === "mentee" ? "me" : "mentor", text: x.text, time: x.time }));
   const sendMsg = () => { if (!chatMsg.trim() || !pid) return; P.sendMessage(pid, "mentee", chatMsg.trim()); setChatMsg(""); };
   useEffect(() => { if (nav === "mentor" && pid) P.markRead(pid, "mentee"); }, [nav, pid, P.messages.length]);
-  const unreadMsgs = pid ? P.unread(pid, "mentee") : 0;
-  const nb = pid ? P.nextBooking(pid) : undefined;
+  const unreadMsgs = P.unread(pid, "mentee");
+  const nb = P.nextBooking(pid);
   const cd = nb ? countdown(nb) : { days: 0, hrs: 0, min: 0 };
-  const myBookings = P.bookings.filter(b => b.pairId === pid && (b.status === "proposed" || (b.status === "confirmed" && b.date >= "2025-07-28")));
-  const [sched, setSched] = useState({ date: "2025-08-07", time: "10:00", mode: "Virtual" as "Virtual" | "In-person" });
+  const myBookings = P.bookings.filter(b => b.pairId === pid && isLiveBooking(b));
+  const [sched, setSched] = useState({ date: addDays(todayISO(), 7), time: "10:00", mode: "Virtual" as "Virtual" | "In-person" });
   const [goalForm, setGoalForm] = useState({ title: "", due: "", category: "Market" });
   const [rematchReason, setRematchReason] = useState("");
   const openRematch = P.rematches.find(r => r.pairId === pid && r.status === "open");
@@ -276,6 +335,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                   <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 12px" }}>Last Session Recap</p>
+                  {SESSIONS[0] ? (<>
                   <div style={{ background: "#f8f9fb", borderRadius: 3, padding: 12, marginBottom: 10 }}>
                     <p style={{ color: "#555", fontSize: 11, margin: "0 0 6px", lineHeight: 1.6 }}>{SESSIONS[0].notes}</p>
                     <p style={{ color: "#999", fontSize: 9, margin: 0 }}>{SESSIONS[0].date} {SESSIONS[0].duration}</p>
@@ -287,6 +347,11 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
                       <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{t}</p>
                     </div>
                   ))}
+                  </>) : (
+                    <div style={{ background: "#f8f9fb", borderRadius: 3, padding: 12 }}>
+                      <p style={{ color: "#555", fontSize: 11, margin: 0, lineHeight: 1.6 }}>No sessions yet. {myPair ? `Book your first session with ${MENTOR.name} from the Sessions tab.` : "You will see your session recaps here once you are matched with a mentor."}</p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
@@ -472,7 +537,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
                         <p style={{ color: STATUS_COLORS[g.status], fontSize: 18, fontWeight: 800, margin: "0 0 2px" }}>{g.pct}%</p>
-                        <p style={{ color: "#aaa", fontSize: 9, margin: 0 }}>Due {g.due}</p>
+                        <p style={{ color: "#aaa", fontSize: 9, margin: 0 }}>Due {fmtDue(g.due)}</p>
                       </div>
                     </div>
                     <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3, overflow: "hidden" }}>
@@ -494,8 +559,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
                         {g.status === "proposed" && g.proposedBy === "mentor" && <button onClick={() => { P.approveGoal(g.id); toast.success("Goal accepted"); }} style={{ background: "#f0fdf4", border: "none", borderRadius: 3, padding: "6px 12px", fontSize: 10, color: "#059669", cursor: "pointer", fontWeight: 700 }}>Accept goal</button>}
                         {g.status === "proposed" && g.proposedBy === "mentee" && <span style={{ color: "#f59e0b", fontSize: 10, fontWeight: 700 }}>Awaiting mentor approval</span>}
                         {(g.status === "on-track" || g.status === "at-risk") && <>
-                          <button onClick={() => P.updateGoalProgress(g.id, g.pct + 10)} style={{ background: `${TEAL}15`, border: "none", borderRadius: 3, padding: "6px 12px", fontSize: 10, color: TEAL, cursor: "pointer", fontWeight: 700 }}>+10% progress</button>
-                          <span style={{ color: "#aaa", fontSize: 10, alignSelf: "center" }}>Your mentor signs off at 100%</span></>}
+                          <ProgressUpdate goal={g} /></>}
                       </div>
                     </div>
                   )}
@@ -518,10 +582,10 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
                 </div>
                 {myBookings.map(b => (
                   <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderTop: "1px solid #f5f5f5", fontSize: 11 }}>
-                    <span style={{ color: "#555", display: "inline-flex", flexWrap: "wrap", columnGap: 10 }}><span>{fmtBooking(b)}</span><span>{b.mode}</span><b style={{ color: b.status === "confirmed" ? "#059669" : "#f59e0b" }}>{b.status === "confirmed" ? "Confirmed" : b.proposedBy === "mentee" ? "Awaiting mentor" : "Mentor proposed"}</b></span>
+                    <span style={{ color: "#555", display: "inline-flex", flexWrap: "wrap", columnGap: 10 }}><span>{fmtBooking(b)}</span><span>{b.mode}</span><b style={{ color: awaitingLog(b) ? "#6b7280" : b.status === "confirmed" ? "#059669" : "#f59e0b" }}>{awaitingLog(b) ? "Held, your mentor will log it" : b.status === "confirmed" ? "Confirmed" : b.proposedBy === "mentee" ? "Awaiting mentor" : "Mentor proposed"}</b></span>
                     <span style={{ display: "flex", gap: 6 }}>
                       {b.status === "proposed" && b.proposedBy === "mentor" && <><button onClick={() => { const r = P.respondBooking(b.id, true); if (!r.ok) toast.error(r.reason); }} style={{ background: "#f0fdf4", border: "none", borderRadius: 3, padding: "4px 10px", fontSize: 10, color: "#059669", cursor: "pointer", fontWeight: 700 }}>Accept</button><button onClick={() => P.respondBooking(b.id, false)} style={{ background: "#fef2f2", border: "none", borderRadius: 3, padding: "4px 10px", fontSize: 10, color: "#ef4444", cursor: "pointer", fontWeight: 700 }}>Decline</button></>}
-                      <button onClick={() => P.cancelBooking(b.id)} style={{ background: "none", border: "1px solid #e5e7eb", borderRadius: 3, padding: "4px 10px", fontSize: 10, color: "#888", cursor: "pointer" }}>Cancel</button>
+                      <button hidden={awaitingLog(b)} onClick={() => P.cancelBooking(b.id)} style={{ background: "none", border: "1px solid #e5e7eb", borderRadius: 3, padding: "4px 10px", fontSize: 10, color: "#888", cursor: "pointer" }}>Cancel</button>
                     </span>
                   </div>))}
               </div>
@@ -530,7 +594,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
               <div className="md-card" style={{ background: GRAD, borderRadius: 3, padding: "20px 24px", position: "relative", overflow: "hidden" }}>
                 <div style={{ position: "relative", zIndex: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <p style={{ color: "rgba(255,255,255,0.6)", fontSize: 10, margin: "0 0 4px", letterSpacing: 1 }}>NEXT SESSION WITH DR. TIWONGE</p>
+                    <p style={{ color: "rgba(255,255,255,0.6)", fontSize: 10, margin: "0 0 4px", letterSpacing: 1 }}>NEXT SESSION WITH {MENTOR.name.toUpperCase()}</p>
                     <h2 style={{ color: "#fff", fontSize: 22, fontWeight: 800, margin: "0 0 4px" }}>{nb ? fmtBooking(nb) : "No session scheduled"}</h2>
                     <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 11, margin: "0 0 14px" }}>{nb ? <span style={{ display: "inline-flex", flexWrap: "wrap", columnGap: 10 }}><span>{nb.mode}</span>{nb.mode === "Virtual" ? <span>{P.videoProvider ?? "no video tool connected"}</span> : null}<span>{nb.durationMin} min</span></span> : "Propose a time below"}</p>
                     <div style={{ display: "flex", gap: 10 }}>
@@ -614,7 +678,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
                     <div style={{ flex: 1 }}>
                       <p style={{ color: t.status === "done" ? "#aaa" : NAVY, fontSize: 12, fontWeight: 600, margin: "0 0 3px", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</p>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <span style={{ fontSize: 9, color: "#999" }}>Due {t.due}</span>
+                        <span style={{ fontSize: 9, color: "#999" }}>Due {fmtDue(t.due)}</span>
                         <span style={{ fontSize: 9, color: TASK_STATUS_COLORS[t.status], fontWeight: 700, textTransform: "uppercase" }}>{t.status}</span>
                         <span style={{ fontSize: 9, color: "#bbb" }}>From: {t.from}</span>
                       </div>
@@ -731,7 +795,7 @@ export function MenteeDashboard({ onSignOut }: { onSignOut: () => void }) {
             <input value={goalForm.title} onChange={e => setGoalForm({ ...goalForm, title: e.target.value })} placeholder="Goal title" style={{ width: "100%", boxSizing: "border-box", border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11, marginBottom: 10 }} />
             <div style={{ display: "flex", gap: 10 }}>
               <select value={goalForm.category} onChange={e => setGoalForm({ ...goalForm, category: e.target.value })} style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11 }}>{["Market", "Legal", "Revenue", "Product", "Team", "Learning"].map(c => <option key={c}>{c}</option>)}</select>
-              <input value={goalForm.due} onChange={e => setGoalForm({ ...goalForm, due: e.target.value })} placeholder="Due e.g. Sep 15" style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11 }} />
+              <input type="date" min={todayISO()} value={goalForm.due} onChange={e => setGoalForm({ ...goalForm, due: e.target.value })} aria-label="Goal due date" style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11 }} />
             </div>
             <p style={{ color: "#888", fontSize: 10, margin: "10px 0 0" }}>Your mentor will review and approve it before it counts toward your progress.</p>
             <div style={{ display: "flex", gap: 10, marginTop: 14 }}>

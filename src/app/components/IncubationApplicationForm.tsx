@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { scoreEntrepreneur } from "../data/applicationScoring";
 import { ArrowRight, CheckCircle, Circle, User, Briefcase, Building, Users, Target, ChevronDown, Camera, Lightbulb, Search, Wrench, Rocket } from "lucide-react";
 import type { EntrepreneurApplication } from "../types";
+import { AccountFields, accountProblem } from "./AccountFields";
 
 type Stage = "idea" | "validation" | "prototype" | "early";
 
@@ -80,7 +81,7 @@ const inputCls    = `w-full bg-[#f8f9fb] border border-[${NAVY}]/15 rounded-md p
 const selectCls   = inputCls + " appearance-none cursor-pointer";
 const textareaCls = inputCls + " resize-none";
 
-export function IncubationApplicationForm({ onBack, onSubmitApplication, programId, programName }: { onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication) => void; programId?: string; programName?: string }) {
+export function IncubationApplicationForm({ onBack, onSubmitApplication, programId, programName }: { onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication, password: string) => void; programId?: string; programName?: string }) {
   const [step, setStep]         = useState(1);
   const [submitted, setSubmitted] = useState(false);
   const [refId, setRefId] = useState("");
@@ -96,7 +97,7 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
 
   const [personal, setPersonal] = useState({
     firstName: "", lastName: "", gender: "", dob: "", nationality: "Malawian",
-    email: "", phone: "", address: "", district: "", region: "", country: "Malawi",
+    email: "", phone: "", address: "", district: "", region: "", country: "Malawi", password: "", confirmPassword: "",
     languages: [] as string[],
     youthOwned: false, womanOwned: false, disability: false,
     ruralUrban: "",
@@ -129,7 +130,7 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
 
   const canProceed = () => {
     if (step === 1) return selectedStages.length > 0;
-    if (step === 2) return !!(personal.firstName && personal.lastName && personal.email && personal.phone && personal.gender);
+    if (step === 2) return !!(personal.firstName && personal.lastName && personal.email && personal.phone && personal.gender) && !accountProblem("mentee", personal.email, personal.password, personal.confirmPassword);
     return true;
   };
 
@@ -305,6 +306,7 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
                 <Field label="Date of Birth"><input type="date" className={inputCls} value={personal.dob} onChange={e => setP("dob", e.target.value)} /></Field>
                 <Field label="Nationality"><input className={inputCls} value={personal.nationality} onChange={e => setP("nationality", e.target.value)} /></Field>
                 <Field label="Email Address" required><input type="email" className={inputCls} placeholder="amina@example.com" value={personal.email} onChange={e => setP("email", e.target.value)} /></Field>
+                <AccountFields role="mentee" variant="light" email={personal.email} password={personal.password} confirm={personal.confirmPassword} onChange={v => setPersonal(p => ({ ...p, password: v.password, confirmPassword: v.confirm }))} />
                 <Field label="Phone Number" required><input type="tel" className={inputCls} placeholder="+265 88 000 0000" value={personal.phone} onChange={e => setP("phone", e.target.value)} /></Field>
                 <Field label="Physical Address"><input className={inputCls} placeholder="Street / Area" value={personal.address} onChange={e => setP("address", e.target.value)} /></Field>
                 <Field label="District / City">
@@ -719,8 +721,9 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
                 businessName: business.name,
                 stage: selectedStages.join(", "),
                 gender: personal.gender,
+                bio: business.ideaDescription || business.solution || business.problem || undefined,
               };
-              onSubmitApplication?.(app);
+              onSubmitApplication?.(app, personal.password);
               setRefId(app.id);
               setSubmitted(true);
             }}

@@ -25,6 +25,8 @@ export type EntrepreneurApplication = {
   businessName?: string;
   stage?: string;
   gender?: string;
+  /** What the entrepreneur said their business does (shown to their mentor). */
+  bio?: string;
   rejectionReason?: string;
   rejectedDate?: string;
   feedbackStatus?: string;
@@ -55,6 +57,14 @@ export type MentorApplication = {
   title?: string;
   employer?: string;
   gender?: string;
+  /** Biography and expertise from the registration form; shown to the mentor's mentees. */
+  bio?: string;
+  expertiseAreas?: string[];
+  location?: string;
+  /** Matching preferences from the registration form (shown on the mentor's own profile). */
+  preferredStages?: string[];
+  industries?: string[];
+  hoursPerMonth?: string;
   rejectionReason?: string;
   rejectedDate?: string;
   feedbackStatus?: string;
@@ -91,4 +101,6 @@ export type AdminProgram = {
   cohortSize?: number;
   /** id of a Cohort in Cohort Management (the shared store) */
   cohortId?: number;
+  /** Programme managers who champion this program (see data/managers.ts). Only they see it in Incubation Management. */
+  managerIds?: string[];
 };
