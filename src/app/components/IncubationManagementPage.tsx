@@ -398,7 +398,7 @@ function NotificationBellDropdown({
       <button
         onClick={() => setOpen(o => !o)}
         className="w-8 h-8 rounded-md flex items-center justify-center relative transition-all hover:brightness-125 cursor-pointer"
-        style={{ background: open ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)" }}
+        style={{ background: "transparent" }}
         title={`Incubation Activity Notifications (${unreadCount} unread)`}
       >
         <Bell size={13} color="#fff" />
@@ -662,7 +662,7 @@ function ProfileDropdown({ name = "Programme Manager", title = "Program Manager"
       <button
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all hover:brightness-110"
-        style={{ background: "rgba(255,255,255,0.12)" }}
+        style={{ background: "transparent" }}
       >
         <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
           style={{ background: `linear-gradient(135deg, ${NAVY}, ${TEAL})` }}>
@@ -6301,13 +6301,8 @@ export function IncubationManagementPage({
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Right: search + bell + profile */}
+          {/* Right: bell + profile */}
           <div className="flex items-center gap-2 relative z-10">
-            <div className="hidden sm:flex items-center gap-2 rounded-md px-3 py-2"
-              style={{ background: "rgba(255,255,255,0.1)" }}>
-              <Search size={11} color="rgba(255,255,255,0.7)" />
-              <input placeholder="Search…" className="bg-transparent text-white text-[11px] w-24 focus:outline-none placeholder-white/50" />
-            </div>
             <NotificationBellDropdown
               notifications={scopedNotifications}
               onMarkRead={markNotificationAsRead}
