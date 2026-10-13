@@ -1,5 +1,4 @@
 import { ArrowRight, Play, TrendingUp, Users, DollarSign } from "lucide-react";
-import { ProfileAvatar } from "./ProfileAvatar";
 
 const stories = [
   {
@@ -64,7 +63,7 @@ export function SuccessStories() {
               {/* Header */}
               <div className="bg-gradient-to-br from-[#3B4167] to-[#4C808A] p-6">
                 <div className="flex items-center gap-3 mb-4">
-                  <ProfileAvatar className="w-12 h-12" title={s.founder} />
+                  <img src={s.img} alt={s.founder} className="w-12 h-12 rounded-full object-cover border-2 border-white/30 bg-gray-200" />
                   <div>
                     <div className="text-white font-bold text-sm">{s.founder}</div>
                     <div className="text-white/70 text-xs">{s.startup}</div>

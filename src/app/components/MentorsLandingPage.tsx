@@ -7,7 +7,6 @@ import {
 } from "lucide-react";
 import { Footer } from "./Footer";
 import { isRemovedBadge } from "./IncubationManagementPage";
-import { ProfileAvatar } from "./ProfileAvatar";
 
 // ─── Data ────────────────────────────────────────────────────────────────────
 
@@ -404,10 +403,6 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
               {/* Floating card */}
               {/* Cohort 7 Mentor Match Rate stat removed */}
             </div>
-            {/* Small accent image */}
-            <div className="absolute -bottom-6 -right-6 w-48 h-48 rounded-md overflow-hidden border-2 border-[#4C808A]/50 shadow-xl">
-              <ProfileAvatar fill rounded={false} className="p-4" title="Mentor" />
-            </div>
           </div>
         </div>
       </section>
@@ -735,7 +730,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             {featuredMentors.map((m) => (
               <div key={m.name} className="bg-[#f8f9fb] rounded-md overflow-hidden border border-[#3B4167]/10 hover:shadow-xl hover:-translate-y-2 hover:border-[#4C808A]/60 transition-all duration-300 group">
                 <div className="relative h-44">
-                  <ProfileAvatar fill rounded={false} className="p-6 transition-transform duration-500 group-hover:scale-105" title={m.name} />
+                  <img src={m.photo} alt={m.name} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
                   <div className="absolute inset-0 bg-gradient-to-t from-[#3B4167]/70 to-transparent" />
                   <div className="absolute bottom-3 left-3">
                     <span className="px-2 py-0.5 rounded-md bg-[#4C808A] text-white text-[9px] font-bold">{m.role}</span>
@@ -832,7 +827,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
                     <p className="text-[#3B4167] text-xs">{t.gain}</p>
                   </div>
                   <div className="flex items-center gap-3">
-                    <ProfileAvatar className="w-10 h-10" title={t.name} />
+                    <img src={t.photo} alt={t.name} className="w-10 h-10 rounded-full object-cover" />
                     <div>
                       <div className="text-[#3B4167] font-bold text-xs">{t.name}</div>
                       <div className="text-[#6b7280] text-[10px]">{t.role} · {t.org}</div>
@@ -850,7 +845,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
                   </div>
                   <p className="text-[#3B4167] text-sm leading-relaxed mb-5 italic">"{t.result}"</p>
                   <div className="flex items-center gap-3">
-                    <ProfileAvatar className="w-10 h-10" title={t.name} />
+                    <img src={t.photo} alt={t.name} className="w-10 h-10 rounded-full object-cover" />
                     <div>
                       <div className="text-[#3B4167] font-bold text-xs">{t.name}</div>
                       <div className="text-[#6b7280] text-[10px]">{t.startup}</div>
