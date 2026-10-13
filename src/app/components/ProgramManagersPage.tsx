@@ -4,10 +4,10 @@ import { isUnassigned, managerNames, manages, type Manager } from "../data/manag
 import { SELECTED_PROJECT_KEY } from "../data/projectScope";
 import {
   LayoutDashboard, Users, MapPin, FileText, Award,
-  Globe, Zap, Bell, Settings, Search, RefreshCw,
+  Globe, Bell, Settings, Search,
   ChevronRight, X, BarChart2, Briefcase, Filter,
   CheckCircle, UserCheck, GitMerge, Layers, GraduationCap,
-  Rocket, UserPlus, Shield, ChevronDown, TrendingUp, PieChart, LogOut,
+  UserPlus, Shield, ChevronDown, TrendingUp, PieChart, LogOut,
 } from "lucide-react";
 
 const TEAL = "#4C808A";
@@ -49,8 +49,6 @@ const css = `
 .pm-title-row{ display:flex; flex-direction:column; gap:16px; }
 @media(min-width:768px){ .pm-title-row{ flex-direction:row; align-items:flex-start; justify-content:space-between; } }
 
-.pm-header-search{ display:none; }
-@media(min-width:640px){ .pm-header-search{ display:flex; } }
 .pm-search-input::placeholder{ color:rgba(255,255,255,0.65); }
 
 /* sidebar hidden on mobile */
@@ -1070,7 +1068,6 @@ function ProjectsDirectory({ programs, manager, onOpen, onClaim }: { programs: A
             <div key={p.id} data-testid={`project-${p.id}`} className="rounded-md bg-white p-4 flex flex-col gap-2" style={{border: mineP ? `1.5px solid ${TEAL}` : "1px solid #e5e7eb"}}>
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-black" style={{color:NAVY}}>{p.name}</p>
-                {mineP && <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md text-white shrink-0" style={{background:TEAL}}>You champion this</span>}
               </div>
               <p className="text-[11px]" style={{color:"#6b7280"}}>{p.status}{p.sector ? ` · ${p.sector}` : ""}</p>
               <p className="text-[11px]" style={{color:"#374151"}}>{none ? "No manager yet" : `Managed by ${names.join(", ")}`}</p>
@@ -1168,39 +1165,13 @@ export function ProgramManagersPage({ onBack, onNavigate, onSignOut, manager = n
               src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
               alt="Emerge Livelihoods" className="h-7 brightness-0 invert"/>
           </div>
-
-          {/* Centre — Program buttons */}
-          <div className="flex-1 flex items-center justify-center gap-2">
-            <button onClick={() => onNavigate?.("incubation-management")}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-md text-white text-[11px] font-bold transition-all hover:brightness-110"
-              style={{background:TEAL,border:"none",boxShadow:"0 2px 8px rgba(76,128,138,0.4)"}}>
-              <Zap size={11} color="#fff"/>
-              Incubation Programs
-            </button>
-            <button className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-md text-white text-[11px] font-bold transition-all hover:brightness-110"
-              style={{background:TEAL,border:"none",boxShadow:"0 2px 8px rgba(76,128,138,0.4)"}}>
-              <Rocket size={11} color="#fff"/>
-              Acceleration Programs
-            </button>
-          </div>
-
-          {/* Search — #4C808A bg, white icon & text, white border */}
-          <div className="pm-header-search items-center gap-2 rounded-md px-3 py-2"
-            style={{background:TEAL,border:"none"}}>
-            <Search size={11} color="#fff"/>
-            <input type="text" placeholder="Search…"
-              className="pm-search-input bg-transparent text-white text-[11px] w-28 focus:outline-none"/>
-          </div>
+          <div className="flex-1"/>
 
           {/* Notification */}
           <button className="w-8 h-8 rounded-md flex items-center justify-center relative shrink-0"
-            style={{background:TEAL,border:"none"}}>
+            style={{background:"transparent",border:"none"}}>
             <Bell size={13} color="#fff"/>
             <div className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{background:"#e85454"}}/>
-          </button>
-          <button className="w-8 h-8 rounded-md hidden sm:flex items-center justify-center shrink-0"
-            style={{background:TEAL,border:"none"}}>
-            <RefreshCw size={12} color="#fff"/>
           </button>
 
           {/* Profile menu */}

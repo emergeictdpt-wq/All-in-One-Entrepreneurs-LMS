@@ -44,8 +44,8 @@ describe("Program Managers page shows every project", () => {
     await openAs("MGR-002");
     const dir = await screen.findByTestId("projects-directory");
     for (const id of ["emerge4biz-core", "shemerge-incubation", "agri-incubation"]) expect(within(dir).getByTestId(`project-${id}`)).toBeTruthy();
-    expect(within(screen.getByTestId("project-shemerge-incubation")).getByText("You champion this")).toBeTruthy();
-    expect(within(screen.getByTestId("project-emerge4biz-core")).queryByText("You champion this")).toBeNull();
+    expect(within(screen.getByTestId("project-shemerge-incubation")).getByRole("button", { name: "Open in Incubation Management" })).toBeTruthy();
+    expect(within(screen.getByTestId("project-emerge4biz-core")).queryByRole("button", { name: "Open in Incubation Management" })).toBeNull();
     expect(within(screen.getByTestId("project-emerge4biz-core")).getByText(/Managed by Chikondi Mwale, Yohane Phiri/)).toBeTruthy();
     expect(screen.getByText("You champion 1 of 3")).toBeTruthy();
   });
@@ -137,6 +137,6 @@ describe("programs nobody champions yet", () => {
     const card = await screen.findByTestId("project-old-one");
     expect(within(card).getByText("No manager yet")).toBeTruthy();
     await userEvent.setup().click(within(card).getByRole("button", { name: "Take on this project" }));
-    await waitFor(() => expect(within(screen.getByTestId("project-old-one")).getByText("You champion this")).toBeTruthy());
+    await waitFor(() => expect(within(screen.getByTestId("project-old-one")).getByRole("button", { name: "Open in Incubation Management" })).toBeTruthy());
   }, 15000);
 });
