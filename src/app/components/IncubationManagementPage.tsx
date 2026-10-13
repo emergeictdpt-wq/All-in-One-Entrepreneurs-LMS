@@ -4487,15 +4487,15 @@ function MentorProfileModal({
                 }
               }}
               disabled={matchContext.isConfirmed}
-              className="px-5 py-2 rounded-md text-xs font-bold transition-all flex items-center gap-2 shadow-xs cursor-pointer"
+              className="px-5 py-2 text-xs font-bold transition-all cursor-pointer"
               style={{
-                background: matchContext.isConfirmed ? "#f0fdf4" : TEAL,
-                color: matchContext.isConfirmed ? "#059669" : "#fff",
-                border: matchContext.isConfirmed ? "1px solid #bbf7d0" : "none",
+                background: "#fff",
+                color: matchContext.isConfirmed ? "#059669" : TEAL,
+                border: `1px solid ${matchContext.isConfirmed ? "#059669" : TEAL}`,
+                borderRadius: 2,
                 cursor: matchContext.isConfirmed ? "default" : "pointer",
               }}
             >
-              <CheckCircle size={14} />
               {matchContext.isConfirmed ? "Pairing Confirmed" : `Confirm Pairing with ${matchContext.selectedEnt.name}`}
             </button>
           )}
@@ -4800,9 +4800,9 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                         </div>
                         <div style={{ flex: 1 }}>
                           <p style={{ color: NAVY, fontWeight: 800, fontSize: 13, margin: "0 0 2px" }}>{result.mentor.name}</p>
-                          <p style={{ color: "#888", fontSize: 10, margin: "0 0 4px" }}>{result.mentor.expertise.replace(/&/g, "and")} • {result.mentor.district}</p>
+                          <p style={{ color: "#888", fontSize: 10, margin: "0 0 4px" }}>{result.mentor.expertise.replace(/&/g, "and")}, {result.mentor.district}</p>
                           <p style={{ color: "#666", fontSize: 9, margin: 0, fontStyle: "italic" }}>
-                            {result.mentor.yearsExperience} yrs exp • {result.mentor.startupsmentored} startups mentored • Mode: {result.mentor.mentoringMode}
+                            {result.mentor.yearsExperience} yrs exp, {result.mentor.startupsmentored} startups mentored, Mode: {result.mentor.mentoringMode}
                           </p>
                         </div>
                         {/* Score badge */}
@@ -4873,12 +4873,12 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                         <button
                           onClick={() => setViewingMentorModal({ mentor: result.mentor, result })}
                           style={{
-                            background: "#4C808A",
-                            border: "1px solid #4C808A",
-                            borderRadius: 6,
+                            background: "#fff",
+                            border: `1px solid ${TEAL}`,
+                            borderRadius: 2,
                             padding: "7px 14px",
                             fontSize: 10,
-                            color: "#fff",
+                            color: TEAL,
                             cursor: "pointer",
                             fontWeight: 700
                           }}
@@ -4889,24 +4889,17 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                           onClick={() => !isConfirmed && handleConfirm(result)}
                           disabled={isConfirmed}
                           style={{
-                            background: isConfirmed ? "#f0fdf4" : TEAL,
-                            border: isConfirmed ? "1px solid #bbf7d0" : "none",
-                            borderRadius: 6,
+                            background: "#fff",
+                            border: `1px solid ${isConfirmed ? "#059669" : TEAL}`,
+                            borderRadius: 2,
                             padding: "7px 18px",
                             fontSize: 10,
-                            color: isConfirmed ? "#059669" : "#fff",
+                            color: isConfirmed ? "#059669" : TEAL,
                             cursor: isConfirmed ? "default" : "pointer",
                             fontWeight: 700,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
                           }}
                         >
-                          {isConfirmed ? (
-                            <><CheckCircle size={12} /> Confirmed</>
-                          ) : (
-                            <><CheckCircle size={12} /> Confirm Pairing</>
-                          )}
+                          {isConfirmed ? "Confirmed" : "Confirm Pairing"}
                         </button>
                       </div>
                     </div>
@@ -5163,7 +5156,7 @@ function AdminPairingView() {
                               };
                               setViewingMentorModal({ mentor: found });
                             }}
-                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#fff", border: `1px solid ${TEAL}`, borderRadius: 2, padding: "4px 8px", fontSize: 9, color: TEAL, cursor: "pointer", fontWeight: 700 }}
                           >
                             View Full Profile
                           </button>
