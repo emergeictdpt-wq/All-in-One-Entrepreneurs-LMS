@@ -11,6 +11,7 @@ import { useProgramme, RESOURCES as LIBRARY, downloadResource, daysBetween, fmtD
 import { addDays } from "../data/clock";
 import { useDirectory, type Person } from "../data/directory";
 import { WaitingForMatch } from "./WaitingForMatch";
+import { ProfileAvatar } from "./ProfileAvatar";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
@@ -298,9 +299,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
               )}
             </div>
             {/* Avatar */}
-            <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.22)", border: "2px solid rgba(255,255,255,0.35)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <User size={18} color="#fff" strokeWidth={1.8} />
-            </div>
+            <ProfileAvatar size={36} />
           </div>
         </div>
 
@@ -378,9 +377,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
               {/* Mentor Profile Card */}
               <div className="md-card" style={{ background: GRAD, borderRadius: 3, padding: "20px 24px", position: "relative", overflow: "hidden" }}>
                 <div style={{ position: "relative", zIndex: 1, display: "flex", gap: 20, alignItems: "flex-start" }}>
-                  <div style={{ width: 64, height: 64, borderRadius: "50%", background: "rgba(255,255,255,0.2)", border: "3px solid rgba(255,255,255,0.4)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <User size={28} color="#fff" strokeWidth={1.8} />
-                  </div>
+                  <ProfileAvatar size={64} />
                   <div style={{ flex: 1 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <div>
@@ -745,7 +742,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
-                  <div style={{ width: 56, height: 56, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center" }}><User size={22} color="#fff" strokeWidth={1.8} /></div>
+                  <ProfileAvatar size={56} />
                   <div>
                     <p style={{ color: NAVY, fontSize: 16, fontWeight: 700, margin: "0 0 3px" }}>{MENTEE.name}</p>
                     <p style={{ color: "#888", fontSize: 11, margin: 0 }}>{cohortLabel}</p>

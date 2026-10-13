@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Star, ChevronLeft, ChevronRight, Quote } from "lucide-react";
+import { ProfileAvatar } from "./ProfileAvatar";
 
 const testimonials = [
   {
@@ -99,11 +100,7 @@ export function Testimonials() {
             <Quote className="w-10 h-10 text-[#4C808A]/30 absolute top-6 right-6" />
 
             <div className="flex items-center gap-4 mb-6">
-              <img
-                src={t.img}
-                alt={t.name}
-                className="w-16 h-16 rounded-full object-cover border-2 border-[#4C808A]/40 bg-gray-200"
-              />
+              <ProfileAvatar className="w-16 h-16" title={t.name} />
               <div>
                 <h3 className="text-white font-bold text-sm">{t.name}</h3>
                 <p className="text-white/75 text-xs">{t.role}</p>

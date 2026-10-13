@@ -18,6 +18,7 @@ import { DECISIONS_KEY } from "../data/applicationTracker";
 import { SAMPLE_CORE, SAMPLE_SHE } from "../data/directory";
 import type { Manager } from "../data/managers";
 import { ALL_PROJECTS, ALL_SCOPE, SELECTED_PROJECT_KEY, inScope, mentorInScope, isCompletedProject, splitProjects, type ProjectScope } from "../data/projectScope";
+import { ProfileAvatar } from "./ProfileAvatar";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
@@ -664,11 +665,11 @@ function ProfileDropdown({ name = "Programme Manager", title = "Program Manager"
         className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all hover:brightness-110"
         style={{ background: "transparent" }}
       >
-        <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
-          style={{ background: `linear-gradient(135deg, ${NAVY}, ${TEAL})` }}>
-          <svg viewBox="0 0 28 28" width="20" height="20" fill="none">
-            <circle cx="14" cy="10" r="4.5" fill="rgba(255,255,255,0.9)" />
-            <ellipse cx="14" cy="23" rx="8.5" ry="5" fill="rgba(255,255,255,0.9)" />
+        <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+          style={{ background: "rgba(255,255,255,0.15)", border: "2px solid #fff" }}>
+          <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
+            <circle cx="16" cy="12" r="5" fill="rgba(255,255,255,0.85)" />
+            <ellipse cx="16" cy="26" rx="10" ry="6" fill="rgba(255,255,255,0.85)" />
           </svg>
         </div>
         <span className="text-white text-[11px] font-bold hidden sm:block">{name}</span>
@@ -679,13 +680,7 @@ function ProfileDropdown({ name = "Programme Manager", title = "Program Manager"
         <div className="absolute right-0 top-full mt-2 w-52 rounded-md overflow-hidden z-50 im-dd"
           style={{ background: "#4C808A", border: "1px solid rgba(255,255,255,0.25)", boxShadow: "0 16px 40px rgba(0,0,0,0.35)", backdropFilter: "blur(20px)" }}>
           <div className="px-4 py-3 flex items-center gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.18)" }}>
-            <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
-              style={{ background: NAVY, border: "1px solid rgba(255,255,255,0.25)" }}>
-              <svg viewBox="0 0 28 28" width="28" height="28" fill="none">
-                <circle cx="14" cy="10" r="4.5" fill="rgba(255,255,255,0.95)" />
-                <ellipse cx="14" cy="23" rx="8.5" ry="5" fill="rgba(255,255,255,0.95)" />
-              </svg>
-            </div>
+            <ProfileAvatar size={36} />
             <div className="min-w-0">
               <div className="text-white text-xs font-bold truncate">{name}</div>
               <div className="text-[10px] truncate text-white/80 font-medium">{title}</div>
@@ -1555,10 +1550,7 @@ function AppDetailPanel({
       <div className="rounded-md p-6 flex flex-wrap gap-5 items-center justify-between"
         style={{ background: `linear-gradient(135deg,${NAVY},${TEAL})`, boxShadow: "0 4px 20px rgba(59,65,103,0.25)" }}>
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-full flex items-center justify-center font-black text-xl"
-            style={{ background: "rgba(255,255,255,0.18)", color: "#fff", border: "2px solid rgba(255,255,255,0.35)" }}>
-            <User size={24} color="#fff" strokeWidth={1.5} />
-          </div>
+          <ProfileAvatar size={56} />
           <div>
             <div className="text-white font-black text-lg leading-tight">{app.name}</div>
             <div className="text-[11px] mt-0.5 font-medium" style={{ color: "rgba(255,255,255,0.75)" }}>{app.id} &nbsp;{isEnt ? "Entrepreneur" : "Mentor"}</div>
@@ -3111,10 +3103,7 @@ function AlumniView() {
             style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)", animationDelay: `${i * 40}ms` }}>
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
-                  style={{ background: `linear-gradient(135deg, ${NAVY}, ${TEAL})` }}>
-                  <User size={18} color="#fff" strokeWidth={1.8} />
-                </div>
+                <ProfileAvatar size={40} />
                 <div>
                   <div className="font-bold text-xs" style={{ color: "#111827" }}>{a.name}</div>
                   <div className="text-[10px] text-gray-500">Cohort {a.cohort}</div>
@@ -4290,12 +4279,7 @@ function MentorProfileModal({
           style={{ background: `linear-gradient(135deg, ${NAVY}, ${TEAL})`, color: "#fff" }}
         >
           <div className="flex items-center gap-4">
-            <div
-              className="w-14 h-14 rounded-full flex items-center justify-center font-black text-xl shrink-0"
-              style={{ background: "rgba(255,255,255,0.18)", color: "#fff", border: "2px solid rgba(255,255,255,0.35)" }}
-            >
-              <User size={26} color="#fff" strokeWidth={1.8} />
-            </div>
+            <ProfileAvatar size={56} />
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-lg font-black text-white leading-tight">{mentor.name}</h3>
@@ -4667,9 +4651,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                 onClick={() => !isConfirmed && handleRun(ent.id)}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: PANEL_BG, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <User size={14} color="#fff" strokeWidth={1.8} />
-                  </div>
+                  <ProfileAvatar size={32} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <p style={{ color: NAVY, fontWeight: 700, fontSize: 11, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ent.name}</p>
@@ -4795,9 +4777,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                     <div style={{ padding: "14px 16px" }}>
                       {/* Mentor header */}
                       <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
-                        <div style={{ width: 44, height: 44, borderRadius: "50%", background: PANEL_BG, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                          <User size={20} color="#fff" strokeWidth={1.5} />
-                        </div>
+                        <ProfileAvatar size={44} />
                         <div style={{ flex: 1 }}>
                           <p style={{ color: NAVY, fontWeight: 800, fontSize: 13, margin: "0 0 2px" }}>{result.mentor.name}</p>
                           <p style={{ color: "#888", fontSize: 10, margin: "0 0 4px" }}>{result.mentor.expertise.replace(/&/g, "and")}, {result.mentor.district}</p>
@@ -5061,9 +5041,7 @@ function AdminPairingView() {
                   <tr key={p.id} className="im-row" style={{ cursor: "pointer" }} onClick={() => setSelected(selected === p.id ? null : p.id)}>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: PANEL_BG, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>
-                          <User size={12} color="#fff" strokeWidth={1.8} />
-                        </div>
+                        <ProfileAvatar size={28} />
                         <span style={{ color: NAVY, fontWeight: 600 }}>{p.mentee}</span>
                         {p.reMatchReq && <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 8, padding: "1px 6px", borderRadius: 6, fontWeight: 700 }}>RE-MATCH</span>}
                       </div>

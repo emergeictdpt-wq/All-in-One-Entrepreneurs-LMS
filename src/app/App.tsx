@@ -14,6 +14,7 @@ import { EntrepreneurJourney } from "./components/EntrepreneurJourney";
 import { StartupToolkit } from "./components/StartupToolkit";
 import { Partners } from "./components/Partners";
 import { Testimonials } from "./components/Testimonials";
+import { SuccessStories } from "./components/SuccessStories";
 import { FAQ } from "./components/FAQ";
 import { FinalCTA } from "./components/FinalCTA";
 import { Footer } from "./components/Footer";
@@ -339,6 +340,7 @@ function AppInner() {
       <EntrepreneurJourney />
       <StartupToolkit />
       <Partners />
+      <SuccessStories />
       <Testimonials />
       <FAQ />
       <FinalCTA onApply={() => { document.getElementById("programs")?.scrollIntoView({ behavior: "smooth" }); }} />

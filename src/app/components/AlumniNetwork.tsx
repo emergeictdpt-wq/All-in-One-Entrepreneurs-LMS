@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ArrowRight, MapPin, TrendingUp, DollarSign, Users } from "lucide-react";
+import { ProfileAvatar } from "./ProfileAvatar";
 
 const marqueeNames = [
   "Kondwani Gondwe, AgroFresh", "Tadala Phiri, PaySwift", "Chisomo Chidothe, MedConnect",
@@ -162,11 +163,11 @@ export function AlumniNetwork() {
 
           {/* Right — alumni photo */}
           <div className="relative rounded-md overflow-hidden" style={{ minHeight: "420px" }}>
-            <img
-              src={alumni.img}
-              alt={alumni.name}
-              className="w-full h-full object-cover object-top transition-opacity duration-500 bg-[#3B4167]"
-              style={{ minHeight: "420px" }}
+            <ProfileAvatar
+              fill
+              rounded={false}
+              className="absolute inset-0 p-16"
+              title={alumni.name}
             />
             <div className="absolute inset-0 bg-gradient-to-t from-[#1e2340] via-transparent to-transparent" />
             {/* Country badge removed */}

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ArrowRight } from "lucide-react";
+import { ProfileAvatar } from "./ProfileAvatar";
 
 const expertiseFilters = ["All", "Technology", "Finance", "Marketing", "Operations", "Legal", "AgriTech", "HealthTech"];
 
@@ -120,11 +121,7 @@ export function Mentors() {
               className="bg-[#eef4f5] rounded-md p-5 border border-[#4C808A]/20 hover:border-[#4C808A] hover:shadow-lg hover:-translate-y-0.5 transition-all text-center"
             >
               <div className="relative inline-block mb-3">
-                <img
-                  src={m.img}
-                  alt={m.name}
-                  className="w-16 h-16 rounded-full object-cover bg-gray-100 border-2 border-[#4C808A]/20"
-                />
+                <ProfileAvatar className="w-16 h-16" title={m.name} />
                 <div className="absolute -bottom-1 -right-1 bg-[#4C808A] rounded-md px-1.5 py-0.5 text-[9px] text-white font-bold">
                   {m.years}y
                 </div>

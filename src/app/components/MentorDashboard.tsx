@@ -10,6 +10,7 @@ import { useProgramme, RESOURCES as LIBRARY, mentorImpact, mentorKey, isMentorOf
 import { addDays, addMonths, monthKey, monthShort } from "../data/clock";
 import { useDirectory } from "../data/directory";
 import { DemoTools } from "./DemoTools";
+import { ProfileAvatar } from "./ProfileAvatar";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
@@ -312,9 +313,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 </div>
               )}
             </div>
-            <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.22)", border: "2px solid rgba(255,255,255,0.35)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <User size={18} color="#fff" strokeWidth={1.8} />
-            </div>
+            <ProfileAvatar size={36} />
           </div>
         </div>
 
@@ -333,9 +332,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
               {/* Hero Banner */}
               <div className="mdor-card" style={{ background: GRAD, borderRadius: 3, padding: "18px 24px", position: "relative", overflow: "hidden" }}>
                 <div style={{ position: "relative", zIndex: 1, display: "flex", gap: 20, alignItems: "center" }}>
-                  <div style={{ width: 60, height: 60, borderRadius: "50%", background: "rgba(255,255,255,0.2)", border: "3px solid rgba(255,255,255,0.35)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <User size={24} color="#fff" strokeWidth={1.8} />
-                  </div>
+                  <ProfileAvatar size={60} />
                   <div style={{ flex: 1 }}>
                     <h2 style={{ color: "#fff", fontSize: 18, margin: "0 0 4px", fontWeight: 700 }}>Welcome back, {firstName(MU.name)}.</h2>
                     <p style={{ color: "rgba(255,255,255,0.75)", fontSize: 11, margin: 0 }}>{MU.title}, {MU.location}</p>
@@ -381,9 +378,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 {MENTEES.map(m => (
                   <div key={m.id} className="mdor-card" style={{ background: "#fff", borderRadius: 3, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer" }} onClick={() => { setNav("mentees"); }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12 }}>
-                      <div style={{ width: 40, height: 40, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        <User size={16} color="#fff" strokeWidth={1.8} />
-                      </div>
+                      <ProfileAvatar size={40} />
                       <div style={{ flex: 1 }}>
                         <p style={{ color: NAVY, fontSize: 12, fontWeight: 700, margin: "0 0 2px" }}>{m.name}</p>
                         <p style={{ color: "#888", fontSize: 10, margin: 0 }}>{m.venture}</p>
@@ -422,9 +417,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 <div key={m.id} className="mdor-card" style={{ background: "#fff", borderRadius: 3, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
                   <div style={{ padding: "16px 18px", cursor: "pointer", display: "flex", gap: 16, alignItems: "flex-start" }}
                     onClick={() => setExpandMentee(expandMentee === m.id ? null : m.id)}>
-                    <div style={{ width: 50, height: 50, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <User size={20} color="#fff" strokeWidth={1.8} />
-                    </div>
+                    <ProfileAvatar size={50} />
                     <div style={{ flex: 1 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                         <div>
@@ -615,7 +608,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 return (
                   <div key={m.id} className="mdor-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
-                      <div style={{ width: 36, height: 36, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><User size={14} color="#fff" strokeWidth={1.8} /></div>
+                      <ProfileAvatar size={36} />
                       <div>
                         <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: "0 0 2px" }}>{m.name}</p>
                         <p style={{ color: "#888", fontSize: 10, margin: 0 }}>{m.venture}  {m.stage}</p>
@@ -696,7 +689,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 {THREADS.map(thread => (
                   <div key={thread.id} onClick={() => setActiveChatPair(thread.pairId)}
                     style={{ padding: "12px 16px", borderBottom: "1px solid #f8f8f8", cursor: "pointer", background: chatPairId === thread.pairId ? `${TEAL}10` : "transparent", display: "flex", gap: 10, alignItems: "center" }}>
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><User size={14} color="#fff" strokeWidth={1.8} /></div>
+                    <ProfileAvatar size={36} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <p style={{ color: NAVY, fontSize: 11, fontWeight: 700, margin: "0 0 2px" }}>{thread.mentee}</p>
                       <p style={{ color: "#aaa", fontSize: 10, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{thread.text}</p>
@@ -899,7 +892,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               <div className="mdor-card" style={{ background: "#fff", borderRadius: 3, padding: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
-                  <div style={{ width: 56, height: 56, borderRadius: "50%", background: GRAD, display: "flex", alignItems: "center", justifyContent: "center" }}><User size={22} color="#fff" strokeWidth={1.8} /></div>
+                  <ProfileAvatar size={56} />
                   <div>
                     <p style={{ color: NAVY, fontSize: 16, fontWeight: 700, margin: "0 0 3px" }}>{MU.name}</p>
                     <p style={{ color: "#888", fontSize: 11, margin: 0 }}>{MU.title}</p>
