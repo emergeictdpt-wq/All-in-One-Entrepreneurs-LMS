@@ -335,26 +335,6 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
           >
             <ChevronLeft className="w-4 h-4" /> Back to Mentor Landing Page
           </button>
-
-          {/* Step list */}
-          <nav className="space-y-0.5 flex-1">
-            {STEPS.map(({ id, label, icon: Icon }) => {
-              const done = completedSteps.has(id);
-              const active = step === id;
-              return (
-                <button key={id} onClick={() => { setStep(id); scrollTop(); }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-left transition-all ${active ? "bg-white/15 border border-white/20" : "hover:bg-white/8"}`}>
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-[10px] font-bold transition-all
-                    ${done ? "bg-[#4C808A]" : active ? "bg-white/20 border border-white/30" : "bg-white/8 border border-white/15"}`}>
-                    {done ? <Check className="w-3.5 h-3.5 text-white" /> : <span className="text-white/70">{id}</span>}
-                  </div>
-                  <div>
-                    <div className={`text-xs font-semibold ${active ? "text-white" : "text-white/60"}`}>{label}</div>
-                  </div>
-                </button>
-              );
-            })}
-          </nav>
         </aside>
 
         {/* ── Main Content ── */}
