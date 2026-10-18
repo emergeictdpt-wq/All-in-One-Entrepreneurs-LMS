@@ -3,7 +3,7 @@ import { Star, ChevronLeft, ChevronRight, Quote } from "lucide-react";
 
 const testimonials = [
   {
-    name: "Amina Diallo",
+    name: "Chikondi Phiri",
     role: "Founder, AgroFresh Technologies",
     type: "Entrepreneur",
     quote:
@@ -39,7 +39,7 @@ const testimonials = [
     rating: 5,
   },
   {
-    name: "Daniel Omondi",
+    name: "Towera Mwale",
     role: "CEO, PaySwift Africa",
     type: "Entrepreneur",
     quote:
@@ -76,7 +76,7 @@ export function Testimonials() {
       <div
         aria-hidden="true"
         className="absolute inset-0 bg-cover bg-center lg:bg-fixed"
-        style={{ backgroundImage: "url('https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1920&q=80&auto=format&fit=crop')" }}
+        style={{ backgroundImage: "url('/images/testimonials-bg.jpg')" }}
       />
       {/* Brand-colour overlay for readability */}
       <div

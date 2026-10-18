@@ -43,7 +43,12 @@ export type TrackerResult = {
   stageIndex: number;
   message: string;
   reason?: string;
+  /** true when the last step of the journey has been reached (shown ticked rather than "in progress") */
+  complete?: boolean;
 };
+
+/** A pairing the admin made (written next to the status decisions, keyed by application id). */
+export type Pairing = { partnerName?: string; approvalStatus?: string; matchingStage?: string };
 
 type Override = { status: string; reason?: string; date?: string };
 
@@ -63,8 +68,14 @@ export function loadOverrides(): Record<string, Override> {
   return v.statusOverrides ?? {};
 }
 
-export function describe(app: AnyApplication, ov?: Override): TrackerResult {
-  const status = ov?.status ?? app.status;
+export function loadPairings(): Record<string, Pairing> {
+  const v = readJSON<{ pairings?: Record<string, Pairing> }>(ADMIN_KEY, {});
+  return v.pairings ?? {};
+}
+
+export function describe(app: AnyApplication, ov?: Override, pair?: Pairing): TrackerResult {
+  // A pairing made by the admin means the person is in matching, whatever the saved status says
+  const status = pair ? "Matching" : (ov?.status ?? app.status);
   const mentor = isMentorApp(app);
   const acc = !mentor && app.program === "Acceleration";
   const base = { app, reason: ov?.reason };
@@ -77,8 +88,19 @@ export function describe(app: AnyApplication, ov?: Override): TrackerResult {
       return { ...base, label: "Selected", tone: "good", stageIndex: 2, message: mentor
         ? "Congratulations, you have been approved as a mentor. Mentee matching comes next."
         : acc ? "Congratulations, you have been selected." : "Congratulations, you have been selected. Mentor matching comes next." };
-    case "Matching":
+    case "Matching": {
+      // The admin's pairing wins; seeded records carry their own approval state
+      const approval = pair?.approvalStatus ?? (app as { approvalStatus?: string }).approvalStatus;
+      if (approval === "Approved") {
+        return mentor
+          ? { ...base, label: "Matched", tone: "good", stageIndex: 3, complete: true, message: "You have been matched with a mentee. Your programme team will share the next steps." }
+          : { ...base, label: "Onboarded", tone: "good", stageIndex: 4, complete: true, message: "You have been matched with a mentor and are now part of the programme." };
+      }
+      if (approval === "Re-match Requested") {
+        return { ...base, label: mentor ? "Mentee matching" : "Mentor matching", tone: "warn", stageIndex: 3, message: mentor ? "We are arranging a new mentee match for you." : "We are arranging a new mentor match for you." };
+      }
       return { ...base, label: mentor ? "Mentee matching" : "Mentor matching", tone: "good", stageIndex: 3, message: mentor ? "You are in the mentee matching pool." : "You are in the mentor matching pool." };
+    }
     case "Dropouts":
       return { ...base, label: "Withdrawn", tone: "warn", stageIndex: 2, message: "This application has been closed." };
     default:
@@ -87,14 +109,15 @@ export function describe(app: AnyApplication, ov?: Override): TrackerResult {
 }
 
 /** Look up by reference number, or by email (returns the most recent match). */
-export function findApplication(query: string): TrackerResult | null {
+export function findApplication(query: string, seedApps: AnyApplication[] = []): TrackerResult | null {
   const q = query.trim().toLowerCase();
   if (!q) return null;
-  const apps = loadAllApplications();
+  // Sample records first, then anything submitted in this browser (the latest match wins)
+  const apps = [...seedApps, ...loadAllApplications()];
   const hits = apps.filter(a => a.id.toLowerCase() === q || (a.email ?? "").toLowerCase() === q);
   if (!hits.length) return null;
   const app = hits[hits.length - 1];
-  return describe(app, loadOverrides()[app.id]);
+  return describe(app, loadOverrides()[app.id], loadPairings()[app.id]);
 }
 
 /** A ready-to-send email for a selection / rejection decision. Opens in the admin's mail app (there is no mail server behind this site). */

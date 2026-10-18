@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  ArrowRight, CheckCircle, Star, Users, Clock, Globe, Award, BookOpen,
+  ArrowRight, Check, Star, Users, Clock, Globe, Award, BookOpen,
   Briefcase, TrendingUp, Lightbulb, Heart, Network, Shield, ChevronDown,
-  ChevronUp, Filter, Calendar, MapPin, Lock, Mail, Phone, Menu, X,
+  ChevronUp, Calendar, MapPin, Lock, Menu, X,
   Zap, Target, Layers, BarChart2, Mic, Coffee
 } from "lucide-react";
 import { Footer } from "./Footer";
 import { isRemovedBadge } from "./IncubationManagementPage";
+import { readMentorDraft } from "../data/mentorDraft";
 
 // ─── Data ────────────────────────────────────────────────────────────────────
 
-const navLinks = ["About Mentorship", "Programs", "Meet Our Mentors", "Success Stories", "Resources", "FAQs", "Contact"];
+const navLinks = ["About Mentorship", "Mentorship Models", "Meet Our Mentors", "Success Stories", "FAQs", "Contact"];
 
 const benefits = [
   { icon: Heart, title: "Give Back", desc: "Help build stronger businesses and stronger communities across Malawi and beyond." },
@@ -44,7 +45,7 @@ const journeySteps = [
   { step: "03", title: "Approval", desc: "Receive confirmation and onboarding details within 5–7 business days." },
   { step: "04", title: "Training and Orientation", desc: "Complete our structured mentor orientation program and platform walkthrough." },
   { step: "05", title: "Startup Matching", desc: "Get matched with startups based on your expertise, sector and their growth stage." },
-  { step: "06", title: "Mentorship Sessions", desc: "Conduct structured one-on-one or group sessions using our built-in tools." },
+  { step: "06", title: "Mentorship Sessions", desc: "Conduct structured one-to-one or virtual sessions using our built-in tools." },
   { step: "07", title: "Progress Reviews", desc: "Participate in quarterly reviews to track startup progress and adjust goals." },
   { step: "08", title: "Program Completion", desc: "Celebrate cohort graduation and document key milestones achieved." },
   { step: "09", title: "Recognition and Alumni Network", desc: "Receive your mentor certificate and join our exclusive alumni mentor network." },
@@ -102,6 +103,32 @@ const expertiseAreas = [
   "Human Resources", "Leadership", "Investment Readiness",
 ];
 
+const rolesByArea: Record<string, string[]> = {
+  "Business Strategy": ["Business Mentor", "Leadership Mentor"],
+  "Finance and Accounting": ["Business Mentor", "Investment Mentor"],
+  "Marketing and Sales": ["Marketing Mentor"],
+  "Product Development": ["Technical Mentor", "Innovation Mentor"],
+  "Software and Technology": ["Technical Mentor"],
+  "Agribusiness": ["Industry Mentor"],
+  "Manufacturing": ["Industry Mentor", "Operations Mentor"],
+  "Health": ["Industry Mentor"],
+  "Education": ["Industry Mentor"],
+  "Tourism": ["Industry Mentor"],
+  "Green Innovation": ["Industry Mentor", "Innovation Mentor"],
+  "Legal and Intellectual Property": ["Business Mentor"],
+  "Export Readiness": ["Industry Mentor", "Marketing Mentor"],
+  "Digital Transformation": ["Technical Mentor", "Operations Mentor"],
+  "Human Resources": ["Leadership Mentor", "Operations Mentor"],
+  "Leadership": ["Leadership Mentor"],
+  "Investment Readiness": ["Investment Mentor"],
+};
+
+const matchStages = ["Idea", "Validation", "Prototype", "Early Startup"];
+const matchSectors = ["Agribusiness", "Health", "Education", "Tourism", "Green Innovation", "Software and Technology", "Manufacturing"];
+const matchNeeds = ["Business Strategy", "Finance and Accounting", "Marketing and Sales", "Investment Readiness", "Leadership", "Digital Transformation", "Export Readiness"];
+// Weights follow the matching framework (stage 25, sector 20, support needs 20); 65 points are shown here.
+const MATCH_MAX = 65;
+
 const featuredMentors = [
   {
     name: "Dr. Kondwani Phiri",
@@ -111,6 +138,8 @@ const featuredMentors = [
     years: 18,
     industries: ["AgriTech", "FinTech"],
     startups: 24,
+    stages: ["Validation", "Prototype", "Early Startup"],
+    sectors: ["Agribusiness", "Software and Technology"],
     photo: "https://images.unsplash.com/photo-1560250097-0b93528c311a?w=300&h=300&fit=crop&auto=format",
     role: "Business Mentor",
   },
@@ -118,10 +147,12 @@ const featuredMentors = [
     name: "Grace Mwale",
     title: "Head of Digital Innovation",
     org: "National Bank of Malawi (Lilongwe)",
-    expertise: ["FinTech", "Digital Transformation", "Product Development"],
+    expertise: ["Digital Transformation", "Product Development", "Finance and Accounting"],
     years: 12,
     industries: ["FinTech", "Banking"],
     startups: 16,
+    stages: ["Prototype", "Early Startup"],
+    sectors: ["Software and Technology", "Finance and Accounting"],
     photo: "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=300&h=300&fit=crop&auto=format",
     role: "Technical Mentor",
   },
@@ -129,10 +160,12 @@ const featuredMentors = [
     name: "Prof. James Banda",
     title: "Professor of Entrepreneurship & Agribusiness",
     org: "Mzuzu University & LUANAR",
-    expertise: ["Education", "Research", "Business Planning"],
+    expertise: ["Education", "Agribusiness", "Business Strategy"],
     years: 22,
     industries: ["Education", "AgriTech", "Health"],
     startups: 31,
+    stages: ["Idea", "Validation"],
+    sectors: ["Education", "Agribusiness", "Health"],
     photo: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=300&h=300&fit=crop&auto=format",
     role: "Industry Mentor",
   },
@@ -144,6 +177,8 @@ const featuredMentors = [
     years: 9,
     industries: ["CleanTech", "Manufacturing"],
     startups: 11,
+    stages: ["Idea", "Validation", "Early Startup"],
+    sectors: ["Green Innovation", "Manufacturing"],
     photo: "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=300&h=300&fit=crop&auto=format",
     role: "Industry Mentor",
   },
@@ -204,18 +239,29 @@ const founderTestimonials = [
 ];
 
 const opportunities = [
-  { type: "Incubation Cohort", title: "Emerge4Biz Core Cohort 8", date: "15 Sep 2026", time: "09:00–11:00", location: "Mzuzu Hub, In-Person", tag: "Incubation" },
-  { type: "Pitch Judging", title: "She Emerge Pitch Day 2026", date: "28 Aug 2026", time: "14:00–17:00", location: "Virtual (Zoom)", tag: "Pitch" },
-  { type: "Bootcamp", title: "AgriTech Innovation Bootcamp", date: "05 Oct 2026", time: "08:30–16:30", location: "Mzuzu Hub, In-Person", tag: "Bootcamp" },
-  // { type: "Demo Day", title: "GrowthScale Demo Day — Cohort 3", date: "20 Nov 2026", time: "10:00–14:00", location: "Hybrid", tag: "Demo Day" },
+  { type: "Pitch Judging", title: "She Emerge Pitch Day 2026", iso: "2026-11-27", time: "14:00–17:00 CAT", location: "Virtual (Zoom)", tag: "Pitch" },
+  { type: "Bootcamp", title: "AgriTech Innovation Bootcamp", iso: "2026-12-03", time: "08:30–16:30 CAT", location: "Mzuzu Hub, In-Person", tag: "Bootcamp" },
+  { type: "Incubation Cohort", title: "Emerge4Biz Core Cohort 8", iso: "2027-01-18", time: "09:00–11:00 CAT", location: "Mzuzu Hub, In-Person", tag: "Incubation" },
+  // { type: "Demo Day", title: "GrowthScale Demo Day — Cohort 3", iso: "2027-02-20", time: "10:00–14:00 CAT", location: "Hybrid", tag: "Demo Day" },
 ];
+
+const formatOppDate = (iso: string) =>
+  new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+
+// Only show opportunities that have not already happened.
+const upcomingOpportunities = () => {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return opportunities
+    .filter((o) => new Date(`${o.iso}T00:00:00`) >= today)
+    .sort((a, b) => a.iso.localeCompare(b.iso));
+};
 
 const resources = [
   { title: "Mentor Handbook", desc: "Comprehensive guide covering your role, responsibilities and best practices.", icon: BookOpen, locked: false },
   { title: "Mentorship Framework", desc: "Structured methodology for effective mentor-mentee relationships.", icon: Layers, locked: false },
   { title: "Coaching Guides", desc: "Topic-specific coaching frameworks for common startup challenges.", icon: Target, locked: true },
   { title: "Session Templates", desc: "Pre-built session plans for strategy, finance, marketing and more.", icon: Briefcase, locked: true },
-  { title: "Goal-Setting Worksheets", desc: "Tools for setting and tracking SMART goals with your mentees.", icon: CheckCircle, locked: true },
+  { title: "Goal-Setting Worksheets", desc: "Tools for setting and tracking SMART goals with your mentees.", icon: Check, locked: true },
   { title: "Code of Conduct", desc: "Platform guidelines, ethical standards and confidentiality policy.", icon: Shield, locked: false },
 ];
 
@@ -229,12 +275,12 @@ const recognitions = [
 ];
 
 const faqs = [
-  { q: "Who can become a mentor?", a: "Any experienced professional, entrepreneur, executive, investor, researcher, lecturer or specialist, with at least 5 years of relevant industry experience can apply to become a mentor." },
+  { q: "Who can become a mentor?", a: "Any experienced professional, entrepreneur, executive, investor, researcher, lecturer or specialist with relevant industry experience can apply. Applications are reviewed by our programme team." },
   { q: "Is mentoring voluntary or paid?", a: "Mentoring on the Emerge Livelihoods platform is voluntary. Some specific programme contracts may include honoraria for intensive long-term engagements." },
   { q: "How much time is required?", a: "Most mentors commit between 3–8 hours per month depending on the programme and mentorship model chosen. You choose a model that fits your schedule." },
   { q: "Can I mentor remotely?", a: "Yes, our virtual mentoring model allows you to mentor from anywhere in the world using our built-in video and messaging tools." },
   { q: "How are startups matched?", a: "Matching is based on your sector expertise, the startup's business stage, goals and specific support needs. Our platform uses a structured matching rubric." },
-  { q: "Can I mentor more than one startup?", a: "Yes. Experienced mentors may take on up to 3 startups simultaneously depending on their availability and programme load." },
+  { q: "Can I mentor more than one startup?", a: "Yes. Depending on your availability and programme load, you can mentor more than one startup. You state your capacity when you register." },
   { q: "What support do mentors receive?", a: "All mentors receive structured onboarding, session management tools, coaching resources, peer mentor community access and dedicated programme manager support." },
 ];
 
@@ -249,6 +295,7 @@ function AnimatedCounter({ value, prefix = "", suffix = "" }: { value: number; p
     const obs = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting && !started.current) {
         started.current = true;
+        if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) { setCount(value); return; }
         const duration = 1800;
         const steps = 60;
         const increment = value / steps;
@@ -271,6 +318,102 @@ function AnimatedCounter({ value, prefix = "", suffix = "" }: { value: number; p
   );
 }
 
+// ─── Mentor Matching Preview ──────────────────────────────────────────────────
+
+function MatchingPreview({ onApplyMentor }: { onApplyMentor?: () => void }) {
+  const [stage, setStage] = useState(matchStages[1]);
+  const [sector, setSector] = useState(matchSectors[0]);
+  const [need, setNeed] = useState(matchNeeds[0]);
+
+  const ranked = featuredMentors
+    .map((m) => {
+      const stageFit = m.stages.includes(stage);
+      const sectorFit = m.sectors.includes(sector);
+      const needFit = m.expertise.includes(need);
+      const points = (stageFit ? 25 : 0) + (sectorFit ? 20 : 0) + (needFit ? 20 : 0);
+      return { m, stageFit, sectorFit, needFit, pct: Math.round((points / MATCH_MAX) * 100) };
+    })
+    .sort((a, b) => b.pct - a.pct || b.m.startups - a.m.startups);
+
+  const selectCls = "w-full px-3 py-2.5 rounded-md border border-[#3B4167]/20 bg-white text-[#3B4167] text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#4C808A]";
+
+  return (
+    <section className="py-20 bg-[#f8f9fb]" id="matching">
+      <div className="max-w-[1400px] mx-auto px-4 lg:px-8">
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-md border border-[#4C808A] mb-4" style={{ background: "#4C808A" }}>
+            <span className="text-white text-xs font-semibold tracking-widest uppercase">Matching</span>
+          </div>
+          <h2 className="text-[#3B4167] mb-3" style={{ fontSize: "clamp(1.5rem, 3vw, 2.25rem)", fontWeight: 700 }}>
+            How Startups Are Matched With Mentors
+          </h2>
+          <p className="text-[#6b7280] text-sm max-w-2xl mx-auto">
+            We compare a startup's business stage, industry and support needs with each mentor's experience. Try it: describe a startup and see how our featured mentors would rank.
+          </p>
+        </div>
+
+        <div className="grid lg:grid-cols-[320px_1fr] gap-6 max-w-5xl mx-auto">
+          <div className="bg-white rounded-md border border-[#3B4167]/10 p-5 space-y-4 h-fit">
+            <label className="block">
+              <span className="block text-[10px] font-bold uppercase tracking-wide text-[#6b7280] mb-1">Business stage</span>
+              <select value={stage} onChange={(e) => setStage(e.target.value)} className={selectCls}>
+                {matchStages.map((o) => <option key={o}>{o}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-[10px] font-bold uppercase tracking-wide text-[#6b7280] mb-1">Industry</span>
+              <select value={sector} onChange={(e) => setSector(e.target.value)} className={selectCls}>
+                {matchSectors.map((o) => <option key={o}>{o}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-[10px] font-bold uppercase tracking-wide text-[#6b7280] mb-1">Biggest support need</span>
+              <select value={need} onChange={(e) => setNeed(e.target.value)} className={selectCls}>
+                {matchNeeds.map((o) => <option key={o}>{o}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="space-y-3" aria-live="polite">
+            {ranked.map(({ m, stageFit, sectorFit, needFit, pct }, i) => (
+              <div key={m.name} className={`bg-white rounded-md border p-4 flex gap-4 items-center ${i === 0 && pct > 0 ? "border-[#4C808A] shadow-md" : "border-[#3B4167]/10"}`}>
+                <img src={m.photo} alt={m.name} className="w-12 h-12 rounded-full object-cover shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[#3B4167] font-bold text-sm truncate">{m.name}{i === 0 && pct > 0 && <span className="ml-2 px-2 py-0.5 rounded-md bg-[#4C808A] text-white text-[9px] font-bold uppercase">Best fit</span>}</div>
+                    <div className="text-[#3B4167] font-bold text-sm shrink-0">{pct}%</div>
+                  </div>
+                  <div className="h-1.5 bg-[#3B4167]/10 rounded-full overflow-hidden my-2" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`Fit score for ${m.name}`}>
+                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: "#3B4167" }} />
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 text-[10px]">
+                    {[{ ok: stageFit, t: `Stage: ${stage}` }, { ok: sectorFit, t: `Industry: ${sector}` }, { ok: needFit, t: `Expertise: ${need}` }].map(({ ok, t }) => (
+                      <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border"
+                        style={ok ? { background: "#3B4167", color: "#FFFFFF", borderColor: "#3B4167" } : { background: "#FFFFFF", color: "#6b7280", borderColor: "#d1d5db" }}>
+                        {ok ? <Check className="w-3 h-3" aria-hidden="true" /> : <X className="w-3 h-3" aria-hidden="true" />}
+                        <span className="sr-only">{ok ? "Matches " : "Does not match "}</span>{t}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <p className="text-center text-[#6b7280] text-xs mt-6 max-w-2xl mx-auto">
+          This is a simplified illustration. In practice matching also considers language, location, mentor availability and conflicts of interest, and a programme manager confirms every pairing.
+        </p>
+        <div className="text-center mt-5">
+          <button onClick={onApplyMentor} className="inline-flex items-center gap-2 px-6 py-3 rounded-md bg-[#4C808A] text-white text-xs font-bold border border-white hover:bg-[#3d6b74] transition-all">
+            Add your expertise to the network <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { onBack: () => void; onApplyMentor?: () => void; onMentorLogin?: () => void }) {
@@ -278,6 +421,8 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
   const [activeExpertise, setActiveExpertise] = useState<string | null>(null);
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [activeTestimonialTab, setActiveTestimonialTab] = useState<"mentor" | "founder">("mentor");
+  const [hasDraft] = useState(() => readMentorDraft() !== null); // an unfinished application can be resumed
+  const applyLabel = hasDraft ? "Continue Your Application" : "Register as a Mentor";
 
   return (
     <div className="min-h-screen" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
@@ -313,7 +458,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
               onClick={onApplyMentor}
               className="text-white text-xs font-bold px-5 py-2.5 rounded-md bg-[#4C808A] hover:bg-[#3d6b74] transition-all border border-white"
             >
-              Register as a Mentor
+              {applyLabel}
             </button>
           </div>
 
@@ -336,7 +481,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             <div className="pt-3 flex flex-col gap-2">
               <button onClick={onMentorLogin} className="text-white text-sm font-semibold py-2 rounded-md border border-white">Mentor Login</button>
               <button onClick={onApplyMentor} className="text-white text-sm font-bold py-2 rounded-md bg-[#4C808A] border border-white">
-                Register as a Mentor
+                {applyLabel}
               </button>
             </div>
           </div>
@@ -395,7 +540,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             {/* Main large image */}
             <div className="relative rounded-md overflow-hidden border border-white/10 shadow-2xl" style={{ height: 420 }}>
               <img
-                src="https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=700&h=500&fit=crop&auto=format"
+                src="/images/mentors-hero.jpg"
                 alt="Mentorship in action"
                 className="w-full h-full object-cover"
               />
@@ -452,7 +597,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
               <h2 className="text-white mb-4" style={{ fontSize: "clamp(1.5rem, 3vw, 2.25rem)", fontWeight: 700 }}>
                 Who Can Register as a Mentor?
               </h2>
-              <p className="text-white/60 text-sm leading-relaxed mb-6">
+              <p className="text-white/85 text-sm leading-relaxed mb-6">
                 If you have built experience, solved real problems and achieved results in your field, you have everything it takes. We welcome professionals from all sectors and backgrounds.
               </p>
               <button
@@ -512,7 +657,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
         <div
           aria-hidden="true"
           className="absolute inset-0 bg-cover bg-center lg:bg-fixed"
-          style={{ backgroundImage: "url('https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=1920&q=80&auto=format&fit=crop')" }}
+          style={{ backgroundImage: "url('/images/mentor-lifecycle-bg.jpg')" }}
         />
         {/* Dark brand overlay for readability */}
         <div
@@ -526,7 +671,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
         <div className="relative z-10 max-w-[1400px] mx-auto px-4 lg:px-8">
           <div className="text-center mb-14">
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-md border border-white/20 mb-4" style={{ background: "#4C808A" }}>
-              <span className="text-white text-xs font-semibold tracking-widest uppercase">Featured</span>
+              <span className="text-white text-xs font-semibold tracking-widest uppercase">Your Journey</span>
             </div>
             <h2 className="text-white mb-3" style={{ fontSize: "clamp(1.75rem, 3.5vw, 2.75rem)", fontWeight: 700 }}>
               The Mentor Lifecycle
@@ -565,7 +710,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
       </section>
 
       {/* ── 7. Mentorship Models ── */}
-      <section className="py-20 bg-white" id="programs">
+      <section className="py-20 bg-white" id="mentorship-models">
         <div className="max-w-[1400px] mx-auto px-4 lg:px-8">
           <div className="text-center mb-12">
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-md border border-[#4C808A]/30 mb-4" style={{ background: "#4C808A" }}>
@@ -575,7 +720,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
               Mentorship Models
             </h2>
             <p className="text-[#6b7280] text-sm max-w-xl mx-auto">
-              Choose how you engage. Multiple models available to fit your schedule and expertise.
+              Choose how you engage. Flexible models to fit your schedule and expertise.
             </p>
           </div>
 
@@ -597,6 +742,9 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
           </div>
         </div>
       </section>
+
+      {/* ── Mentor Matching Preview ── */}
+      <MatchingPreview onApplyMentor={onApplyMentor} />
 
       {/* ── 8. Incubation and Acceleration Programs (removed) ── */}
       {false && <section className="py-20 bg-[#f8f9fb]">
@@ -680,7 +828,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             <h2 className="text-white mb-3" style={{ fontSize: "clamp(1.5rem, 3vw, 2.25rem)", fontWeight: 700 }}>
               Areas of Expertise Needed
             </h2>
-            <p className="text-white/50 text-sm max-w-xl mx-auto">
+            <p className="text-white/80 text-sm max-w-xl mx-auto">
               Click any area to see how mentors in that field contribute to our programs.
             </p>
           </div>
@@ -690,9 +838,11 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
               <button
                 key={area}
                 onClick={() => setActiveExpertise(activeExpertise === area ? null : area)}
-                className="px-4 py-2.5 rounded-md text-xs font-semibold text-white transition-all shadow-sm hover:opacity-90"
+                className="px-4 py-2.5 rounded-md text-xs font-semibold transition-all shadow-sm hover:opacity-90"
+                aria-pressed={activeExpertise === area}
                 style={{
-                  background: activeExpertise === area ? "#2d3250" : "#4C808A",
+                  background: activeExpertise === area ? "#FFFFFF" : "#4C808A",
+                  color: activeExpertise === area ? "#3B4167" : "#FFFFFF",
                 }}>
                 {area}
               </button>
@@ -700,15 +850,31 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
           </div>
 
           {activeExpertise && (
-            <div className="mt-6 max-w-xl mx-auto bg-white/10 rounded-md p-5 border border-white/20 text-center">
-              <div className="text-[#4C808A] text-xs font-bold tracking-widest uppercase mb-2">{activeExpertise}</div>
-              <p className="text-white/70 text-sm">
-                Mentors with expertise in <strong className="text-white">{activeExpertise}</strong> are currently needed across our Incubation, Acceleration and Bootcamp programs. Your knowledge directly shapes the trajectory of local entrepreneurs.
+            <div className="mt-6 max-w-2xl mx-auto bg-white/10 rounded-md p-5 border border-white/20 text-center" role="region" aria-live="polite">
+              <div className="text-[#A9D3DB] text-xs font-bold tracking-widest uppercase mb-2">{activeExpertise}</div>
+              <p className="text-white/90 text-sm">
+                Mentors with expertise in <strong className="text-white">{activeExpertise}</strong> are needed across our Incubation, Acceleration and Bootcamp programs.
               </p>
-              <button onClick={onApplyMentor}
-                className="mt-4 inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-[#4C808A] text-white text-xs font-bold border border-white hover:bg-[#3d6b74] transition-all">
-                Apply as {activeExpertise} Mentor
-              </button>
+              <div className="mt-4 flex flex-wrap justify-center items-center gap-2">
+                <span className="text-white text-[10px] font-semibold uppercase tracking-wide">Roles that fit:</span>
+                {(rolesByArea[activeExpertise] ?? []).map((r) => (
+                  <span key={r} className="px-2.5 py-1 rounded-md bg-white text-[#3B4167] text-[10px] font-bold">{r}</span>
+                ))}
+              </div>
+              <p className="mt-3 text-white text-xs">
+                {featuredMentors.filter((m) => m.expertise.includes(activeExpertise)).length > 0
+                  ? `${featuredMentors.filter((m) => m.expertise.includes(activeExpertise)).length} featured mentor(s) already cover this area. See them highlighted below.`
+                  : "No featured mentor covers this area yet, so your expertise would fill a real gap."}
+              </p>
+              <div className="mt-4 flex flex-wrap justify-center gap-3">
+                <button onClick={onApplyMentor}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-[#4C808A] text-white text-xs font-bold border border-white hover:bg-[#3d6b74] transition-all">
+                  Apply as {activeExpertise} Mentor
+                </button>
+                <a href="#meet-our-mentors" className="inline-flex items-center px-5 py-2.5 rounded-md text-white text-xs font-bold border border-white/60 hover:bg-white/10 transition-all">
+                  See mentors in this area
+                </a>
+              </div>
             </div>
           )}
         </div>
@@ -726,9 +892,15 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             </h2>
           </div>
 
+          {activeExpertise && (
+            <div className="mb-6 flex items-center justify-center gap-3 text-xs text-[#3B4167]">
+              <span>Highlighting mentors with expertise in <strong>{activeExpertise}</strong></span>
+              <button onClick={() => setActiveExpertise(null)} className="px-3 py-1 rounded-md border border-[#3B4167]/30 font-semibold hover:bg-[#3B4167] hover:text-white transition-all">Clear</button>
+            </div>
+          )}
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {featuredMentors.map((m) => (
-              <div key={m.name} className="bg-[#f8f9fb] rounded-md overflow-hidden border border-[#3B4167]/10 hover:shadow-xl hover:-translate-y-2 hover:border-[#4C808A]/60 transition-all duration-300 group">
+              <div key={m.name} className={`bg-[#f8f9fb] rounded-md overflow-hidden border hover:shadow-xl hover:-translate-y-2 hover:border-[#4C808A]/60 transition-all duration-300 group ${activeExpertise ? (m.expertise.includes(activeExpertise) ? "border-[#4C808A] ring-2 ring-[#4C808A]/40" : "opacity-40 border-[#3B4167]/10") : "border-[#3B4167]/10"}`}>
                 <div className="relative h-44">
                   <img src={m.photo} alt={m.name} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
                   <div className="absolute inset-0 bg-gradient-to-t from-[#3B4167]/70 to-transparent" />
@@ -741,12 +913,16 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
                   <p className="text-[#4C808A] text-xs mb-1">{m.title}</p>
                   <p className="text-[#6b7280] text-[10px] mb-3">{m.org}</p>
                   <div className="flex flex-wrap gap-1 mb-3">
-                    {m.expertise.filter(e => !isRemovedBadge(e)).slice(0, 2).map((e) => (
+                    {m.expertise.filter(e => !isRemovedBadge(e)).map((e) => (
                       <span key={e} className="px-2 py-0.5 rounded-md text-white text-[9px] font-semibold" style={{ background: "#4C808A" }}>{e}</span>
                     ))}
                   </div>
-                  <div className="grid grid-cols-3 gap-1 text-center border-t border-[#3B4167]/10 pt-3">
-                    {[{ v: `${m.years}y`, l: "Experience" }, { v: m.industries.length, l: "Sectors" }, { v: m.startups, l: "Startups" }].map(({ v, l }) => (
+                  <div className="mb-3">
+                    <div className="text-[#6b7280] text-[9px] font-semibold uppercase tracking-wide mb-1">Industries supported</div>
+                    <p className="text-[#3B4167] text-[10px]">{m.industries.join(", ")}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 text-center border-t border-[#3B4167]/10 pt-3">
+                    {[{ v: `${m.years} years`, l: "Experience" }, { v: m.startups, l: "Startups mentored" }].map(({ v, l }) => (
                       <div key={l}>
                         <div className="text-[#3B4167] font-bold text-xs">{v}</div>
                         <div className="text-[#6b7280] text-[9px]">{l}</div>
@@ -870,19 +1046,22 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             </h2>
           </div>
 
+          {upcomingOpportunities().length === 0 && (
+            <p className="text-center text-[#6b7280] text-sm">No opportunities are scheduled right now. Register as a mentor to be notified when new ones open.</p>
+          )}
           <div className="flex flex-wrap justify-center gap-4">
-            {opportunities.map((o) => (
+            {upcomingOpportunities().map((o) => (
               <div key={o.title} className="w-full sm:w-[calc(50%-8px)] lg:w-[calc(25%-12px)] bg-[#f8f9fb] rounded-md p-5 border border-[#3B4167]/10 hover:border-[#4C808A]/40 hover:shadow-md transition-all flex flex-col">
                 <span className="inline-block px-2.5 py-0.5 rounded-md text-white text-[9px] font-bold uppercase tracking-wide mb-3 self-start" style={{ background: "#4C808A" }}>
                   {o.tag}
                 </span>
                 <h3 className="text-[#3B4167] font-bold text-sm mb-3 flex-1">{o.title}</h3>
                 <div className="space-y-1.5 text-[10px] text-[#6b7280]">
-                  <div className="flex items-center gap-2"><Calendar className="w-3 h-3" /> {o.date}</div>
+                  <div className="flex items-center gap-2"><Calendar className="w-3 h-3" /> {formatOppDate(o.iso)}</div>
                   <div className="flex items-center gap-2"><Clock className="w-3 h-3" /> {o.time}</div>
                   <div className="flex items-center gap-2"><MapPin className="w-3 h-3" /> {o.location}</div>
                 </div>
-                <button className="mt-4 w-full py-2 rounded-md bg-[#3B4167] text-white text-xs font-bold hover:bg-[#2c3150] transition-all">
+                <button onClick={onApplyMentor} className="mt-4 w-full py-2 rounded-md bg-[#3B4167] text-white text-xs font-bold hover:bg-[#2c3150] transition-all">
                   Register Interest
                 </button>
               </div>
@@ -943,7 +1122,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
             <h2 className="text-white mb-3" style={{ fontSize: "clamp(1.5rem, 3vw, 2.25rem)", fontWeight: 700 }}>
               Mentor Recognition Program
             </h2>
-            <p className="text-white/50 text-sm max-w-xl mx-auto">
+            <p className="text-white/80 text-sm max-w-xl mx-auto">
               Your contribution is valued, celebrated and publicly acknowledged.
             </p>
           </div>
@@ -955,7 +1134,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
                   <Icon className="w-5 h-5 text-white" />
                 </div>
                 <h3 className="text-white font-bold text-xs mb-1">{title}</h3>
-                <p className="text-white/85 text-[10px] leading-relaxed">{desc}</p>
+                <p className="text-white text-[10px] leading-relaxed">{desc}</p>
               </div>
             ))}
           </div>
@@ -979,6 +1158,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
               <div key={i} className="rounded-md border border-[#3B4167]/10 overflow-hidden bg-[#f8f9fb]">
                 <button
                   onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                  aria-expanded={openFaq === i}
                   className="w-full flex items-center justify-between px-5 py-4 text-left"
                 >
                   <span className="text-[#3B4167] text-sm font-semibold pr-4">{q}</span>
@@ -1000,7 +1180,7 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
       </section>
 
       {/* ── 18. Final CTA ── */}
-      <section className="py-24 bg-[#0f1528] relative overflow-hidden" id="contact">
+      <section className="py-24 bg-[#0f1528] relative overflow-hidden" id="join">
         {/* Background accent */}
         <div className="absolute inset-0 opacity-10">
           <div className="absolute top-0 right-0 w-96 h-96 rounded-full" style={{ background: "#4C808A", filter: "blur(80px)" }} />
@@ -1022,13 +1202,13 @@ export function MentorsLandingPage({ onBack, onApplyMentor, onMentorLogin }: { o
               onClick={onApplyMentor}
               className="inline-flex items-center gap-2 px-8 py-3.5 rounded-md bg-[#4C808A] text-white font-bold text-sm border border-white hover:bg-[#3d6b74] transition-all shadow-lg shadow-[#4C808A]/30"
             >
-              Register as a Mentor
+              {applyLabel}
             </button>
           </div>
         </div>
       </section>
 
-      <Footer />
+      <div id="contact"><Footer /></div>
     </div>
   );
 }

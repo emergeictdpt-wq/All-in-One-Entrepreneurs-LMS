@@ -7,7 +7,7 @@ const links = {
   Support: ["Help Center", "Contact Us", "FAQs", "Community Forum", "Report an Issue"],
 };
 
-export function Footer() {
+export function Footer({ onNavigate }: { onNavigate?: (page: "about" | "incubation" | "acceleration") => void }) {
   return (
     <footer className="bg-[#1e2340] text-white">
       <div className="max-w-[1400px] mx-auto px-4 lg:px-8 pt-16 pb-8">
@@ -44,13 +44,20 @@ export function Footer() {
             <div key={category}>
               <h4 className="font-bold text-xs tracking-wide uppercase mb-4 text-white/90">{category}</h4>
               <ul className="space-y-2">
-                {items.map((item) => (
-                  <li key={item}>
-                    <a href="#" className="text-white/50 hover:text-[#4C808A] text-xs transition-colors">
-                      {item}
-                    </a>
-                  </li>
-                ))}
+                {items.map((item) => {
+                  const page = item === "About Us" ? "about" : item === "Incubation" ? "incubation" : item === "Acceleration" ? "acceleration" : null;
+                  return (
+                    <li key={item}>
+                      <a
+                        href="#"
+                        onClick={page && onNavigate ? (e) => { e.preventDefault(); onNavigate(page); } : undefined}
+                        className="text-white/50 hover:text-[#4C808A] text-xs transition-colors"
+                      >
+                        {item}
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           ))}

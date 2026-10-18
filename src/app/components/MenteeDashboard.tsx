@@ -1,14 +1,20 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
-  Home, User, Target, Calendar, CheckSquare, BookOpen, LogOut,
+  Home, User, Target, Calendar, CheckSquare, Square, BookOpen, LogOut,
   Bell, ChevronRight, MessageCircle, Star, Clock, Flag,
   TrendingUp, Award, AlertCircle, Send, Download, RefreshCw,
-  Zap, CheckCircle, Circle, Play, X, Plus, BarChart2, Map
+  Zap, Check, Circle, Play, X, Plus, BarChart2, Map
 } from "lucide-react";
 import { toast } from "sonner";
 import { DemoTools } from "./DemoTools";
-import { useProgramme, RESOURCES as LIBRARY, downloadResource, daysBetween, fmtDate, fmtDateY, fmtDue, todayISO, fmtBooking, countdown, isOverdue, isLiveBooking, awaitingLog, type Pair } from "../data/programmeStore";
-import { addDays } from "../data/clock";
+import { useProgramme, RESOURCES as LIBRARY, downloadResource, daysBetween, fmtDate, fmtDateY, fmtDue, todayISO, fmtBooking, countdown, isOverdue, isLiveBooking, awaitingLog, effectiveMilestones, type Pair } from "../data/programmeStore";
+import { addDays, nowDate } from "../data/clock";
+import { programmeWeek } from "../data/programmeLength";
+import { ROADMAP_STEPS, actionItems, currentCourse, journeyMetrics, recommendations, roadmap } from "../data/journey";
+import { sampleAnnouncements, sampleFunding } from "../data/announcements";
+import { certificateNumber, downloadCertificate } from "../data/certificate";
+import { EvidencePanel } from "./EvidencePanel";
+import { ActionTable, AnnouncementsCard, CertificatesCard, CommunityBoard, CommunityHighlights, FundingPage, HealthScore, LearningProgress, ProgrammeStatus, ProgressOverview, QuickActions, QuickStats, RecommendationsCard, RoadmapCard, WelcomeBanner } from "./MenteeSections";
 import { useDirectory, type Person } from "../data/directory";
 import { WaitingForMatch } from "./WaitingForMatch";
 import { ProfileAvatar } from "./ProfileAvatar";
@@ -29,6 +35,16 @@ const mdStyles = `
 .md-card:nth-child(2){animation-delay:.05s;} .md-card:nth-child(3){animation-delay:.1s;} .md-card:nth-child(4){animation-delay:.15s;}
 .md-nav-item { transition: all 0.2s; }
 .md-nav-item:hover { background: rgba(255,255,255,0.12) !important; }
+.md-nav-item:focus-visible, .md-root button:focus-visible, .md-root [role="button"]:focus-visible { outline: 2px solid #fff; outline-offset: 2px; box-shadow: 0 0 0 4px #3B4167; }
+@media (max-width: 1100px) { .md-ov { grid-template-columns: minmax(0, 1fr) !important; } }
+@media (max-width: 860px) {
+  .md-root { flex-direction: column !important; height: auto !important; min-height: 100vh; overflow: visible !important; }
+  .md-side { width: 100% !important; max-height: none !important; }
+  .md-nav { display: flex !important; overflow-x: auto; flex: none !important; }
+  .md-nav .md-nav-item { white-space: nowrap; width: auto !important; flex-shrink: 0; }
+  .md-r4, .md-r3, .md-r2, .md-r12 { grid-template-columns: minmax(0, 1fr) !important; } .md-ov { grid-template-columns: minmax(0, 1fr) !important; }
+  .md-scroll { overflow-y: visible !important; }
+}
 .md-nav-item.active { background: rgba(255,255,255,0.18) !important; border-left: 3px solid #fff !important; }
 `;
 
@@ -52,16 +68,15 @@ function RingProgress({ pct, size = 80, stroke = 7, color = TEAL, label = "" }: 
   );
 }
 
-type NavSection = "overview" | "mentor" | "goals" | "sessions" | "tasks" | "resources" | "profile";
+type NavSection = "overview" | "mentor" | "goals" | "sessions" | "tasks" | "resources" | "community" | "funding" | "profile";
 
 // Contact details are not part of the programme store yet; only the demo mentee has them.
-const TOTAL_WEEKS = 24;
 const initials = (n: string) => n.replace(/^(Dr\.|Prof\.)\s*/, "").split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
 const TYPE_ICON: Record<string, typeof BookOpen> = { Template: BarChart2, Guide: Map, Checklist: CheckSquare, Workbook: BookOpen };
 
 const STATUS_COLORS: Record<string, string> = { "on-track": "#059669", "at-risk": "#f59e0b", "stalled": "#ef4444", "complete": "#059669", "proposed": "#94a3b8" };
 const STATUS_LABELS: Record<string, string> = { "on-track": "ON TRACK", "at-risk": "AT RISK", "complete": "COMPLETE ✓", "proposed": "PROPOSED" };
-const TASK_STATUS_COLORS: Record<string, string> = { "done": "#059669", "in-progress": TEAL, "pending": "#9ca3af" };
+const TASK_STATUS_COLORS: Record<string, string> = { "done": "#059669", "in-progress": TEAL, "pending": "#6b7280" };
 
 /** Report progress on a goal with a note. It counts only after the mentor confirms it. */
 function ProgressUpdate({ goal }: { goal: { id: string; pct: number; pending?: { pct: number; note: string }; log?: { at: string; from: number; to: number; note: string; adjusted?: boolean }[] } }) {
@@ -133,9 +148,11 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
   // The countdowns and "overdue" flags follow the clock; re-render every 30s so they stay current.
   const [, setTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setTick(n => n + 1), 30000); return () => clearInterval(t); }, []);
-  const weekInProgram = Math.max(1, Math.min(TOTAL_WEEKS, Math.floor(daysBetween(myPair.startDate, todayISO()) / 7) + 1));
+  // The length of the programme is the length of this founder's cohort (its start and end dates), not a fixed number.
+  const cohort = P.cohorts.find(c => c.id === myPair.cohortId);
+  const pw = programmeWeek({ start: myPair.startDate, today: todayISO(), cohort });
   const MENTEE = {
-    name: myName, venture: myPair.venture || me.businessName || "—", sector: myPair.sector || me.sector || "—", stage: myPair.stage || me.stage || "—", weekInProgram, totalWeeks: TOTAL_WEEKS,
+    name: myName, venture: myPair.venture || me.businessName || "—", sector: myPair.sector || me.sector || "—", stage: myPair.stage || me.stage || "—", weekInProgram: pw.week, totalWeeks: pw.total,
     email: me.email || "—", phone: me.phone || "—", city: me.district || "—",
   };
   const myCourses = P.courses.filter(c => c.pairId === pid);
@@ -151,7 +168,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
   const addToCal = () => toast.success(`Added to ${P.calendarProvider}`);
   const rateWidget = (id: string) => (
     <span onClick={e => e.stopPropagation()} style={{ fontSize: 10, color: "#888" }}>
-      Rate: {[1, 2, 3, 4, 5].map(n => <span key={n} onClick={() => { const r = P.rateSession(id, n); if (!r.ok) return toast.error(r.reason); toast.success("Thanks for rating this session"); }} style={{ cursor: "pointer", color: "#f59e0b", fontSize: 14 }}>☆</span>)}
+      Rate: {[1, 2, 3, 4, 5].map(n => <button key={n} aria-label={`Rate this session ${n} out of 5`} onClick={() => { const r = P.rateSession(id, n); if (!r.ok) return toast.error(r.reason); toast.success("Thanks for rating this session"); }} style={{ cursor: "pointer", color: "#b45309", fontSize: 14, background: "none", border: "none", padding: "0 1px" }}>☆</button>)}
     </span>
   );
   const [nav, setNav] = useState<NavSection>("overview");
@@ -173,6 +190,13 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
   }, []);
 
   useEffect(() => {
+    if (!newGoalOpen && !showRematch) return;
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { setNewGoalOpen(false); setShowRematch(false); } };
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, [newGoalOpen, showRematch]);
+
+  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [P.messages]);
 
@@ -183,12 +207,59 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
   const nb = P.nextBooking(pid);
   const cd = nb ? countdown(nb) : { days: 0, hrs: 0, min: 0 };
   const myBookings = P.bookings.filter(b => b.pairId === pid && isLiveBooking(b));
+  const notifs = P.eventsFor("mentee", pid ? [pid] : []);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+  const [question, setQuestion] = useState("");
   const [sched, setSched] = useState({ date: addDays(todayISO(), 7), time: "10:00", mode: "Virtual" as "Virtual" | "In-person" });
   const [goalForm, setGoalForm] = useState({ title: "", due: "", category: "Market" });
   const [rematchReason, setRematchReason] = useState("");
   const openRematch = P.rematches.find(r => r.pairId === pid && r.status === "open");
 
-  const prog = Math.round((MENTEE.weekInProgram / MENTEE.totalWeeks) * 100);
+  const weekText = MENTEE.totalWeeks != null ? `Week ${MENTEE.weekInProgram} of ${MENTEE.totalWeeks}` : `Week ${MENTEE.weekInProgram}`;
+
+  // Everything below is worked out from this founder's own records (data/journey.ts)
+  const jm = journeyMetrics({ pair: myPair, goals: P.goals, tasks: TASKS, courses: P.courses, sessions: P.sessions, stage: MENTEE.stage });
+  const rm = roadmap(myPair, P.goals, MENTEE.stage);
+  const stepNow = rm.current ? ROADMAP_STEPS.indexOf(rm.current as (typeof ROADMAP_STEPS)[number]) : rm.steps.every(x => x.state === "done") ? ROADMAP_STEPS.length : null;
+  const course = currentCourse(myCourses);
+  const today = todayISO();
+  const myDownloads = new Set(P.downloads.filter(d => d.pairId === pid).map(d => d.resourceId));
+  const myInterest = new Set(P.fundingInterests.filter(f => f.pairId === pid).map(f => f.oppId));
+  const opps = useMemo(() => sampleFunding(), [today]);
+  const fundingSoon = opps.map(o => ({ id: o.id, title: o.title, days: daysBetween(today, o.deadline), interested: myInterest.has(o.id) }));
+  const mentorFirst = MENTOR.name.replace(/^(Dr\.|Prof\.|Mr\.|Mrs\.|Ms\.)\s*/, "").split(" ")[0];
+  const m5 = effectiveMilestones(myPair, P.goals);
+  const nextMilestone = ([["registered", "Business registration"], ["mvp", "MVP built"], ["firstRevenue", "First revenue"], ["grant", "Grant secured"], ["graduated", "Graduation"]] as const).find(([k]) => !m5[k])?.[1] ?? null;
+  const hour = nowDate().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const announcements = [
+    ...sampleAnnouncements(),
+    ...P.shares.filter(x => x.pairId === pid).map(x => ({ id: x.id, kind: "Resource", title: `${x.by} shared: ${LIBRARY.find(r => r.id === x.resourceId)?.title ?? "a resource"}`, body: "Find it in Resources.", at: x.at })),
+  ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 5);
+  const certs = myCourses.filter(c => c.total > 0 && c.done >= c.total);
+  const cohortPosts = P.posts.filter(x => x.cohortId === myPair.cohortId);
+  const peers = P.pairs.filter(x => x.cohortId === myPair.cohortId && x.id !== pid);
+  // (not a Map: lucide's `Map` icon is imported in this file)
+  const useCount: Record<string, number> = {};
+  [...P.downloads.map(d => d.resourceId), ...P.shares.map(x => x.resourceId)].forEach(id => { useCount[id] = (useCount[id] ?? 0) + 1; });
+  const popular = Object.entries(useCount).sort((a, b) => b[1] - a[1]).slice(0, 3).flatMap(([id, n]) => { const r = LIBRARY.find(x => x.id === id); return r ? [{ id, title: r.title, n }] : []; });
+  const recs = recommendations({ pair: myPair, mentorFirst, stage: MENTEE.stage, tasks: TASKS, goals: P.goals, courses: myCourses, sessions: P.sessions, hasNextBooking: !!nb, downloadedIds: myDownloads, resources: LIBRARY, fundingSoon });
+  const actions = actionItems({ tasks: TASKS, goals: GOALS, courses: myCourses, nextBooking: nb ? { date: nb.date, time: nb.time, mentor: MENTOR.name } : undefined });
+  const libraryByTag = (tags: string[]) => LIBRARY.filter(r => tags.includes(r.tag));
+
+  // Match factors come from the two profiles. Nothing here is invented: a factor with no data says so.
+  const has = (list: string[] | undefined, v: string) => !!list?.length && !!v && v !== "—" && list.some(x => x.toLowerCase().includes(v.toLowerCase()) || v.toLowerCase().includes(x.toLowerCase()));
+  const matchFactors: { label: string; ok: boolean | null; detail: string }[] = [
+    { label: "Business stage",
+      ok: mentorP?.preferredStages?.length ? has(mentorP.preferredStages, MENTEE.stage) : null,
+      detail: mentorP?.preferredStages?.length ? (has(mentorP.preferredStages, MENTEE.stage) ? `${MENTOR.name.split(" ")[0]} likes to mentor ${MENTEE.stage} stage founders.` : `${MENTOR.name.split(" ")[0]} listed ${mentorP.preferredStages.join(", ")}; you are at ${MENTEE.stage}.`) : "Your mentor has not listed preferred stages." },
+    { label: "Industry",
+      ok: mentorP?.industries?.length ? has(mentorP.industries, MENTEE.sector) : null,
+      detail: mentorP?.industries?.length ? (has(mentorP.industries, MENTEE.sector) ? `Experience in ${MENTEE.sector}.` : `Industries listed: ${mentorP.industries.join(", ")}.`) : "Your mentor has not listed industries." },
+    { label: "Expertise you need",
+      ok: myPair.expertise ? true : null,
+      detail: myPair.expertise ? `Matched on ${myPair.expertise}.` : "No expertise focus was recorded for this match." },
+  ];
 
   const NAV_ITEMS: { key: NavSection; icon: React.ReactNode; label: string }[] = [
     { key: "overview", icon: <Home size={16} />, label: "Overview" },
@@ -210,15 +281,17 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
     { key: "sessions", icon: <Calendar size={16} />, label: "Sessions" },
     { key: "tasks", icon: <CheckSquare size={16} />, label: "Tasks and Learning" },
     { key: "resources", icon: <BookOpen size={16} />, label: "Resources" },
+    { key: "community", icon: <MessageCircle size={16} />, label: "Community" },
+    { key: "funding", icon: <TrendingUp size={16} />, label: "Funding" },
     { key: "profile", icon: <User size={16} />, label: "My Profile" },
   ];
 
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "Verdana, Geneva, Tahoma, sans-serif", overflow: "hidden" }}>
+    <div className="md-root" style={{ display: "flex", height: "100vh", fontFamily: "Verdana, Geneva, Tahoma, sans-serif", overflow: "hidden" }}>
       <style>{mdStyles}</style>
 
       {/* SIDEBAR */}
-      <div style={{ width: 220, background: GRAD, position: "relative", display: "flex", flexDirection: "column", flexShrink: 0, zIndex: 10, overflowY: "auto" }}>
+      <div className="md-side" style={{ width: 220, background: GRAD, position: "relative", display: "flex", flexDirection: "column", flexShrink: 0, zIndex: 10, overflowY: "auto" }}>
         <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
           {/* Logo */}
           <div style={{ padding: "20px 16px 14px", borderBottom: "1px solid rgba(255,255,255,0.12)" }}>
@@ -232,10 +305,10 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
           </div>
 
           {/* Nav */}
-          <nav style={{ flex: 1, padding: "10px 10px" }}>
+          <nav className="md-nav" aria-label="Mentee portal sections" style={{ flex: 1, padding: "10px 10px" }}>
             {NAV_ITEMS.map(item => (
               <button key={item.key} className={`md-nav-item${nav === item.key ? " active" : ""}`}
-                onClick={() => setNav(item.key)}
+                onClick={() => setNav(item.key)} aria-current={nav === item.key ? "page" : undefined}
                 style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", background: "transparent", border: "none", borderLeft: "3px solid transparent", borderRadius: 3, color: nav === item.key ? "#fff" : "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 12, marginBottom: 2, textAlign: "left" }}>
                 {item.icon}
                 {item.label}
@@ -246,10 +319,13 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
           {/* Program progress mini */}
           <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
             <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 9, margin: "0 0 5px" }}>PROGRAM PROGRESS</p>
-            <div style={{ height: 4, background: "rgba(255,255,255,0.15)", borderRadius: 3 }}>
-              <div style={{ height: "100%", width: `${prog}%`, background: "#fff", borderRadius: 3, transition: "width 1s ease" }} />
-            </div>
-            <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 9, margin: "4px 0 0" }}>Week {MENTEE.weekInProgram} of {MENTEE.totalWeeks} {prog}%</p>
+            {pw.pct != null && (
+              <div style={{ height: 4, background: "rgba(255,255,255,0.15)", borderRadius: 3 }}>
+                <div style={{ height: "100%", width: `${pw.pct}%`, background: "#fff", borderRadius: 3, transition: "width 1s ease" }} />
+              </div>
+            )}
+            <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 9, margin: "4px 0 0" }}>{weekText}{pw.pct != null ? ` ${pw.pct}%` : ""}</p>
+            {pw.total == null && <p style={{ color: "rgba(255,255,255,0.5)", fontSize: 8, margin: "2px 0 0" }}>Cohort end date not set</p>}
           </div>
 
           <DemoTools role="mentee" />
@@ -277,16 +353,17 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
             {/* Notifications */}
             <div ref={notifRef} style={{ position: "relative" }}>
               <button onClick={() => setNotifOpen(o => !o)}
+                aria-label={notifs.length ? `Notifications (${notifs.length})` : "Notifications"} aria-expanded={notifOpen}
                 style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "7px 10px", cursor: "pointer", color: "#fff", position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <Bell size={16} color="#fff" />
-                <span style={{ position: "absolute", top: 4, right: 5, width: 7, height: 7, background: "#f59e0b", borderRadius: "50%", border: "2px solid #4C808A" }} />
+                {notifs.length > 0 && <span style={{ position: "absolute", top: 4, right: 5, width: 7, height: 7, background: "#f59e0b", borderRadius: "50%", border: "2px solid #4C808A" }} />}
               </button>
               {notifOpen && (
                 <div style={{ position: "absolute", right: 0, top: 44, width: 260, background: "#fff", borderRadius: 3, boxShadow: "0 8px 32px rgba(0,0,0,0.16)", zIndex: 999, overflow: "hidden" }}>
                   <div style={{ padding: "12px 16px", borderBottom: "1px solid #f0f0f0" }}>
                     <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: NAVY }}>Notifications</p>
                   </div>
-                  {(P.eventsFor("mentee", pid ? [pid] : []).length ? P.eventsFor("mentee", pid ? [pid] : []).map(e => ({ text: e.text, time: e.time, dot: e.tone === "good" ? "#059669" : e.tone === "warn" ? "#f59e0b" : TEAL })) : [{ text: "No new notifications", time: "", dot: "#ddd" }]).map((n, i) => (
+                  {(notifs.length ? notifs.map(e => ({ text: e.text, time: e.time, dot: e.tone === "good" ? "#059669" : e.tone === "warn" ? "#f59e0b" : TEAL })) : [{ text: "No new notifications", time: "", dot: "#ddd" }]).map((n, i) => (
                     <div key={i} style={{ padding: "10px 16px", borderBottom: "1px solid #f7f7f7", display: "flex", gap: 10, alignItems: "flex-start" }}>
                       <span style={{ width: 8, height: 8, borderRadius: "50%", background: n.dot, marginTop: 4, flexShrink: 0 }} />
                       <div>
@@ -304,13 +381,23 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
         </div>
 
         {/* CONTENT */}
-        <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
+        <div className="md-scroll" style={{ flex: 1, overflowY: "auto", padding: 20 }}>
 
           {/* ── OVERVIEW ── */}
           {nav === "overview" && (
-            <div style={{ display: "grid", gap: 16 }}>
+            <div className="md-ov" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 300px", gap: 16, alignItems: "start" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 16, minWidth: 0 }}>
+              <WelcomeBanner greeting={greeting} first={myName.replace(/^(Dr\.|Prof\.|Mr\.|Mrs\.|Ms\.)\s*/, "").split(" ")[0]} cohort={cohortLabel} overall={jm.overall} nextMilestone={nextMilestone} canLearn={!!course} onGo={setNav} />
+              <ProgrammeStatus rows={[
+                { label: "Programme", value: P.projectName(myPair.programId) ?? "—" },
+                { label: "Status", value: cohort?.status ?? "—" },
+                { label: "Business stage", value: MENTEE.stage },
+                { label: "Current module", value: course ? `${course.title} (module ${course.done + 1} of ${course.total})` : myCourses.length ? "All courses finished" : "No course assigned" },
+                { label: "Mentor", value: MENTOR.name },
+                { label: "Programme week", value: weekText },
+              ]} />
               {/* KPI Row */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+              <div className="md-r4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
                 {[
                   { label: "Sessions Done", val: String(MENTOR.sessionCount), sub: `with ${MENTOR.name.split(" ").slice(0, 2).join(" ")}`, icon: <Calendar size={18} color="#fff" /> },
                   { label: "Goals On Track", val: `${GOALS.filter(g => g.status === "on-track" || g.status === "complete").length}/${GOALS.filter(g => g.status !== "proposed").length}`, sub: `${GOALS.filter(g => g.status === "at-risk").length} at risk`, icon: <img src="/icons/goals.png" alt="" aria-hidden="true" width={20} height={20} style={{ display: "block" }} /> },
@@ -330,8 +417,22 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                 ))}
               </div>
 
+              <ActionTable items={actions} onGo={setNav} />
+              <ProgressOverview items={[
+                { label: "Overall journey progress", value: jm.overall, why: "average of the five bars below" },
+                { label: "Learning progress", value: jm.learning, sub: `${jm.counts.modulesDone} of ${jm.counts.modulesTotal} modules` },
+                { label: "Assignments completed", value: jm.assignments, sub: `${jm.counts.tasksDone} of ${jm.counts.tasksTotal} tasks` },
+                { label: "Mentoring sessions completed", value: jm.sessions, sub: `${jm.counts.sessionsHeld} held, about ${jm.counts.sessionsExpected} expected so far`, why: "target: one every two weeks" },
+                { label: "Milestones achieved", value: jm.milestones, sub: `${jm.counts.milestonesAchieved} of ${jm.counts.milestonesTotal}` },
+                { label: "Business readiness", value: jm.health.readiness, why: "see Business health score" },
+              ]} />
+              <RoadmapCard steps={rm.steps} current={rm.current} />
+              <LearningProgress course={course} enrolled={jm.counts.coursesEnrolled} completed={jm.counts.coursesCompleted} rate={jm.learning} onContinue={() => setNav("tasks")} />
+              <RecommendationsCard items={recs} onGo={setNav} />
+              <AnnouncementsCard items={announcements} />
+
               {/* Recent Session + Goal Progress */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div className="md-r2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                   <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 12px" }}>Last Session Recap</p>
                   {SESSIONS[0] ? (<>
@@ -355,6 +456,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
 
                 <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                   <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 12px" }}>Goal Progress Snapshot</p>
+                  {GOALS.length === 0 && <p style={{ color: "#555", fontSize: 11, margin: 0 }}>No goals yet. Propose your first one in Goals and Milestones.</p>}
                   {GOALS.map(g => (
                     <div key={g.id} style={{ marginBottom: 10 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
@@ -368,6 +470,19 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                   ))}
                 </div>
               </div>
+            </div>
+            <aside aria-label="Overview sidebar" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 16, minWidth: 0 }}>
+              <QuickStats stats={[
+                { label: "Courses completed", value: String(jm.counts.coursesCompleted) },
+                { label: "Assignments submitted", value: String(jm.counts.tasksDone) },
+                { label: "Mentorship hours", value: String(jm.counts.mentoringHours) },
+                { label: "Resources downloaded", value: String(myDownloads.size ? P.downloads.filter(d => d.pairId === pid).length : 0) },
+                { label: "Community posts", value: String(cohortPosts.filter(x => x.authorId === (myPair.menteeId ?? myPair.id)).length) },
+              ]} />
+              <QuickActions onGo={setNav} />
+              <HealthScore h={jm.health} />
+              <CommunityHighlights posts={cohortPosts} popular={popular} peers={peers.length} onGo={setNav} />
+            </aside>
             </div>
           )}
 
@@ -399,7 +514,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                   </div>
                 </div>
                 <div style={{ position: "relative", zIndex: 1, display: "flex", gap: 10, marginTop: 16 }}>
-                  <button onClick={() => setNav("mentor")}
+                  <button onClick={() => { chatInputRef.current?.focus(); chatInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }); }}
                     style={{ flex: 1, background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "9px 14px", color: "#fff", cursor: "pointer", fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontWeight: 600 }}>
                     <MessageCircle size={13} color="#fff" /> <span style={{ color: "#fff" }}>Message Mentor</span>
                   </button>
@@ -411,22 +526,16 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
               </div>
 
               {/* Match Score Breakdown + Message Panel */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1.6fr", gap: 16 }}>
+              <div className="md-r12" style={{ display: "grid", gridTemplateColumns: "1fr 1.6fr", gap: 16 }}>
                 <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-                  <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Match Score Breakdown</p>
-                  {[
-                    { label: "Expertise Fit", pct: 95 },
-                    { label: "Stage Alignment", pct: 88 },
-                    { label: "Industry Overlap", pct: 92 },
-                    { label: "Working Style", pct: 85 },
-                  ].map(m => (
-                    <div key={m.label} style={{ marginBottom: 10 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                        <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{m.label}</p>
-                        <p style={{ color: TEAL, fontSize: 10, fontWeight: 700, margin: 0 }}>{m.pct}%</p>
-                      </div>
-                      <div style={{ height: 5, background: "#f0f0f0", borderRadius: 3 }}>
-                        <div style={{ height: "100%", width: `${m.pct}%`, background: TEAL, borderRadius: 3 }} />
+                  <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 4px" }}>Why you were matched</p>
+                  <p style={{ color: "#888", fontSize: 9, margin: "0 0 12px" }}>Based on what you and {MENTOR.name.split(" ")[0]} told us when you applied.</p>
+                  {matchFactors.map(f => (
+                    <div key={f.label} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 10 }}>
+                      {f.ok === true ? <Check size={14} color="#059669" aria-hidden="true" /> : f.ok === false ? <AlertCircle size={14} color="#f59e0b" aria-hidden="true" /> : <Circle size={14} color="#bbb" aria-hidden="true" />}
+                      <div>
+                        <p style={{ color: NAVY, fontSize: 10, fontWeight: 700, margin: 0 }}>{f.label}<span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>{f.ok === true ? ": matches" : f.ok === false ? ": not a stated match" : ": not recorded"}</span></p>
+                        <p style={{ color: "#666", fontSize: 10, margin: "1px 0 0", lineHeight: 1.5 }}>{f.detail}</p>
                       </div>
                     </div>
                   ))}
@@ -460,10 +569,10 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                     <div ref={chatEndRef} />
                   </div>
                   <div style={{ padding: "10px 14px", borderTop: "1px solid #f0f0f0", display: "flex", gap: 8 }}>
-                    <input value={chatMsg} onChange={e => setChatMsg(e.target.value)}
+                    <input ref={chatInputRef} value={chatMsg} onChange={e => setChatMsg(e.target.value)} aria-label={`Message ${MENTOR.name}`}
                       onKeyDown={e => e.key === "Enter" && sendMsg()}
                       placeholder="Type a message..." style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: "8px 12px", fontSize: 11, outline: "none" }} />
-                    <button onClick={sendMsg} style={{ background: TEAL, border: "none", borderRadius: 3, padding: "8px 12px", cursor: "pointer", color: "#fff", display: "flex" }}>
+                    <button onClick={sendMsg} aria-label="Send message" style={{ background: TEAL, border: "none", borderRadius: 3, padding: "8px 12px", cursor: "pointer", color: "#fff", display: "flex" }}>
                       <Send size={14} />
                     </button>
                   </div>
@@ -473,9 +582,10 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
               {/* Session History */}
               <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Session History</p>
+                {SESSIONS.length === 0 && <p style={{ color: "#555", fontSize: 11, margin: 0 }}>No sessions have been logged yet.</p>}
                 {SESSIONS.map((s, i) => (
                   <div key={s.id} style={{ borderBottom: i < SESSIONS.length - 1 ? "1px solid #f0f0f0" : "none", paddingBottom: 12, marginBottom: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer" }} onClick={() => setExpandSession(expandSession === s.id ? null : s.id)}>
+                    <div role="button" tabIndex={0} aria-expanded={expandSession === s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", cursor: "pointer" }} onClick={() => setExpandSession(expandSession === s.id ? null : s.id)} onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setExpandSession(expandSession === s.id ? null : s.id); } }}>
                       <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                         <div style={{ width: 36, height: 36, borderRadius: 3, background: `${TEAL}18`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                           <Calendar size={14} color={TEAL} />
@@ -486,7 +596,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                         </div>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ color: "#f59e0b" }}>{s.rating ? "★".repeat(s.rating) : rateWidget(s.id)}</span>
+                        <span style={{ color: "#b45309" }} aria-label={s.rating ? `Rated ${s.rating} out of 5` : undefined}>{s.rating ? "★".repeat(s.rating) : rateWidget(s.id)}</span>
                         <ChevronRight size={12} color="#bbb" style={{ transform: expandSession === s.id ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
                       </div>
                     </div>
@@ -521,9 +631,10 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                 </button>
               </div>
 
+              {GOALS.length === 0 && <div style={{ background: "#fff", borderRadius: 3, padding: 18, color: "#555", fontSize: 11 }}>No goals yet. Use New Goal to propose one; your mentor reviews it before it counts.</div>}
               {GOALS.map(g => (
                 <div key={g.id} className="md-card" style={{ background: "#fff", borderRadius: 3, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
-                  <div style={{ padding: "14px 18px", cursor: "pointer" }} onClick={() => setExpandGoal(expandGoal === g.id ? null : g.id)}>
+                  <div role="button" tabIndex={0} aria-expanded={expandGoal === g.id} style={{ padding: "14px 18px", cursor: "pointer" }} onClick={() => setExpandGoal(expandGoal === g.id ? null : g.id)} onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setExpandGoal(expandGoal === g.id ? null : g.id); } }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <div>
                         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
@@ -595,10 +706,10 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                     <h2 style={{ color: "#fff", fontSize: 22, fontWeight: 800, margin: "0 0 4px" }}>{nb ? fmtBooking(nb) : "No session scheduled"}</h2>
                     <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 11, margin: "0 0 14px" }}>{nb ? <span style={{ display: "inline-flex", flexWrap: "wrap", columnGap: 10 }}><span>{nb.mode}</span>{nb.mode === "Virtual" ? <span>{P.videoProvider ?? "no video tool connected"}</span> : null}<span>{nb.durationMin} min</span></span> : "Propose a time below"}</p>
                     <div style={{ display: "flex", gap: 10 }}>
-                      <button onClick={joinCall} style={{ background: "#fff", border: "none", borderRadius: 3, padding: "9px 16px", cursor: "pointer", fontSize: 11, color: NAVY, fontWeight: 700, display: "flex", alignItems: "center", gap: 6, opacity: P.videoProvider ? 1 : 0.6 }}>
+                      <button onClick={joinCall} disabled={!nb} title={nb ? undefined : "Available once a session is scheduled"} style={{ background: "#fff", border: "none", borderRadius: 3, padding: "9px 16px", cursor: nb ? "pointer" : "not-allowed", fontSize: 11, color: NAVY, fontWeight: 700, display: "flex", alignItems: "center", gap: 6, opacity: nb && P.videoProvider ? 1 : 0.6 }}>
                         <Play size={13} /> {P.videoProvider ? `Join ${P.videoProvider}` : "Join Call"}
                       </button>
-                      {P.calendarProvider ? <button onClick={addToCal} style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "9px 16px", cursor: "pointer", fontSize: 11, color: "#fff", fontWeight: 600 }}>Add to {P.calendarProvider}</button> : <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 10, alignSelf: "center" }}>No calendar connected</span>}
+                      {P.calendarProvider && nb ? <button onClick={addToCal} style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "9px 16px", cursor: "pointer", fontSize: 11, color: "#fff", fontWeight: 600 }}>Add to {P.calendarProvider}</button> : <span style={{ color: "rgba(255,255,255,0.85)", fontSize: 10, alignSelf: "center" }}>{P.calendarProvider ? "" : "No calendar connected"}</span>}
                     </div>
                   </div>
                   {/* Countdown */}
@@ -618,24 +729,34 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
               {/* Prep Block */}
               <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 12px" }}>Session Preparation</p>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div className="md-r2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                   <div style={{ background: "#f8f9fb", borderRadius: 3, padding: 12 }}>
-                    <p style={{ color: TEAL, fontSize: 10, fontWeight: 700, margin: "0 0 6px" }}>WHAT TO BRING</p>
-                    {["Updated survey results (38/50 done)", "Draft pricing tiers", "Business registration update"].map((i, idx) => (
-                      <div key={idx} style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 4 }}>
-                        <ChevronRight size={10} color={TEAL} style={{ marginTop: 2 }} />
-                        <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{i}</p>
-                      </div>
-                    ))}
+                    <p style={{ color: "#2f6169", fontSize: 10, fontWeight: 700, margin: "0 0 6px" }}>WHAT TO BRING</p>
+                    {(() => {
+                      const bring = [...(SESSIONS[0]?.tasks ?? []), ...TASKS.filter(t => t.status !== "done").map(t => t.title)].filter((v, i, a) => a.indexOf(v) === i).slice(0, 5);
+                      return bring.length ? bring.map((i, idx) => (
+                        <div key={idx} style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 4 }}>
+                          <ChevronRight size={10} color={TEAL} style={{ marginTop: 2 }} />
+                          <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{i}</p>
+                        </div>
+                      )) : <p style={{ color: "#777", fontSize: 10, margin: 0 }}>Nothing assigned yet. Your open tasks and last session's action items will appear here.</p>;
+                    })()}
                   </div>
                   <div style={{ background: "#f8f9fb", borderRadius: 3, padding: 12 }}>
-                    <p style={{ color: "#f59e0b", fontSize: 10, fontWeight: 700, margin: "0 0 6px" }}>OPEN BLOCKERS</p>
-                    {["Farmers resistant to digital payment", "Not sure which grant to prioritise"].map((i, idx) => (
+                    <p style={{ color: "#92600a", fontSize: 10, fontWeight: 700, margin: "0 0 6px" }}>OPEN BLOCKERS</p>
+                    {me.blockers?.length ? me.blockers.map((i, idx) => (
                       <div key={idx} style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 4 }}>
                         <AlertCircle size={10} color="#f59e0b" style={{ marginTop: 2 }} />
                         <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{i}</p>
                       </div>
-                    ))}
+                    )) : <p style={{ color: "#777", fontSize: 10, margin: 0 }}>No blockers recorded. Use the box below to tell your mentor what you want to cover.</p>}
+                  </div>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <label htmlFor="mentee-question" style={{ display: "block", color: NAVY, fontSize: 10, fontWeight: 700, marginBottom: 4 }}>Questions for your mentor before the next session</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <textarea id="mentee-question" rows={2} value={question} onChange={e => setQuestion(e.target.value)} placeholder="e.g. How should I price my service for the first 10 customers?" style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: "8px 10px", fontSize: 11, resize: "vertical" }} />
+                    <button onClick={() => { if (!question.trim() || !pid) return toast.error("Write your question first"); P.sendMessage(pid, "mentee", `Question for our next session: ${question.trim()}`); setQuestion(""); toast.success("Sent to your mentor"); }} style={{ background: TEAL, border: "none", borderRadius: 3, padding: "8px 14px", color: "#fff", cursor: "pointer", fontSize: 11, fontWeight: 700, alignSelf: "flex-start" }}>Send</button>
                   </div>
                 </div>
               </div>
@@ -643,6 +764,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
               {/* Session History */}
               <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Past Sessions</p>
+                {SESSIONS.length === 0 && <p style={{ color: "#555", fontSize: 11, margin: 0 }}>No past sessions yet. Once your mentor logs a session, the notes and action items appear here.</p>}
                 {SESSIONS.map((s, i) => (
                   <div key={s.id} style={{ display: "flex", gap: 14, marginBottom: 14, borderBottom: i < SESSIONS.length - 1 ? "1px solid #f0f0f0" : "none", paddingBottom: 14 }}>
                     <div style={{ width: 40, height: 40, borderRadius: 3, background: `${TEAL}15`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -651,7 +773,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                     <div style={{ flex: 1 }}>
                       <div style={{ display: "flex", justifyContent: "space-between" }}>
                         <p style={{ color: NAVY, fontSize: 12, fontWeight: 600, margin: "0 0 3px" }}>{s.date}</p>
-                        <span style={{ color: "#f59e0b", fontSize: 12 }}>{s.rating ? "★".repeat(s.rating) : rateWidget(s.id)}</span>
+                        <span style={{ color: "#b45309", fontSize: 12 }} aria-label={s.rating ? `Rated ${s.rating} out of 5` : undefined}>{s.rating ? "★".repeat(s.rating) : rateWidget(s.id)}</span>
                       </div>
                       <p style={{ color: "#888", fontSize: 10, margin: "0 0 4px" }}>{s.mode} {s.duration} {s.topics.join(", ")}</p>
                       <p style={{ color: "#555", fontSize: 10, margin: 0, lineHeight: 1.5 }}>{s.notes}</p>
@@ -667,18 +789,20 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
             <div style={{ display: "grid", gap: 16 }}>
               <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Tasks and Assignments</p>
+                {TASKS.length === 0 && <p style={{ color: "#555", fontSize: 11, margin: 0 }}>No tasks assigned yet. Your mentor adds action items after each session.</p>}
                 {TASKS.map(t => (
                   <div key={t.id} style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 12, padding: "10px 12px", background: "#f8f9fb", borderRadius: 3 }}>
-                    <div style={{ marginTop: 2, cursor: "pointer" }} title="Toggle done" onClick={() => P.setTaskStatus(t.id, t.status === "done" ? "pending" : "done")}>
-                      {t.status === "done" ? <CheckCircle size={15} color="#059669" /> : <Circle size={15} color="#ccc" />}
-                    </div>
+                    <button style={{ marginTop: 2, cursor: "pointer", background: "none", border: "none", padding: 0 }} aria-pressed={t.status === "done"} aria-label={`${t.status === "done" ? "Mark not done" : "Mark done"}: ${t.title}`} onClick={() => P.setTaskStatus(t.id, t.status === "done" ? "pending" : "done")}>
+                      {t.status === "done" ? <CheckSquare size={15} color="#059669" /> : <Square size={15} color="#8a8f9c" />}
+                    </button>
                     <div style={{ flex: 1 }}>
                       <p style={{ color: t.status === "done" ? "#aaa" : NAVY, fontSize: 12, fontWeight: 600, margin: "0 0 3px", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</p>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <span style={{ fontSize: 9, color: "#999" }}>Due {fmtDue(t.due)}</span>
+                        <span style={{ fontSize: 9, color: isOverdue(t) ? "#b91c1c" : "#666", fontWeight: isOverdue(t) ? 700 : 400 }}>Due {fmtDue(t.due)}{isOverdue(t) ? " · OVERDUE" : ""}</span>
                         <span style={{ fontSize: 9, color: TASK_STATUS_COLORS[t.status], fontWeight: 700, textTransform: "uppercase" }}>{t.status}</span>
-                        <span style={{ fontSize: 9, color: "#bbb" }}>From: {t.from}</span>
+                        <span style={{ fontSize: 9, color: "#777" }}>From: {t.from}</span>
                       </div>
+                      <EvidencePanel task={t} canEdit={t.from !== "Learning Academy"} />
                     </div>
                   </div>
                 ))}
@@ -711,12 +835,38 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                   );
                 })}
               </div>
+
+              <CertificatesCard certs={certs.map(c => ({ id: c.id, title: c.title, modules: c.total, completedOn: c.completedAt }))}
+                onDownload={id => { const c = certs.find(x => x.id === id); if (!c) return; downloadCertificate({ founder: MENTEE.name, venture: MENTEE.venture, course: c.title, modules: c.total, completedOn: c.completedAt ? fmtDate(c.completedAt) : undefined, number: certificateNumber(c.id, myPair.menteeId ?? myPair.id) }); toast.success("Certificate downloaded"); }} />
             </div>
+          )}
+
+          {/* ── COMMUNITY ── */}
+          {nav === "community" && (
+            <CommunityBoard posts={cohortPosts} peers={peers} me={myName}
+              onPost={t => { const r = P.addPost(pid, t); if (!r.ok) { toast.error(r.reason); return false; } toast.success("Posted to your cohort"); return true; }}
+              onReply={(id, t) => { const r = P.addReply(id, pid, t); if (!r.ok) { toast.error(r.reason); return false; } return true; }} />
+          )}
+
+          {/* ── FUNDING ── */}
+          {nav === "funding" && (
+            <FundingPage opps={opps} stepNow={stepNow} interested={myInterest} investment={jm.health.investment}
+              onToggle={o => { const r = P.toggleFundingInterest(o.id, o.title, pid); if (!r.ok) return toast.error(r.reason); toast.success(myInterest.has(o.id) ? "Interest withdrawn" : "Your mentor has been told you want to apply"); }}
+              checklist={[
+                { label: "Business registered", done: m5.registered }, { label: "MVP built", done: m5.mvp }, { label: "First revenue", done: m5.firstRevenue }, { label: "Grant secured", done: m5.grant },
+                { label: "Completed tasks have evidence attached", done: jm.health.documentation != null && jm.health.documentation >= 80 },
+              ]}
+              templates={libraryByTag(["Funding", "Finance"]).map(r => (
+                <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 0", borderBottom: "1px solid #f3f4f6" }}>
+                  <span style={{ fontSize: 11, color: NAVY, fontWeight: 600 }}>{r.title} <span style={{ color: "#777", fontWeight: 400 }}>· {r.type}</span></span>
+                  <button onClick={() => { downloadResource(r); P.recordDownload(r.id, pid); toast.success(`Downloaded ${r.title}`); }} style={{ background: TEAL, color: "#fff", border: "none", borderRadius: 3, padding: "6px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}><Download size={11} aria-hidden="true" /> Download</button>
+                </div>
+              ))} />
           )}
 
           {/* ── RESOURCES ── */}
           {nav === "resources" && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+            <div className="md-r3" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
               {libraryRows.map(r => {
                 const Icon = TYPE_ICON[r.type] ?? BookOpen, shared = sharedIds.has(r.id);
                 return (
@@ -728,7 +878,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                     <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>{r.tag}</span>
                     <p style={{ color: NAVY, fontSize: 12, fontWeight: 600, margin: "8px 0 4px" }}>{r.title}</p>
                     <p style={{ color: "#aaa", fontSize: 10, margin: "0 0 12px" }}>{r.type}</p>
-                    <button onClick={() => { downloadResource(r); toast.success(`Downloaded ${r.title}`); }} style={{ width: "100%", background: "#4C808A", border: "none", borderRadius: 3, padding: "8px", color: "#fff", fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontWeight: 600 }}>
+                    <button onClick={() => { downloadResource(r); P.recordDownload(r.id, pid); toast.success(`Downloaded ${r.title}`); }} style={{ width: "100%", background: "#4C808A", border: "none", borderRadius: 3, padding: "8px", color: "#fff", fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, fontWeight: 600 }}>
                       <Download size={11} color="#fff" /> <span style={{ color: "#fff" }}>Download</span>
                     </button>
                   </div>
@@ -739,7 +889,7 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
 
           {/* ── PROFILE ── */}
           {nav === "profile" && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div className="md-r2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               <div className="md-card" style={{ background: "#fff", borderRadius: 3, padding: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
                   <ProfileAvatar size={56} />
@@ -766,9 +916,8 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
                   { label: "Venture Name", val: MENTEE.venture },
                   { label: "Sector", val: MENTEE.sector },
                   { label: "Stage", val: MENTEE.stage },
-                  { label: "Year Started", val: "2024" },
-                  { label: "Team Size", val: "3" },
-                  { label: "Revenue Status", val: "Pre-revenue" },
+                  { label: "Team Size", val: me.metrics ? String(me.metrics.teamSize) : "—" },
+                  { label: "Revenue Status", val: me.metrics?.MRR ?? "—" },
                 ].map(f => (
                   <div key={f.label} style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid #f5f5f5" }}>
                     <p style={{ color: "#aaa", fontSize: 11, margin: 0 }}>{f.label}</p>
@@ -784,14 +933,14 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
       {/* Re-match modal */}
       {newGoalOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: "#fff", borderRadius: 3, padding: 28, width: 420, maxWidth: "90vw" }}>
+          <div role="dialog" aria-modal="true" aria-label="Propose a goal" style={{ background: "#fff", borderRadius: 3, padding: 28, width: 420, maxWidth: "90vw" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h3 style={{ color: NAVY, fontSize: 16, fontWeight: 700, margin: 0 }}>Propose a Goal</h3>
-              <button onClick={() => setNewGoalOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa" }}><X size={18} /></button>
+              <button aria-label="Close" onClick={() => setNewGoalOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa" }}><X size={18} /></button>
             </div>
-            <input value={goalForm.title} onChange={e => setGoalForm({ ...goalForm, title: e.target.value })} placeholder="Goal title" style={{ width: "100%", boxSizing: "border-box", border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11, marginBottom: 10 }} />
+            <input autoFocus aria-label="Goal title" value={goalForm.title} onChange={e => setGoalForm({ ...goalForm, title: e.target.value })} placeholder="Goal title" style={{ width: "100%", boxSizing: "border-box", border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11, marginBottom: 10 }} />
             <div style={{ display: "flex", gap: 10 }}>
-              <select value={goalForm.category} onChange={e => setGoalForm({ ...goalForm, category: e.target.value })} style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11 }}>{["Market", "Legal", "Revenue", "Product", "Team", "Learning"].map(c => <option key={c}>{c}</option>)}</select>
+              <select aria-label="Goal category" value={goalForm.category} onChange={e => setGoalForm({ ...goalForm, category: e.target.value })} style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11 }}>{["Market", "Legal", "Revenue", "Product", "Team", "Learning"].map(c => <option key={c}>{c}</option>)}</select>
               <input type="date" min={todayISO()} value={goalForm.due} onChange={e => setGoalForm({ ...goalForm, due: e.target.value })} aria-label="Goal due date" style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: 10, fontSize: 11 }} />
             </div>
             <p style={{ color: "#888", fontSize: 10, margin: "10px 0 0" }}>Your mentor will review and approve it before it counts toward your progress.</p>
@@ -805,13 +954,13 @@ function MenteePortal({ me, myPair, onSignOut }: { me: Person; myPair: Pair; onS
 
       {showRematch && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ background: "#fff", borderRadius: 3, padding: 28, width: 420, maxWidth: "90vw" }}>
+          <div role="dialog" aria-modal="true" aria-label="Request re-matching" style={{ background: "#fff", borderRadius: 3, padding: 28, width: 420, maxWidth: "90vw" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h3 style={{ color: NAVY, fontSize: 16, fontWeight: 700, margin: 0 }}>Request Re-matching</h3>
-              <button onClick={() => setShowRematch(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa" }}><X size={18} /></button>
+              <button aria-label="Close" onClick={() => setShowRematch(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa" }}><X size={18} /></button>
             </div>
             <p style={{ color: "#666", fontSize: 12, margin: "0 0 14px", lineHeight: 1.7 }}>This request will be reviewed by your Programme Manager. Please briefly explain why you would like to be re-matched with a different mentor.</p>
-            <textarea rows={4} value={rematchReason} onChange={e => setRematchReason(e.target.value)} placeholder="Reason for re-match request..." style={{ width: "100%", border: "1px solid #e0e0e0", borderRadius: 3, padding: 12, fontSize: 11, outline: "none", resize: "none", boxSizing: "border-box" }} />
+            <textarea autoFocus aria-label="Reason for re-match request" rows={4} value={rematchReason} onChange={e => setRematchReason(e.target.value)} placeholder="Reason for re-match request..." style={{ width: "100%", border: "1px solid #e0e0e0", borderRadius: 3, padding: 12, fontSize: 11, outline: "none", resize: "none", boxSizing: "border-box" }} />
             <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
               <button onClick={() => setShowRematch(false)} style={{ flex: 1, background: "#f5f5f5", border: "none", borderRadius: 3, padding: 10, cursor: "pointer", fontSize: 11, color: "#666" }}>Cancel</button>
               <button onClick={() => { if (!pid) return; if (!rematchReason.trim()) return toast.error("Please add a reason"); P.requestRematch(pid, rematchReason.trim()); setRematchReason(""); setShowRematch(false); toast.success("Re-match request sent to your Programme Manager"); }} style={{ flex: 1, background: TEAL, border: "none", borderRadius: 3, padding: 10, cursor: "pointer", fontSize: 11, color: "#fff", fontWeight: 700 }}>Submit Request</button>

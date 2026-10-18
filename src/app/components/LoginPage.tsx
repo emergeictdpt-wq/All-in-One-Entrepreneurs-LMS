@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
+import { ChevronLeft, Shield, Check } from "lucide-react";
 import {
-  Eye, EyeOff, Mail, Lock, ArrowRight, AlertCircle, CheckCircle,
-  Shield, HelpCircle, BookOpen, Phone, ChevronLeft, RefreshCw,
-  TrendingUp, Users, Zap, Star, BarChart2, Globe
-} from "lucide-react";
+  AuthCard, AuthNote, AuthError, AuthLabel, AuthInput, AuthButton, AuthRememberRow, AuthFooter, AuthBack,
+  AUTH_BRAND, AUTH_BRAND_DARK, AUTH_PAGE_BG, AUTH_FONT, authMuted, authInk,
+} from "./AuthCard";
 
 const PHOTO_URL =
-  "https://images.unsplash.com/photo-1557804506-669a67965ba0?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwzfHxlbnRyZXByZW5ldXJzJTIwd29ya2luZyUyMHN0YXJ0dXAlMjB0ZWFtJTIwY29sbGFib3JhdGlvbiUyMG9mZmljZXxlbnwxfHx8fDE3ODM1MTM4NDR8MA&ixlib=rb-4.1.0&q=80&w=1080";
+  "/images/entrepreneur-login.jpg";
 
 const css = `
 @keyframes lp-fadeIn {
@@ -17,59 +17,17 @@ const css = `
   from { opacity: 0; transform: translateX(-30px); }
   to { opacity: 1; transform: translateX(0); }
 }
-@keyframes lp-lockShake {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-5px) rotate(-2deg); }
-  40% { transform: translateX(5px) rotate(2deg); }
-  60% { transform: translateX(-3px); }
-  80% { transform: translateX(3px); }
-}
-@keyframes lp-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-@keyframes lp-orbit {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-@keyframes lp-dash {
-  to { stroke-dashoffset: 0; }
-}
-@keyframes lp-lineDraw {
-  from { stroke-dashoffset: 300; }
-  to { stroke-dashoffset: 0; }
-}
-@keyframes lp-nodePulse {
-  0%,100% { r: 4; opacity: 1; }
-  50% { r: 6.5; opacity: 0.7; }
-}
-@keyframes lp-gaugeArc {
-  from { stroke-dashoffset: 220; }
-  to { stroke-dashoffset: 52; }
-}
-@keyframes lp-mileDot {
-  0%,100% { transform: scale(1); }
-  50% { transform: scale(1.5); }
-}
-@keyframes lp-barRise {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
-}
-@keyframes lp-counterUp {
-  from { opacity:0; transform:translateY(6px); }
-  to { opacity:1; transform:translateY(0); }
-}
 .lp-fade { animation: lp-fadeIn 0.5s ease both; }
 .lp-slide { animation: lp-slideLeft 0.65s ease both; }
-.lp-shake { animation: lp-lockShake 0.5s ease; }
-.lp-spin { animation: lp-spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .lp-fade, .lp-slide { animation: none; } }
 `;
-
-type LoginView = "login" | "forgot" | "mfa" | "success";
 
 import type { AuthResult, ManagerAuthResult } from "../data/auth";
 import { SEED_MANAGERS } from "../data/managers";
 import { DEMO_MODE, DEMO_PASSWORD } from "../data/auth";
+
+type LoginView = "login" | "forgot" | "mfa" | "success";
+
 
 export function LoginPage({ onBack, onNavigate, onEntrepreneurLogin, onManagerLogin }: {
   onBack: () => void;
@@ -142,355 +100,200 @@ export function LoginPage({ onBack, onNavigate, onEntrepreneurLogin, onManagerLo
     setTimeout(() => { setLoading(false); setResetSent(true); }, 1200);
   };
 
+  const isManager = role === "manager";
+  const code = (t: string) => <code style={{ background: "#eef0f6", borderRadius: 4, padding: "1px 6px", color: authInk }}>{t}</code>;
+  const logo = "https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png";
+
   return (
     <>
       <style>{css}</style>
 
-      <div className="min-h-screen flex overflow-hidden" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
+      <div className="min-h-screen flex overflow-hidden" style={{ fontFamily: AUTH_FONT, background: AUTH_PAGE_BG }}>
 
-        {/* ── LEFT — Hero photo panel ── */}
+        {/* LEFT: hero photo */}
         <div
           className="lp-slide hidden lg:flex flex-col relative overflow-hidden"
-          style={{
-            width: "58%",
-            clipPath: "polygon(0% 0%, 93% 0%, 100% 100%, 0% 100%)",
-          }}
+          style={{ width: "58%", clipPath: "polygon(0% 0%, 93% 0%, 100% 100%, 0% 100%)" }}
         >
-          {/* Photo */}
-          <img
-            src={PHOTO_URL}
-            alt="Entrepreneurs at work"
-            className="absolute inset-0 w-full h-full object-cover"
-            style={{ objectPosition: "center center" }}
-          />
-
-          {/* Layered overlay: dark at top/bottom, partial on left, clear center */}
+          <img src={PHOTO_URL} alt="Entrepreneurs at work" className="absolute inset-0 w-full h-full object-cover" style={{ objectPosition: "center center" }} />
           <div className="absolute inset-0" style={{ background: "linear-gradient(to bottom, rgba(30,36,66,0.82) 0%, rgba(30,36,66,0.25) 30%, rgba(30,36,66,0.15) 60%, rgba(30,36,66,0.88) 100%)" }} />
           <div className="absolute inset-0" style={{ background: "linear-gradient(to right, rgba(59,65,103,0.6) 0%, rgba(59,65,103,0.1) 45%, transparent 70%)" }} />
-
-          {/* TOP: Logo + back */}
           <div className="relative z-10 p-8 flex items-center gap-3">
-            <button
-              onClick={onBack}
-              className="flex items-center gap-1.5 text-white/60 hover:text-white text-xs font-semibold transition-colors"
-            >
+            <button onClick={onBack} className="flex items-center gap-1.5 text-white/70 hover:text-white text-xs font-semibold transition-colors">
               <ChevronLeft size={14} /> Back
             </button>
             <div className="w-px h-4 bg-white/20" />
-            <img
-              src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
-              alt="Emerge Livelihoods"
-              className="h-8 brightness-0 invert"
-            />
+            <img src={logo} alt="Emerge Livelihoods" className="h-8 brightness-0 invert" />
           </div>
-
-
-          <div className="relative z-10 mt-auto" />
         </div>
 
-        {/* ── RIGHT — Login form panel ── */}
-        <div
-          className="flex-1 flex flex-col justify-center px-6 py-10 lg:px-10 xl:px-14 relative"
-          style={{ background: "linear-gradient(155deg, #2a3054 0%, #3B4167 45%, #456f78 80%, #4C808A 100%)" }}
-        >
+        {/* RIGHT: sign-in card */}
+        <div className="flex-1 flex flex-col items-center justify-center px-5 py-10 lg:px-10">
 
           {/* Mobile top bar */}
-          <div className="flex items-center justify-between mb-6 lg:hidden">
-            <button onClick={onBack} className="flex items-center gap-2 text-white/55 text-xs font-semibold">
+          <div className="flex items-center justify-between mb-6 lg:hidden w-full max-w-[440px]">
+            <button onClick={onBack} className="ac-link flex items-center gap-1 text-xs">
               <ChevronLeft size={14} /> Back
             </button>
-            <img src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
-              alt="Emerge Livelihoods" className="h-6 brightness-0 invert" />
+            <img src={logo} alt="Emerge Livelihoods" className="h-6" />
           </div>
 
-          <div className="relative w-full max-w-sm mx-auto">
-
-            {/* ── LOGIN VIEW ── */}
+          <div className="lp-fade w-full flex justify-center" key={view}>
             {view === "login" && (
-              <div className="lp-fade">
-                {/* Header */}
-                <div className="mb-7">
-                  <h1 className="text-white font-bold leading-tight mb-2" style={{ fontSize: "1.6rem" }}>Welcome Back</h1>
-                  <p className="text-white text-xs leading-relaxed">Sign in to access your entrepreneur or programme manager dashboard.</p>
-                </div>
-
-                {/* Role selector */}
-                <div className="flex p-1 rounded-md mb-5" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }}>
-                  {(["entrepreneur", "manager"] as const).map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => { setRole(r); setError(""); setAttempts(0); setCountdown(0); }}
-                      className="flex-1 py-2 rounded-md text-xs font-bold transition-all inline-flex items-center justify-center gap-1.5"
-                      style={{
-                        background: role === r ? "rgba(76,128,138,0.5)" : "transparent",
-                        color: role === r ? "#fff" : "rgba(255,255,255,0.4)",
-                      }}
-                    >
-                      {r === "manager" && (
-                        <span
-                          aria-hidden="true"
-                          className="inline-block shrink-0"
-                          style={{
-                            width: 16,
-                            height: 16,
-                            backgroundColor: "currentColor",
-                            WebkitMask: "url('/icons/referral.png') center / contain no-repeat",
-                            mask: "url('/icons/referral.png') center / contain no-repeat",
-                          }}
-                        />
-                      )}
-                      {r === "entrepreneur" ? "Entrepreneur" : "Program Manager"}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Form card */}
-                <div
-                  style={{
-                    background: "rgba(255,255,255,0.06)",
-                    backdropFilter: "blur(16px)",
-                    borderRadius: 3,
-                    padding: "26px 26px 22px",
-                    marginBottom: 14,
-                  }}
-                >
-                  {/* Error */}
-                  {error && (
-                    <div className={`mb-4 flex items-start gap-2.5 px-3 py-2.5 rounded-md text-xs ${shake ? "lp-shake" : ""}`}
-                      style={{ background: "rgba(220,50,50,0.12)", border: "1px solid rgba(220,50,50,0.28)", color: "#ffaaaa" }}>
-                      <AlertCircle size={13} className="shrink-0 mt-0.5" />
-                      <span className="flex-1">{error}</span>
-                      {isLocked && countdown > 0 && <span className="font-bold shrink-0" style={{ color: "#ff8888" }}>{countdown}s</span>}
-                    </div>
-                  )}
-
-                  {DEMO_MODE && role === "manager" && (
-                    <p className="mb-4 text-[11px] leading-relaxed" style={{ color: "rgba(255,255,255,0.45)" }}>
-                      Demo build: managers use the password <span className="font-mono text-white/70">{DEMO_PASSWORD}</span>. Try {SEED_MANAGERS.map(m => m.email).join(", ")}. Each sees only the programs they champion in Incubation Management.
-                    </p>
-                  )}
-                  {DEMO_MODE && role === "entrepreneur" && (
-                    <p className="mb-4 text-[11px] leading-relaxed" style={{ color: "rgba(255,255,255,0.45)" }}>
-                      Demo build: sample accounts use the password <span className="font-mono text-white/70">{DEMO_PASSWORD}</span>, e.g. chisomo.banda@gmail.com (paired) or madalitso.chiumia@example.com (waiting to be matched). Anyone who applied here signs in with the password they chose.
-                    </p>
-                  )}
-
-                  {/* Email */}
-                  <div className="mb-4">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-white/55 text-[10px] font-bold uppercase tracking-wider">
-                        Email / Username <span style={{ color: "#4C808A" }}>*</span>
-                      </label>
-                    </div>
-                    <div className="relative group">
-                      <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 transition-colors" style={{ color: "#4C808A" }} />
-                      <input
-                        type="text" value={email}
-                        onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                        placeholder="your email"
-                        disabled={isLocked}
-                        className="w-full pl-9 pr-3 py-2.5 rounded-md text-xs placeholder:text-gray-400 focus:outline-none disabled:opacity-40 transition-all"
-                        style={{ background: "#fff", color: "#2a3054", border: "1.5px solid rgba(76,128,138,0.3)", fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}
-                        onFocus={(e) => { e.target.style.borderColor = "#4C808A"; e.target.style.boxShadow = "0 0 0 3px rgba(76,128,138,0.15)"; e.target.style.color = "#2a3054"; }}
-                        onBlur={(e) => { e.target.style.borderColor = "rgba(76,128,138,0.3)"; e.target.style.boxShadow = "none"; }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Password */}
-                  <div className="mb-4">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-white/55 text-[10px] font-bold uppercase tracking-wider">
-                        Password <span style={{ color: "#4C808A" }}>*</span>
-                      </label>
+              <AuthCard
+                centered
+                title={isManager ? "Welcome Back, Program Manager!" : "Welcome Back, Entrepreneur!"}
+                subtitle={isManager
+                  ? "Sign in to manage your programs, review applications and track cohort progress."
+                  : "Sign in to track your progress, meet your mentor and grow your business."}
+              >
+                <form onSubmit={(e) => { e.preventDefault(); handleSignIn(); }} noValidate>
+                  {/* Role selector */}
+                  <div role="group" aria-label="Sign in as" className="flex p-1 gap-1" style={{ background: "#f1f3f9", border: "1px solid #d6dae6", borderRadius: 3, marginBottom: 20 }}>
+                    {(["entrepreneur", "manager"] as const).map((r) => (
                       <button
-                        onClick={() => setView("forgot")}
-                        className="text-[10px] font-semibold transition-colors"
-                        style={{ color: "#a8d5db" }}
+                        key={r} type="button" aria-pressed={role === r}
+                        onClick={() => { setRole(r); setError(""); setAttempts(0); setCountdown(0); }}
+                        className="ac-tab flex-1 inline-flex items-center justify-center gap-1.5 transition-colors"
+                        style={{
+                          padding: "9px 8px", borderRadius: 3, fontSize: 14, fontWeight: 700,
+                          background: role === r ? AUTH_BRAND : "transparent",
+                          color: role === r ? "#fff" : authMuted,
+                        }}
                       >
-                        Forgot?
-                      </button>
-                    </div>
-                    <div className="relative group">
-                      <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "#4C808A" }} />
-                      <input
-                        type={showPass ? "text" : "password"} value={password}
-                        onChange={(e) => { setPassword(e.target.value); setError(""); }}
-                        placeholder="Enter your password"
-                        disabled={isLocked}
-                        className="w-full pl-9 pr-10 py-2.5 rounded-md text-xs placeholder:text-gray-400 focus:outline-none disabled:opacity-40 transition-all"
-                        style={{ background: "#fff", color: "#2a3054", border: "1.5px solid rgba(76,128,138,0.3)", fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}
-                        onFocus={(e) => { e.target.style.borderColor = "#4C808A"; e.target.style.boxShadow = "0 0 0 3px rgba(76,128,138,0.15)"; }}
-                        onBlur={(e) => { e.target.style.borderColor = "rgba(76,128,138,0.3)"; e.target.style.boxShadow = "none"; }}
-                      />
-                      <button type="button" onClick={() => setShowPass(!showPass)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
-                        style={{ color: "#4C808A" }}>
-                        {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Remember + attempt dots */}
-                  <div className="flex items-center justify-between mb-5">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="w-3.5 h-3.5 accent-[#4C808A]" />
-                      <span className="text-white/45 text-[10px]">Keep me signed in</span>
-                    </label>
-                    {attempts > 0 && !isLocked && (
-                      <div className="flex gap-1">
-                        {[...Array(5)].map((_, i) => (
-                          <div key={i} className="w-2 h-2 rounded-full" style={{ background: i < attempts ? "#e85454" : "rgba(255,255,255,0.15)" }} />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Sign In button */}
-                  <button
-                    onClick={handleSignIn}
-                    disabled={isLocked || loading}
-                    className="w-full py-3 rounded-md font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    style={{ background: isLocked ? "rgba(255,255,255,0.08)" : "linear-gradient(90deg, #3B4167, #4C808A)", color: "white" }}
-                  >
-                    {loading ? <RefreshCw size={15} className="lp-spin" /> : isLocked
-                      ? <><Lock size={14} /> Locked ({countdown}s)</>
-                      : <>Sign In <ArrowRight size={15} /></>}
-                  </button>
-                </div>
-
-                {/* Social providers */}
-                <div className="mb-4">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.1)" }} />
-                    <span className="text-white text-[10px]">or continue with</span>
-                    <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.1)" }} />
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { label: "Google", color: "#EA4335", letter: "G" },
-                      { label: "Microsoft", color: "#00A4EF", letter: "M" },
-                      { label: "LinkedIn", color: "#0A66C2", letter: "in" },
-                    ].map(({ label, color, letter }) => (
-                      <button key={label}
-                        className="flex items-center justify-center gap-1.5 py-2 rounded-md text-[10px] font-bold text-white/65 hover:text-white transition-all"
-                        style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }}>
-                        <span className="w-4 h-4 rounded-full flex items-center justify-center text-white font-black" style={{ background: color, fontSize: 8 }}>{letter}</span>
-                        {label}
+                        {r === "manager" && (
+                          <span
+                            aria-hidden="true"
+                            className="inline-block shrink-0"
+                            style={{
+                              width: 16, height: 16, backgroundColor: "currentColor",
+                              WebkitMask: "url('/icons/referral.png') center / contain no-repeat",
+                              mask: "url('/icons/referral.png') center / contain no-repeat",
+                            }}
+                          />
+                        )}
+                        {r === "entrepreneur" ? "Entrepreneur" : "Program Manager"}
                       </button>
                     ))}
                   </div>
-                </div>
 
-                {/* Register CTA */}
-                <div className="text-center pt-3" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-                  <p className="text-white text-[10px] mb-1.5">New to the platform?</p>
-                  <button
-                    onClick={() => onNavigate?.("incubation-apply")}
-                    className="text-[10px] font-bold transition-colors hover:opacity-80"
-                    style={{ color: "#a8d5db" }}>
-                    Register as an Entrepreneur
-                  </button>
-                </div>
+                  {/* Demo build notes (temporarily disabled)
+                  {DEMO_MODE && isManager && (
+                    <AuthNote>
+                      Demo build: managers use the password {code(DEMO_PASSWORD)}. Try {SEED_MANAGERS.map(m => m.email).join(", ")}. Each sees only the programs they champion in Incubation Management.
+                    </AuthNote>
+                  )}
+                  {DEMO_MODE && !isManager && (
+                    <AuthNote>
+                      Demo build: sample accounts use the password {code(DEMO_PASSWORD)}, e.g. chisomo.banda@gmail.com (paired) or madalitso.chiumia@example.com (waiting to be matched). Anyone who applied here signs in with the password they chose.
+                    </AuthNote>
+                  )}
+                  */}
 
-              </div>
+                  {error && (
+                    <AuthError shake={shake} extra={isLocked && countdown > 0 ? <span className="shrink-0 font-bold">{countdown}s</span> : undefined}>
+                      {error}
+                    </AuthError>
+                  )}
+
+                  <div style={{ marginBottom: 18 }}>
+                    <AuthLabel htmlFor="lp-email" required>Email Address or Username</AuthLabel>
+                    <AuthInput
+                      id="lp-email" icon="mail" type="text" autoComplete="username"
+                      value={email} onChange={(e) => { setEmail(e.target.value); setError(""); }}
+                      placeholder="your email" disabled={isLocked}
+                    />
+                  </div>
+
+                  <div>
+                    <AuthLabel htmlFor="lp-password" required>Password</AuthLabel>
+                    <AuthInput
+                      id="lp-password" icon="lock" reveal autoComplete="current-password"
+                      value={password} onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                      placeholder="Enter your password" disabled={isLocked}
+                    />
+                  </div>
+
+                  <AuthRememberRow checked={remember} onChange={setRemember} onForgot={() => setView("forgot")} />
+
+                  {attempts > 0 && !isLocked && (
+                    <div className="flex gap-1.5 justify-center" style={{ marginBottom: 14 }} aria-label={`${attempts} of 5 attempts used`}>
+                      {[...Array(5)].map((_, i) => (
+                        <div key={i} className="rounded-full" style={{ width: 8, height: 8, background: i < attempts ? "#d64545" : "#d6dae6" }} />
+                      ))}
+                    </div>
+                  )}
+
+                  <AuthButton type="submit" disabled={isLocked || loading} loading={loading} arrow={!isLocked}>
+                    {isLocked ? `Locked (${countdown}s)` : "Sign In"}
+                  </AuthButton>
+
+                  <AuthFooter
+                    prompt="New to the platform?"
+                    actionLabel="Register as an Entrepreneur"
+                    onAction={() => onNavigate?.("incubation-apply")}
+                  />
+                </form>
+              </AuthCard>
             )}
 
-            {/* ── FORGOT VIEW ── */}
             {view === "forgot" && (
-              <div className="lp-fade">
-                <button onClick={() => { setView("login"); setResetSent(false); setResetEmail(""); }}
-                  className="flex items-center gap-1.5 text-white/45 hover:text-white text-xs mb-5 transition-colors">
-                  <ChevronLeft size={13} /> Back to Sign In
-                </button>
-                <div className="w-11 h-11 rounded-md flex items-center justify-center mb-4" style={{ background: "rgba(76,128,138,0.3)" }}>
-                  <Lock size={18} color="#fff" />
-                </div>
-                <h2 className="text-white font-bold text-xl mb-1">Reset Password</h2>
-                <p className="text-white/40 text-xs mb-5 leading-relaxed">Enter your registered email. We'll send a secure reset link within minutes.</p>
+              <AuthCard title="Reset Password">
+                <AuthBack onClick={() => { setView("login"); setResetSent(false); setResetEmail(""); }}>Back to Sign In</AuthBack>
                 {!resetSent ? (
-                  <div style={{ background: "rgba(255,255,255,0.06)", borderRadius: 3, padding: "22px" }}>
-                    <label className="block text-white/55 text-[10px] font-bold uppercase tracking-wider mb-1.5">Email Address</label>
-                    <div className="relative mb-4">
-                      <Mail size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "rgba(255,255,255,0.3)" }} />
-                      <input type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)}
-                        placeholder="your@email.com"
-                        className="w-full pl-9 pr-3 py-2.5 rounded-md text-xs focus:outline-none"
-                        style={{ background: "#fff", color: "#2a3054", border: "1.5px solid rgba(76,128,138,0.3)", fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}
-                        onFocus={(e) => { e.target.style.borderColor = "#4C808A"; e.target.style.boxShadow = "0 0 0 3px rgba(76,128,138,0.15)"; }}
-                        onBlur={(e) => { e.target.style.borderColor = "rgba(76,128,138,0.3)"; e.target.style.boxShadow = "none"; }}
-                      />
+                  <>
+                    <AuthNote>Enter your registered email. We'll send a secure reset link within minutes.</AuthNote>
+                    <div style={{ marginBottom: 18 }}>
+                      <AuthLabel htmlFor="lp-reset-email">Email Address</AuthLabel>
+                      <AuthInput id="lp-reset-email" icon="mail" type="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} placeholder="your@email.com" />
                     </div>
-                    <button onClick={handleReset} disabled={loading || !resetEmail}
-                      className="w-full py-2.5 rounded-md font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-40"
-                      style={{ background: "linear-gradient(90deg, #3B4167, #4C808A)", color: "white" }}>
-                      {loading ? <RefreshCw size={14} className="lp-spin" /> : <><Mail size={14} /> Send Reset Link</>}
-                    </button>
-                  </div>
+                    <AuthButton type="button" arrow={false} onClick={handleReset} disabled={loading || !resetEmail} loading={loading}>Send Reset Link</AuthButton>
+                  </>
                 ) : (
-                  <div className="text-center py-6" style={{ background: "rgba(255,255,255,0.06)", borderRadius: 3 }}>
-                    <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: "rgba(76,128,138,0.25)" }}>
-                      <CheckCircle size={28} color="#fff" />
-                    </div>
-                    <p className="text-white font-bold mb-1">Check Your Email</p>
-                    <p className="text-white/40 text-xs leading-relaxed mb-4">Reset link sent to <span style={{ color: "#a8d5db" }}>{resetEmail}</span></p>
-                    <button onClick={() => { setView("login"); setResetSent(false); setResetEmail(""); }}
-                      className="text-xs font-bold px-4 py-2 rounded-md text-white hover:text-white/80 transition-colors"
-                      style={{}}>
-                      Back to Sign In
-                    </button>
+                  <div className="text-center">
+                    <Check size={40} style={{ color: AUTH_BRAND, margin: "0 auto 12px" }} />
+                    <p style={{ fontWeight: 700, fontSize: 18, color: authInk }}>Check Your Email</p>
+                    <p style={{ color: authMuted, fontSize: 14, marginTop: 8, lineHeight: 1.5 }}>
+                      Reset link sent to <span style={{ color: AUTH_BRAND_DARK, fontWeight: 700 }}>{resetEmail}</span>
+                    </p>
                   </div>
                 )}
-              </div>
+              </AuthCard>
             )}
 
-            {/* ── MFA VIEW ── */}
             {view === "mfa" && (
-              <div className="lp-fade text-center">
-                <div className="w-14 h-14 rounded-md flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(76,128,138,0.3)", border: "1px solid rgba(76,128,138,0.4)" }}>
-                  <Shield size={24} color="#4C808A" />
+              <AuthCard title="Two-Factor Verification">
+                <div className="text-center">
+                  <Shield size={36} style={{ color: AUTH_BRAND, margin: "0 auto 12px" }} />
+                  <AuthNote>Enter the 6-digit code from your authenticator app or SMS.</AuthNote>
+                  <div className="flex gap-2 justify-center" style={{ marginBottom: 18 }}>
+                    {mfaCode.map((digit, i) => (
+                      <input key={i} id={`mfa-${i}`} type="text" inputMode="numeric" maxLength={1} value={digit} aria-label={`Digit ${i + 1}`}
+                        onChange={(e) => handleMfaInput(i, e.target.value)}
+                        className="ac-input text-center"
+                        style={{ width: 44, height: 52, borderRadius: 3, fontSize: 20, fontWeight: 700, fontFamily: AUTH_FONT }} />
+                    ))}
+                  </div>
+                  {mfaError && <AuthError>{mfaError}</AuthError>}
+                  <AuthButton type="button" onClick={handleMfaSubmit} disabled={loading} loading={loading}>Verify Code</AuthButton>
+                  <button type="button" className="ac-link" style={{ fontSize: 14, marginTop: 16 }}>Resend Code</button>
                 </div>
-                <h2 className="text-white font-bold text-xl mb-1">Two-Factor Verification</h2>
-                <p className="text-white/40 text-xs mb-6 leading-relaxed">Enter the 6-digit code from your authenticator app or SMS.</p>
-                <div className="flex gap-2 justify-center mb-5">
-                  {mfaCode.map((digit, i) => (
-                    <input key={i} id={`mfa-${i}`} type="text" maxLength={1} value={digit}
-                      onChange={(e) => handleMfaInput(i, e.target.value)}
-                      className="w-10 h-12 text-center font-bold text-base rounded-md focus:outline-none"
-                      style={{ background: "#fff", border: digit ? "2px solid #4C808A" : "2px solid rgba(76,128,138,0.3)", color: "#2a3054", fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}
-                      onFocus={(e) => (e.currentTarget.style.borderColor = "#4C808A")}
-                      onBlur={(e) => !e.currentTarget.value && (e.currentTarget.style.borderColor = "rgba(76,128,138,0.3)")} />
-                  ))}
-                </div>
-                {mfaError && <p className="text-red-300 text-xs mb-3">{mfaError}</p>}
-                <button onClick={handleMfaSubmit} disabled={loading}
-                  className="w-full py-3 rounded-md font-bold text-sm flex items-center justify-center gap-2 mb-3"
-                  style={{ background: "linear-gradient(90deg, #3B4167, #4C808A)", color: "white" }}>
-                  {loading ? <RefreshCw size={14} className="lp-spin" /> : <>Verify Code <ArrowRight size={14} /></>}
-                </button>
-                <button className="text-white/35 hover:text-white/65 text-xs font-semibold transition-colors">Resend Code</button>
-              </div>
+              </AuthCard>
             )}
 
-            {/* ── SUCCESS VIEW ── */}
             {view === "success" && (
-              <div className="lp-fade text-center" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, padding: "36px 28px" }}>
-                <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(76,128,138,0.3)", border: "2px solid rgba(76,128,138,0.5)" }}>
-                  <CheckCircle size={32} color="#4C808A" />
+              <AuthCard title="Login Successful!" subtitle="Redirecting to your dashboard...">
+                <div className="w-full overflow-hidden" style={{ height: 6, borderRadius: 6, background: "#e3e7f0", marginBottom: 18 }}>
+                  <div style={{ height: "100%", background: AUTH_BRAND, width: "75%" }} />
                 </div>
-                <h2 className="text-white font-bold text-xl mb-2">Login Successful!</h2>
-                <p className="text-white/45 text-xs mb-5">Redirecting to your dashboard...</p>
-                <div className="w-full h-1.5 rounded-full overflow-hidden mb-5" style={{ background: "rgba(255,255,255,0.1)" }}>
-                  <div className="h-full rounded-md" style={{ background: "linear-gradient(90deg, #3B4167, #4C808A)", width: "75%" }} />
-                </div>
-                <div className="space-y-2 text-left">
+                <div className="space-y-2">
                   {["Credentials verified", "Account status confirmed", "Role permissions loaded", "Redirecting..."].map((s, i) => (
-                    <div key={s} className="flex items-center gap-2 text-xs" style={{ color: i < 3 ? "rgba(76,128,138,0.9)" : "rgba(255,255,255,0.4)" }}>
-                      <CheckCircle size={12} className="shrink-0" /> {s}
+                    <div key={s} className="flex items-center gap-2" style={{ fontSize: 14, color: i < 3 ? AUTH_BRAND_DARK : authMuted }}>
+                      <Check size={15} className="shrink-0" /> {s}
                     </div>
                   ))}
                 </div>
-              </div>
+              </AuthCard>
             )}
           </div>
         </div>

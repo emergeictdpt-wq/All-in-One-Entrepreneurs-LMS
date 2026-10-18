@@ -39,6 +39,24 @@ describe("Mentor dashboard with two mentees", () => {
     expect((screen.getByLabelText("Mentee") as HTMLSelectElement).value).toBe("p6");
   });
 
+  it("keeps each mentee's messages in their own thread", async () => {
+    const u = await mountDashboard();
+    await u.click(screen.getByRole("button", { name: /^Messages/ }));
+    await u.type(screen.getByPlaceholderText(/^Message Kondwani Phiri/), "only for Kondwani");
+    await u.click(screen.getByRole("button", { name: "Send message" }));
+    expect(screen.getAllByText("only for Kondwani")).toHaveLength(2); // the bubble and the thread preview
+    await u.click(screen.getByText("Yamikani Mwale"));
+    expect(screen.getByPlaceholderText(/^Message Yamikani Mwale/)).toBeTruthy();
+    expect(screen.getAllByText("only for Kondwani")).toHaveLength(1); // only the Kondwani thread preview; no bubble in Yamikani's chat
+  });
+
+  it("clicking a mentee card on the overview opens that mentee", async () => {
+    const u = await mountDashboard();
+    await u.click(screen.getByText("Yamikani Mwale"));
+    await u.click(await screen.findByRole("button", { name: /Log Session Note/ }));
+    expect((screen.getByLabelText("Mentee") as HTMLSelectElement).value).toBe("p6");
+  });
+
   it("greets by first name, skipping titles, and shows no hardcoded profile text", async () => {
     await mountDashboard();
     expect(screen.getByText(/Welcome back, Patrick\./)).toBeTruthy();

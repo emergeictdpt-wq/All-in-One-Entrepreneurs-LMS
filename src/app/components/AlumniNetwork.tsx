@@ -10,7 +10,7 @@ const marqueeNames = [
 
 const spotlightAlumni = [
   {
-    name: "Amina Diallo",
+    name: "Chikondi Phiri",
     startup: "AgroFresh Technologies",
     program: "Incubation Program Cohort 3",
     country: "Blantyre, Malawi",
@@ -23,7 +23,7 @@ const spotlightAlumni = [
     year: "Class of 2023",
   },
   {
-    name: "Daniel Omondi",
+    name: "Towera Mwale",
     startup: "PaySwift Africa",
     program: "Incubation Program Cohort 2",
     country: "Lilongwe, Malawi",
@@ -36,7 +36,7 @@ const spotlightAlumni = [
     year: "Class of 2022",
   },
   {
-    name: "Grace Muthoni",
+    name: "Tiyamike Banda",
     startup: "CleanTech Solutions",
     program: "Incubation Program Cohort 5",
     country: "Mzuzu, Malawi",

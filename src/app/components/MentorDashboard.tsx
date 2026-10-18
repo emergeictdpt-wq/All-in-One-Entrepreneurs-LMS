@@ -1,14 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 import {
   Home, Users, Calendar, Target, MessageCircle, BookOpen,
-  TrendingUp, User, LogOut, Bell, ChevronRight, CheckCircle,
+  TrendingUp, User, LogOut, Bell, ChevronRight, Check,
   Circle, Play, Send, Download, Star, Clock, Flag, Award,
-  AlertTriangle, BarChart2, Zap, X, Plus, CheckSquare, Video, Map
+  AlertTriangle, BarChart2, Zap, X, Plus, CheckSquare, Square, Video, Map
 } from "lucide-react";
 import { toast } from "sonner";
 import { useProgramme, RESOURCES as LIBRARY, mentorImpact, mentorKey, isMentorOf, firstName, effectiveMilestones, downloadResource, fmtDate, fmtDateY, fmtDue, todayISO, fmtBooking, isOverdue, isLiveBooking, awaitingLog, isUpcoming } from "../data/programmeStore";
 import { addDays, addMonths, monthKey, monthShort } from "../data/clock";
 import { useDirectory } from "../data/directory";
+import { EvidencePanel } from "./EvidencePanel";
 import { DemoTools } from "./DemoTools";
 import { ProfileAvatar } from "./ProfileAvatar";
 
@@ -113,15 +114,15 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
     return {
       id: i + 1, pairId: p.id, name: p.mentee, venture: p.venture, sector: p.sector,
       avatar: p.mentee.split(" ").map(w => w[0]).join(""), stage: p.stage, matchScore: p.matchScore,
-      lastSession: s.lastSession ? fmtDate(s.lastSession) : "None yet", nextSession: nb ? fmtBooking(nb) : "Not scheduled",
+      lastSession: s.lastSession ? fmtDate(s.lastSession) : "None yet", nextSession: nb ? fmtBooking(nb) : "Not scheduled", hasNext: !!nb,
       overallProgress: s.goalPct, metrics: prof?.metrics ?? { surveys: "N/A", MRR: "Pre-revenue", teamSize: 1 },
       blockers: prof?.blockers ?? [], openTasks: s.openTasks, goalsOnTrack: s.goalsOnTrack, goalsAtRisk: s.goalsAtRisk,
       bio: prof?.bio ?? `${p.venture} (${p.sector}). ${s.lastSession ? "" : "Newly matched. Book your introductory session."}`,
     };
   });
   const SESSIONS_LOG = P.sessions.filter(s => allMyIds.has(s.pairId)).sort((a, b) => b.date.localeCompare(a.date)).map(s => ({
-    id: s.id, mentee: [...myPairs, ...P.pastPairs].find(p => p.id === s.pairId)!.mentee, date: fmtDateY(s.date), duration: `${s.durationMin} min`,
-    mode: s.mode, topics: s.topics, tasks: s.tasks, rating: s.rating,
+    id: s.id, mentee: [...myPairs, ...P.pastPairs].find(p => p.id === s.pairId)?.mentee ?? "Former mentee", date: fmtDateY(s.date), duration: `${s.durationMin} min`,
+    mode: s.mode, topics: s.topics, tasks: s.tasks, rating: s.rating, notes: s.notes,
   }));
   const GOALS_MENTOR = P.goals.filter(g => myIds.has(g.pairId)).map(g => ({ id: g.id, pairId: g.pairId, title: g.title, pct: g.pct, status: g.status, due: g.due, proposedBy: g.proposedBy, pending: g.pending, log: g.log }));
   const myTasksDone = P.tasks.filter(t => myIds.has(t.pairId) && t.status === "done").length;
@@ -153,17 +154,25 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
   const upcoming = P.bookings.filter(b => myIds.has(b.pairId) && isUpcoming(b)).length;
   const toLog = P.bookings.filter(b => myIds.has(b.pairId) && awaitingLog(b));
   const mentorAssigned = P.tasks.filter(x => myIds.has(x.pairId) && x.from === "Mentor");
+  const notifs = P.eventsFor("mentor", [...allMyIds]);
   const atRisk = MENTEES.filter(m => ["At Risk", "Stalled"].includes(P.stats[m.pairId]?.health));
   const [shareFor, setShareFor] = useState<string | null>(null); // resource id being shared
   const [sharePairs, setSharePairs] = useState<string[]>([]);
   const [chatShareOpen, setChatShareOpen] = useState(false);
   const [logForm, setLogForm] = useState({ pairId: "", bookingId: null as string | null, date: todayISO(), duration: 45, mode: "Virtual" as "Virtual" | "In-person", discussed: "", advice: "", decisions: "", blockers: "" });
   const startVideo = () => P.videoProvider ? toast.success(`Opening ${P.videoProvider}…`) : toast.error("No video tool connected. Ask the programme team to connect Zoom or Google Meet in Integration Hub.");
+  const downloadCertificate = () => {
+    const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Certificate of Contribution</title><style>body{font-family:Georgia,serif;text-align:center;padding:80px;border:12px double #4C808A;margin:24px}h1{color:#3B4167;font-size:38px}h2{color:#4C808A}p{font-size:18px;color:#333;line-height:1.6}</style></head><body><p>Emerge Livelihoods</p><h1>Certificate of Contribution</h1><p>Awarded to</p><h2>${esc(MU.name)}</h2><p>in recognition of ${MU.sessionsCompleted} mentoring session${MU.sessionsCompleted === 1 ? "" : "s"} and ${MU.hoursContributed} hour${MU.hoursContributed === 1 ? "" : "s"} contributed to ${esc(MU.cohort)}.</p><p>Issued ${esc(fmtDateY(todayISO()))}</p></body></html>`;
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    const a = document.createElement("a"); a.href = url; a.download = `Certificate - ${MU.name}.html`; a.click(); URL.revokeObjectURL(url);
+    toast.success("Certificate downloaded");
+  };
   const [nav, setNav] = useState<NavSection>("overview");
   const [notifOpen, setNotifOpen] = useState(false);
   const [activeChatPair, setActiveChatPair] = useState(MENTEES[0]?.pairId ?? "");
   const [chatMsg, setChatMsg] = useState("");
-  const [expandMentee, setExpandMentee] = useState<number | null>(1);
+  const [expandMentee, setExpandMentee] = useState<string | null>(MENTEES[0]?.pairId ?? null);
   const [noteOpen, setNoteOpen] = useState(false);
   // The mentee the log form is for. A stale or empty choice falls back to the first mentee, but every entry point below passes the mentee it was clicked on.
   const logPairId = MENTEES.some(m => m.pairId === logForm.pairId) ? logForm.pairId : (MENTEES[0]?.pairId ?? "");
@@ -183,17 +192,22 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
   }, []);
 
 
-  const activeMentee = MENTEES.find(m => m.pairId === activeChatPair) ?? MENTEES[0];
-  const chatPairId = activeMentee?.pairId ?? "";
-  const activeChat = activeMentee?.name ?? "";
+  // Mentees this mentor was re-matched away from keep a read-only thread so the history is not lost
+  const PAST_THREADS = P.pastPairs.filter(p => isMine(p) && P.messages.some(x => x.pairId === p.id));
+  const activePast = PAST_THREADS.find(p => p.id === activeChatPair);
+  const activeMentee = activePast ? undefined : (MENTEES.find(m => m.pairId === activeChatPair) ?? MENTEES[0]);
+  const chatPairId = activePast?.id ?? activeMentee?.pairId ?? "";
+  const activeChat = activePast?.mentee ?? activeMentee?.name ?? "";
+  const chatReadOnly = !!activePast;
+  const stamp = (m: { time: string; date?: string }) => (m.date && m.date !== todayISO() ? `${fmtDate(m.date)}, ${m.time}` : m.time);
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [P.messages, chatPairId]);
   const chatMsgs = P.messages.filter(x => x.pairId === chatPairId);
-  const THREADS = MENTEES.map(m => { const last = P.messages.filter(x => x.pairId === m.pairId).slice(-1)[0]; return { id: m.id, pairId: m.pairId, mentee: m.name, text: last?.text ?? "No messages yet", time: last?.time ?? "", unread: P.unread(m.pairId, "mentor") }; });
+  const THREADS = MENTEES.map(m => { const last = P.messages.filter(x => x.pairId === m.pairId).slice(-1)[0]; return { id: m.id, pairId: m.pairId, mentee: m.name, text: last?.text ?? "No messages yet", time: last ? stamp(last) : "", unread: P.unread(m.pairId, "mentor") }; });
   const totalUnread = THREADS.reduce((a, x) => a + x.unread, 0);
-  useEffect(() => { if (nav === "messages" && chatPairId) P.markRead(chatPairId, "mentor"); }, [nav, chatPairId, P.messages.length]);
-  const sendMsg = () => { if (!chatMsg.trim() || !chatPairId) return; P.sendMessage(chatPairId, "mentor", chatMsg.trim()); setChatMsg(""); };
+  useEffect(() => { if (nav === "messages" && chatPairId && !chatReadOnly) P.markRead(chatPairId, "mentor"); }, [nav, chatPairId, P.messages.length]);
+  const sendMsg = () => { if (!chatMsg.trim() || !chatPairId || chatReadOnly) return; P.sendMessage(chatPairId, "mentor", chatMsg.trim()); setChatMsg(""); };
   const [goalDraft, setGoalDraft] = useState<{ pairId: string; title: string; due: string } | null>(null);
   const [noteFor, setNoteFor] = useState("");
   const [assign, setAssign] = useState({ pairId: "", title: "", due: "" });
@@ -294,14 +308,14 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
               <button onClick={() => setNotifOpen(o => !o)}
                 style={{ background: "rgba(255,255,255,0.12)", border: "none", borderRadius: 3, padding: "7px 10px", cursor: "pointer", color: "#fff", position: "relative", display: "flex" }}>
                 <Bell size={16} />
-                <span style={{ position: "absolute", top: 4, right: 5, width: 7, height: 7, background: "#f59e0b", borderRadius: "50%" }} />
+                {notifs.length > 0 && <span data-testid="notif-dot" style={{ position: "absolute", top: 4, right: 5, width: 7, height: 7, background: "#f59e0b", borderRadius: "50%" }} />}
               </button>
               {notifOpen && (
                 <div style={{ position: "absolute", right: 0, top: 44, width: 270, background: "#fff", borderRadius: 3, boxShadow: "0 8px 32px rgba(0,0,0,0.16)", zIndex: 999, overflow: "hidden" }}>
                   <div style={{ padding: "12px 16px", borderBottom: "1px solid #f0f0f0" }}>
                     <p style={{ margin: 0, fontWeight: 700, fontSize: 13, color: NAVY }}>Notifications</p>
                   </div>
-                  {(P.eventsFor("mentor", [...allMyIds]).length ? P.eventsFor("mentor", [...allMyIds]).map(e => ({ text: e.text, time: e.time, dot: e.tone === "good" ? "#059669" : e.tone === "warn" ? "#f59e0b" : TEAL })) : [{ text: "No new notifications", time: "", dot: "#ddd" }]).map((n, i) => (
+                  {(notifs.length ? notifs.map(e => ({ text: e.text, time: e.time, dot: e.tone === "good" ? "#059669" : e.tone === "warn" ? "#f59e0b" : TEAL })) : [{ text: "No new notifications", time: "", dot: "#ddd" }]).map((n, i) => (
                     <div key={i} style={{ padding: "10px 16px", borderBottom: "1px solid #f7f7f7", display: "flex", gap: 10, alignItems: "flex-start" }}>
                       <span style={{ width: 8, height: 8, borderRadius: "50%", background: n.dot, marginTop: 4, flexShrink: 0 }} />
                       <div>
@@ -376,7 +390,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
               {/* Mentee Snapshot Cards */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
                 {MENTEES.map(m => (
-                  <div key={m.id} className="mdor-card" style={{ background: "#fff", borderRadius: 3, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer" }} onClick={() => { setNav("mentees"); }}>
+                  <div key={m.id} className="mdor-card" style={{ background: "#fff", borderRadius: 3, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer" }} onClick={() => { setExpandMentee(m.pairId); setNav("mentees"); }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 12 }}>
                       <ProfileAvatar size={40} />
                       <div style={{ flex: 1 }}>
@@ -416,13 +430,13 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
               {MENTEES.map(m => (
                 <div key={m.id} className="mdor-card" style={{ background: "#fff", borderRadius: 3, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
                   <div style={{ padding: "16px 18px", cursor: "pointer", display: "flex", gap: 16, alignItems: "flex-start" }}
-                    onClick={() => setExpandMentee(expandMentee === m.id ? null : m.id)}>
+                    onClick={() => setExpandMentee(expandMentee === m.pairId ? null : m.pairId)}>
                     <ProfileAvatar size={50} />
                     <div style={{ flex: 1 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                         <div>
                           <h3 style={{ color: NAVY, fontSize: 14, fontWeight: 700, margin: "0 0 3px" }}>{m.name}</h3>
-                          <p style={{ color: "#888", fontSize: 11, margin: "0 0 6px" }}>{m.venture}  {m.sector}</p>
+                          <p style={{ color: "#888", fontSize: 11, margin: "0 0 6px" }}>{m.venture} · {m.sector}</p>
                           <div style={{ display: "flex", gap: 8 }}>
                             <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>{m.stage}</span>
                             <span style={{ background: "#f0fdf4", color: "#059669", fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>Match {m.matchScore}%</span>
@@ -434,13 +448,13 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                             <p style={{ color: TEAL, fontSize: 18, fontWeight: 800, margin: "0 0 2px" }}>{m.overallProgress}%</p>
                             <p style={{ color: "#aaa", fontSize: 9, margin: 0 }}>Progress</p>
                           </div>
-                          <ChevronRight size={14} color="#bbb" style={{ transform: expandMentee === m.id ? "rotate(90deg)" : "none", transition: "0.2s" }} />
+                          <ChevronRight size={14} color="#bbb" style={{ transform: expandMentee === m.pairId ? "rotate(90deg)" : "none", transition: "0.2s" }} />
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  {expandMentee === m.id && (
+                  {expandMentee === m.pairId && (
                     <div style={{ padding: "0 18px 18px", animation: "mdor-up 0.2s ease", borderTop: "1px solid #f5f5f5" }}>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 14 }}>
                         {/* Bio + Metrics */}
@@ -458,6 +472,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                         {/* Blockers */}
                         <div style={{ background: "#fff8eb", borderRadius: 3, padding: 14 }}>
                           <p style={{ color: "#92600a", fontWeight: 700, fontSize: 11, margin: "0 0 8px", display: "flex", alignItems: "center", gap: 5 }}><AlertTriangle size={12} color="#f59e0b" /> Current Blockers</p>
+                          {m.blockers.length === 0 && <p style={{ color: "#7a4f00", fontSize: 10, margin: 0 }}>No blockers reported.</p>}
                           {m.blockers.map((b, i) => (
                             <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
                               <Flag size={10} color="#f59e0b" style={{ flexShrink: 0, marginTop: 2 }} />
@@ -478,7 +493,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                               return (
                                 <div key={s} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                   <div style={{ width: 20, height: 20, borderRadius: "50%", background: i < idx ? TEAL : i === idx ? NAVY : "#e0e0e0", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                                    {i <= idx ? <CheckCircle size={10} color="#fff" /> : <Circle size={10} color="#bbb" />}
+                                    {i <= idx ? <Check size={10} color="#fff" /> : <Circle size={10} color="#bbb" />}
                                   </div>
                                   <p style={{ color: i === idx ? NAVY : i < idx ? TEAL : "#bbb", fontSize: 10, fontWeight: i === idx ? 700 : 400, margin: 0 }}>{s}</p>
                                 </div>
@@ -497,6 +512,24 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                               </button>
                             ))}
                           </div>
+                        </div>
+                      </div>
+                      {/* Goals, tasks and recent sessions for this mentee */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 12 }}>
+                        <div style={{ background: "#f8f9fb", borderRadius: 3, padding: 14 }}>
+                          <p style={{ color: NAVY, fontWeight: 700, fontSize: 11, margin: "0 0 8px" }}>Goals</p>
+                          {GOALS_MENTOR.filter(g => g.pairId === m.pairId).length === 0 && <p style={{ color: "#aaa", fontSize: 10, margin: 0 }}>No goals yet.</p>}
+                          {GOALS_MENTOR.filter(g => g.pairId === m.pairId).map(g => <p key={g.id} style={{ fontSize: 10, color: "#555", margin: "0 0 4px" }}>{g.title} <b style={{ color: SC[g.status] }}>{g.pct}%</b></p>)}
+                        </div>
+                        <div style={{ background: "#f8f9fb", borderRadius: 3, padding: 14 }}>
+                          <p style={{ color: NAVY, fontWeight: 700, fontSize: 11, margin: "0 0 8px" }}>Open tasks</p>
+                          {myTasks.filter(t => t.pairId === m.pairId && t.status !== "done").length === 0 && <p style={{ color: "#aaa", fontSize: 10, margin: 0 }}>Nothing open.</p>}
+                          {myTasks.filter(t => t.pairId === m.pairId && t.status !== "done").map(t => <p key={t.id} style={{ fontSize: 10, color: isOverdue(t) ? "#ef4444" : "#555", margin: "0 0 4px" }}>{t.title} · due {fmtDue(t.due)}</p>)}
+                        </div>
+                        <div style={{ background: "#f8f9fb", borderRadius: 3, padding: 14 }}>
+                          <p style={{ color: NAVY, fontWeight: 700, fontSize: 11, margin: "0 0 8px" }}>Recent sessions</p>
+                          {P.sessions.filter(x => x.pairId === m.pairId).length === 0 && <p style={{ color: "#aaa", fontSize: 10, margin: 0 }}>No sessions logged yet.</p>}
+                          {P.sessions.filter(x => x.pairId === m.pairId).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3).map(x => <p key={x.id} style={{ fontSize: 10, color: "#555", margin: "0 0 4px" }}>{fmtDateY(x.date)} · {x.durationMin} min</p>)}
                         </div>
                       </div>
                     </div>
@@ -520,7 +553,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                         <p style={{ color: "#fff", fontSize: 12, fontWeight: 700, margin: "0 0 6px" }}>{m.nextSession}</p>
                         <p style={{ color: "rgba(255,255,255,0.6)", fontSize: 9, margin: "0 0 12px" }}>{P.videoProvider ?? "No video tool"}</p>
                         <div style={{ display: "flex", gap: 6 }}>
-                          <button onClick={startVideo} style={{ flex: 1, background: "#fff", border: "none", borderRadius: 3, padding: "6px 8px", fontSize: 9, color: NAVY, cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                          <button disabled={!m.hasNext} title={m.hasNext ? undefined : "No session scheduled"} onClick={startVideo} style={{ flex: 1, background: "#fff", border: "none", borderRadius: 3, padding: "6px 8px", fontSize: 9, color: NAVY, cursor: m.hasNext ? "pointer" : "not-allowed", opacity: m.hasNext ? 1 : 0.55, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                             <Play size={9} /> Join
                           </button>
                           <button onClick={() => openNote(m.pairId)} style={{ flex: 1, background: "#4C808A", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 3, padding: "6px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}>
@@ -538,9 +571,10 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 12px" }}>Schedule a Session</p>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
                   <select value={sched.pairId || MENTEES[0]?.pairId || ""} onChange={e => setSched({ ...sched, pairId: e.target.value })} style={{ border: "1px solid #e0e0e0", borderRadius: 3, padding: "8px 10px", fontSize: 11 }}>{MENTEES.map(m => <option key={m.pairId} value={m.pairId}>{m.name}</option>)}</select>
-                  <input type="date" value={sched.date} onChange={e => setSched({ ...sched, date: e.target.value })} style={{ border: "1px solid #e0e0e0", borderRadius: 3, padding: "7px 10px", fontSize: 11 }} />
+                  <input type="date" aria-label="Session date to propose" min={todayISO()} value={sched.date} onChange={e => setSched({ ...sched, date: e.target.value })} style={{ border: "1px solid #e0e0e0", borderRadius: 3, padding: "7px 10px", fontSize: 11 }} />
                   <input type="time" value={sched.time} onChange={e => setSched({ ...sched, time: e.target.value })} style={{ border: "1px solid #e0e0e0", borderRadius: 3, padding: "7px 10px", fontSize: 11 }} />
                   <select value={sched.mode} onChange={e => setSched({ ...sched, mode: e.target.value as "Virtual" | "In-person" })} style={{ border: "1px solid #e0e0e0", borderRadius: 3, padding: "8px 10px", fontSize: 11 }}><option>Virtual</option><option>In-person</option></select>
+                  <select aria-label="Session length" value={sched.duration} onChange={e => setSched({ ...sched, duration: Number(e.target.value) })} style={{ border: "1px solid #e0e0e0", borderRadius: 3, padding: "8px 10px", fontSize: 11 }}>{[30, 45, 60, 90].map(d => <option key={d} value={d}>{d} min</option>)}</select>
                   <button disabled={!MENTEES.length} onClick={() => { const pairId = sched.pairId || MENTEES[0]?.pairId; if (!pairId) return; const r = P.proposeBooking({ pairId, date: sched.date, time: sched.time, durationMin: sched.duration, mode: sched.mode, by: "mentor" }); if (r.ok) toast.success("Proposal sent. Waiting for the mentee to confirm."); else toast.error(r.reason); }} style={{ background: TEAL, border: "none", borderRadius: 3, padding: "8px 14px", color: "#fff", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Propose</button>
                 </div>
                 {myBookings.map(b => (
@@ -562,6 +596,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                     <Plus size={13} /> Log Session
                   </button>
                 </div>
+                {SESSIONS_LOG.length === 0 && <p style={{ color: "#aaa", fontSize: 11, margin: 0 }}>No sessions logged yet. Use “Log Session” after you meet a mentee.</p>}
                 {SESSIONS_LOG.map((s, i) => (
                   <div key={s.id} style={{ display: "flex", gap: 14, marginBottom: 14, paddingBottom: 14, borderBottom: i < SESSIONS_LOG.length - 1 ? "1px solid #f0f0f0" : "none" }}>
                     <div style={{ width: 40, height: 40, borderRadius: 3, background: `${TEAL}15`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -569,18 +604,19 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                     </div>
                     <div style={{ flex: 1 }}>
                       <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <p style={{ color: NAVY, fontSize: 12, fontWeight: 600, margin: "0 0 2px" }}>{s.mentee}  {s.date}</p>
+                        <p style={{ color: NAVY, fontSize: 12, fontWeight: 600, margin: "0 0 2px" }}>{s.mentee} · {s.date}</p>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <span style={{ color: "#f59e0b", fontSize: 11 }}>{s.rating ? "★".repeat(s.rating) : "Awaiting mentee rating"}</span>
                           <span style={{ background: "#f0fdf4", color: "#059669", fontSize: 9, padding: "2px 6px", borderRadius: 3 }}>Completed</span>
                         </div>
                       </div>
-                      <p style={{ color: "#888", fontSize: 10, margin: "0 0 6px" }}>{s.mode}  {s.duration}  {s.topics.join(", ")}</p>
+                      <p style={{ color: "#888", fontSize: 10, margin: "0 0 6px" }}>{[s.mode, s.duration, s.topics.join(", ")].filter(Boolean).join(" · ")}</p>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         {s.tasks.map(t => (
                           <span key={t} style={{ background: `${NAVY}10`, color: NAVY, fontSize: 9, padding: "2px 8px", borderRadius: 3 }}>Task: {t}</span>
                         ))}
                       </div>
+                      {s.notes && <p data-testid="session-notes" style={{ color: "#555", fontSize: 10, margin: "8px 0 0", lineHeight: 1.6 }}>{s.notes}</p>}
                     </div>
                   </div>
                 ))}
@@ -592,7 +628,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 <p style={{ color: "#888", fontSize: 10, margin: "0 0 10px" }}>Log concerns, early warnings, or pairing mismatch notes privately.</p>
                 <select value={noteFor || MENTEES[0]?.pairId || ""} onChange={e => setNoteFor(e.target.value)} style={{ border: "1px solid #e0e0e0", borderRadius: 3, padding: "7px 10px", fontSize: 11, marginBottom: 8 }}>{MENTEES.map(m => <option key={m.pairId} value={m.pairId}>{m.name}</option>)}</select>
                 <textarea rows={3} value={privateNote} onChange={e => setPrivateNote(e.target.value)}
-                  placeholder="E.g. Tadala may need a technical mentor — she is struggling with prototype scoping beyond my expertise..."
+                  placeholder="E.g. This mentee may need a mentor with a different specialism, or you have a concern the programme team should know about..."
                   style={{ width: "100%", border: "1px solid #e0e0e0", borderRadius: 3, padding: "10px 12px", fontSize: 11, outline: "none", resize: "none", boxSizing: "border-box", color: "#333" }} />
                 <button onClick={() => { const pid = noteFor || MENTEES[0]?.pairId; if (!pid || !privateNote.trim()) return; const r = P.addPrivateNote(pid, privateNote.trim()); if (!r.ok) return toast.error(r.reason); setPrivateNote(""); toast.success("Saved. Visible to programme admins only."); }} style={{ marginTop: 8, background: NAVY, border: "none", borderRadius: 3, padding: "8px 16px", color: "#fff", cursor: "pointer", fontSize: 11 }}>Save Note</button>
                 {P.privateNotes.filter(n => myIds.has(n.pairId)).map(n => <p key={n.id} style={{ fontSize: 10, color: "#777", margin: "8px 0 0" }}><span style={{ marginRight: 10 }}>{fmtDate(n.at)}</span>{menteeOf(n.pairId)}: {n.text}</p>)}
@@ -611,9 +647,11 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                       <ProfileAvatar size={36} />
                       <div>
                         <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: "0 0 2px" }}>{m.name}</p>
-                        <p style={{ color: "#888", fontSize: 10, margin: 0 }}>{m.venture}  {m.stage}</p>
+                        <p style={{ color: "#888", fontSize: 10, margin: 0 }}>{m.venture} · {m.stage}</p>
                       </div>
                     </div>
+                    {(() => { const pr = myPairs.find(p => p.id === m.pairId); if (!pr) return null; const ms = effectiveMilestones(pr, P.goals); const LBL: Record<string, string> = { registered: "Registered", mvp: "MVP", firstRevenue: "First revenue", grant: "Grant", graduated: "Graduated" }; return <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }} aria-label="Milestones">{Object.entries(ms).map(([k, v]) => <span key={k} style={{ fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 600, background: v ? "#f0fdf4" : "#f5f5f5", color: v ? "#059669" : "#aaa" }}>{v ? "✓ " : ""}{LBL[k] ?? k}</span>)}</div>; })()}
+                    {mGoals.length === 0 && <p style={{ color: "#aaa", fontSize: 11, margin: "0 0 12px" }}>No goals yet. Co-set the first one below.</p>}
                     {mGoals.map(g => (
                       <div key={g.id} style={{ marginBottom: 12, padding: "10px 14px", background: "#f8f9fb", borderRadius: 3 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
@@ -666,12 +704,16 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                     <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: "0 0 10px" }}>{m.name} <span style={{ color: "#aaa", fontWeight: 400, fontSize: 10 }}>· {list.filter(t => t.status === "done").length}/{list.length} done</span></p>
                     {list.length === 0 && <p style={{ color: "#aaa", fontSize: 11, margin: 0 }}>No tasks yet.</p>}
                     {list.map(t => (
-                      <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid #f5f5f5", fontSize: 11 }}>
-                        {t.status === "done" ? <CheckCircle size={14} color="#059669" /> : <Circle size={14} color={isOverdue(t) ? "#ef4444" : "#ccc"} />}
+                      <div key={t.id} style={{ borderTop: "1px solid #f5f5f5", padding: "8px 0" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11 }}>
+                        {t.status === "done" ? <CheckSquare size={14} color="#059669" /> : <Square size={14} color={isOverdue(t) ? "#ef4444" : "#ccc"} />}
                         <span style={{ flex: 1, color: t.status === "done" ? "#aaa" : "#333", textDecoration: t.status === "done" ? "line-through" : "none" }}>{t.title}</span>
                         <span style={{ color: isOverdue(t) ? "#ef4444" : "#999", fontSize: 10, fontWeight: isOverdue(t) ? 700 : 400 }}>{isOverdue(t) ? <span style={{ marginRight: 10 }}>OVERDUE</span> : null}Due {fmtDue(t.due)}</span>
                         <span style={{ color: "#bbb", fontSize: 9 }}>{t.from}</span>
+                        <button onClick={() => P.setTaskStatus(t.id, t.status === "done" ? "pending" : "done")} style={{ background: "#f1f5f9", border: "none", borderRadius: 3, padding: "3px 8px", fontSize: 9, color: "#475569", cursor: "pointer", fontWeight: 700 }}>{t.status === "done" ? "Reopen" : "Mark done"}</button>
                         {isOverdue(t) && <button onClick={() => { P.sendMessage(m.pairId, "mentor", `Reminder: "${t.title}" was due ${fmtDue(t.due)}. Can you update me?`); toast.success("Reminder sent in Messages"); }} style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 3, padding: "3px 8px", fontSize: 9, color: "#b45309", cursor: "pointer", fontWeight: 700 }}>Nudge</button>}
+                      </div>
+                      <EvidencePanel task={t} canEdit={false} />
                       </div>))}
                   </div>);
               })}
@@ -686,8 +728,9 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 <div style={{ padding: "14px 16px", borderBottom: "1px solid #f0f0f0" }}>
                   <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: 0 }}>Conversations</p>
                 </div>
+                {THREADS.length === 0 && PAST_THREADS.length === 0 && <p data-testid="no-threads" style={{ color: "#aaa", fontSize: 11, padding: "14px 16px", margin: 0 }}>No conversations yet. Messages appear here once you are matched with a mentee.</p>}
                 {THREADS.map(thread => (
-                  <div key={thread.id} onClick={() => setActiveChatPair(thread.pairId)}
+                  <div key={thread.pairId} onClick={() => setActiveChatPair(thread.pairId)}
                     style={{ padding: "12px 16px", borderBottom: "1px solid #f8f8f8", cursor: "pointer", background: chatPairId === thread.pairId ? `${TEAL}10` : "transparent", display: "flex", gap: 10, alignItems: "center" }}>
                     <ProfileAvatar size={36} />
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -702,6 +745,18 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                     </div>
                   </div>
                 ))}
+                {PAST_THREADS.map(p => {
+                  const last = P.messages.filter(x => x.pairId === p.id).slice(-1)[0];
+                  return (
+                    <div key={p.id} onClick={() => setActiveChatPair(p.id)} style={{ padding: "12px 16px", borderBottom: "1px solid #f8f8f8", cursor: "pointer", background: chatPairId === p.id ? `${TEAL}10` : "transparent", display: "flex", gap: 10, alignItems: "center", opacity: 0.8 }}>
+                      <ProfileAvatar size={36} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ color: NAVY, fontSize: 11, fontWeight: 700, margin: "0 0 2px" }}>{p.mentee} <span style={{ color: "#aaa", fontWeight: 400 }}>· past pairing</span></p>
+                        <p style={{ color: "#aaa", fontSize: 10, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{last?.text}</p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Chat Window */}
@@ -709,7 +764,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 <div style={{ padding: "14px 18px", borderBottom: "1px solid #f0f0f0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: 0 }}>{activeChat}</p>
                   <div style={{ position: "relative" }}>
-                    <button disabled={!chatPairId} onClick={() => setChatShareOpen(o => !o)} style={{ background: "none", border: `1px solid ${TEAL}`, borderRadius: 3, padding: "5px 12px", cursor: "pointer", fontSize: 10, color: TEAL, display: "flex", alignItems: "center", gap: 5 }}>
+                    <button disabled={!chatPairId || chatReadOnly} onClick={() => setChatShareOpen(o => !o)} style={{ background: "none", border: `1px solid ${TEAL}`, borderRadius: 3, padding: "5px 12px", cursor: "pointer", fontSize: 10, color: TEAL, display: "flex", alignItems: "center", gap: 5 }}>
                       <BookOpen size={11} /> Share Resource
                     </button>
                     {chatShareOpen && (
@@ -728,8 +783,9 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                   </div>
                 </div>
                 <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+                  {chatMsgs.length === 0 && <p style={{ color: "#aaa", fontSize: 11, margin: "auto", textAlign: "center" }}>{chatPairId ? `No messages with ${activeChat} yet. Say hello below.` : "Select a conversation."}</p>}
                   {chatMsgs.map((msg, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: msg.from === "mentor" ? "flex-end" : "flex-start" }}>
+                    <div key={msg.id} style={{ display: "flex", justifyContent: msg.from === "mentor" ? "flex-end" : "flex-start" }}>
                       <div style={{
                         maxWidth: "70%", padding: "10px 14px",
                         borderRadius: 3,
@@ -746,7 +802,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                             padding: "1px 6px",
                             borderRadius: 3,
                             fontWeight: 600,
-                          }}>{msg.time}</span>
+                          }}>{stamp(msg)}</span>
                         </div>
                       </div>
                     </div>
@@ -754,11 +810,11 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                   <div ref={chatEndRef} />
                 </div>
                 <div style={{ padding: "10px 16px", borderTop: "1px solid #f0f0f0", display: "flex", gap: 8 }}>
-                  <input value={chatMsg} onChange={e => setChatMsg(e.target.value)}
+                  <input value={chatMsg} onChange={e => setChatMsg(e.target.value)} disabled={chatReadOnly || !chatPairId}
                     onKeyDown={e => e.key === "Enter" && sendMsg()}
-                    placeholder={`Message ${activeChat}...`}
+                    placeholder={chatReadOnly ? "This pairing has ended. History is read-only." : `Message ${activeChat}...`}
                     style={{ flex: 1, border: "1px solid #e0e0e0", borderRadius: 3, padding: "9px 12px", fontSize: 11, outline: "none" }} />
-                  <button onClick={sendMsg} style={{ background: TEAL, border: "none", borderRadius: 3, padding: "9px 13px", cursor: "pointer", color: "#fff", display: "flex" }}>
+                  <button onClick={sendMsg} disabled={chatReadOnly || !chatPairId} aria-label="Send message" style={{ opacity: chatReadOnly || !chatPairId ? 0.5 : 1, background: TEAL, border: "none", borderRadius: 3, padding: "9px 13px", cursor: "pointer", color: "#fff", display: "flex" }}>
                     <Send size={14} />
                   </button>
                 </div>
@@ -879,7 +935,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                 <div style={{ flex: 1 }}>
                   <p style={{ color: NAVY, fontWeight: 700, fontSize: 14, margin: "0 0 4px" }}>Certificate of Contribution</p>
                   <p style={{ color: "#888", fontSize: 11, margin: "0 0 12px" }}>{MU.sessionsCompleted ? `Recognising ${MU.name}'s contribution to ${MU.cohort}: ${MU.sessionsCompleted} session${MU.sessionsCompleted === 1 ? "" : "s"} and ${MU.hoursContributed}h of mentoring.` : `Awarded once you have started mentoring in ${MU.cohort}.`}</p>
-                  <button style={{ background: "#4C808A", border: "none", borderRadius: 3, padding: "9px 20px", color: "#fff", cursor: "pointer", fontSize: 11, display: "flex", alignItems: "center", gap: 6, fontWeight: 700 }}>
+                  <button disabled={!MU.sessionsCompleted} title={MU.sessionsCompleted ? undefined : "Available once you have logged a session"} onClick={downloadCertificate} style={{ background: "#4C808A", border: "none", borderRadius: 3, padding: "9px 20px", color: "#fff", cursor: MU.sessionsCompleted ? "pointer" : "not-allowed", opacity: MU.sessionsCompleted ? 1 : 0.5, fontSize: 11, display: "flex", alignItems: "center", gap: 6, fontWeight: 700 }}>
                     <Download size={13} color="#fff" /> Download Certificate
                   </button>
                 </div>
@@ -915,7 +971,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
               <div className="mdor-card" style={{ background: "#fff", borderRadius: 3, padding: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
                 <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Expertise & Matching Preferences</p>
                 {MU.expertise.map(e => (
-                  <span key={e} className="mdor-chip" style={{ display: "inline-block", background: `${TEAL}15`, color: TEAL, fontSize: 10, padding: "4px 12px", borderRadius: 3, fontWeight: 600, margin: "0 6px 6px 0", cursor: "pointer" }}>{e}</span>
+                  <span key={e} style={{ display: "inline-block", background: `${TEAL}15`, color: TEAL, fontSize: 10, padding: "4px 12px", borderRadius: 3, fontWeight: 600, margin: "0 6px 6px 0" }}>{e}</span>
                 ))}
                 <div style={{ marginTop: 16 }}>
                   <p style={{ color: NAVY, fontWeight: 700, fontSize: 11, margin: "0 0 10px" }}>Matching Preferences</p>
@@ -924,6 +980,7 @@ export function MentorDashboard({ onSignOut }: { onSignOut: () => void }) {
                     { label: "Industries", val: MU.industries },
                     { label: "Hours/Month Available", val: MU.hours },
                     { label: "Location", val: MU.location },
+                    { label: "Mentee capacity", val: `${MENTEES.length} of ${P.capacityOf(myId)} places used` },
                   ].map(f => (
                     <div key={f.label} style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #f5f5f5" }}>
                       <p style={{ color: "#aaa", fontSize: 11, margin: 0 }}>{f.label}</p>

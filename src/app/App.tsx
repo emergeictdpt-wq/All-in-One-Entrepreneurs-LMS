@@ -3,6 +3,8 @@ import { authenticate, authenticateManager, registerCredential } from "./data/au
 import { SEED_MANAGERS, managerById, programsFor, withSeedOwners, type Manager } from "./data/managers";
 import { DirectoryProvider, buildPeople, type Person } from "./data/directory";
 import { loadOverrides } from "./data/applicationTracker";
+import { splitProjects } from "./data/projectScope";
+import { findDuplicate, type ApplicantIdentity, type DuplicateHit } from "./data/duplicates";
 import { MOCK_ENT_APPS, MOCK_MNT_APPS } from "./components/IncubationManagementPage";
 import { Toaster, toast } from "sonner";
 import { Navbar } from "./components/Navbar";
@@ -18,8 +20,10 @@ import { SuccessStories } from "./components/SuccessStories";
 import { FAQ } from "./components/FAQ";
 import { FinalCTA } from "./components/FinalCTA";
 import { Footer } from "./components/Footer";
+import { AboutPage } from "./components/AboutPage";
 import { IncubationPage } from "./components/IncubationPage";
 import { AccelerationPage } from "./components/AccelerationPage";
+import { sectorsFor } from "./data/sectors";
 import { IncubationApplicationForm } from "./components/IncubationApplicationForm";
 import { AccelerationApplicationForm } from "./components/AccelerationApplicationForm";
 import { MentorsLandingPage } from "./components/MentorsLandingPage";
@@ -35,10 +39,10 @@ import type { AdminProgram, EntrepreneurApplication, MentorApplication } from ".
 import { legacyPrograms } from "./data/legacyPrograms";
 import { ProgrammeDataProvider, useProgramme } from "./data/programmeStore";
 
-type Page = "track" | "home" | "incubation" | "acceleration" | "incubation-apply" | "acceleration-apply" | "mentors" | "mentor-register" | "login" | "mentor-login" | "program-managers" | "incubation-management" | "mentee-dashboard" | "mentor-dashboard";
+type Page = "track" | "home" | "about" | "incubation" | "acceleration" | "incubation-apply" | "acceleration-apply" | "mentors" | "mentor-register" | "login" | "mentor-login" | "program-managers" | "incubation-management" | "mentee-dashboard" | "mentor-dashboard";
 
 const PAGE_KEY = "emerge.page"; // per browser tab, so each tab keeps its own page and user across refresh
-const PAGES: Page[] = ["track", "home", "incubation", "acceleration", "incubation-apply", "acceleration-apply", "mentors", "mentor-register", "login", "mentor-login", "program-managers", "incubation-management", "mentee-dashboard", "mentor-dashboard"];
+const PAGES: Page[] = ["track", "home", "about", "incubation", "acceleration", "incubation-apply", "acceleration-apply", "mentors", "mentor-register", "login", "mentor-login", "program-managers", "incubation-management", "mentee-dashboard", "mentor-dashboard"];
 
 const PROGRAMS_KEY = "emerge.programs.v1";   // programmes created in Program Setup (shared by all tabs)
 const MENTOR_APPS_KEY = "emerge.mentorApplications.v1";
@@ -85,6 +89,8 @@ function AppInner() {
     setManagerState(m);
     try { m ? sessionStorage.setItem(MANAGER_KEY, m.id) : sessionStorage.removeItem(MANAGER_KEY); } catch { /* ignore */ }
   };
+  // Reference number to show when the Track page opens from an application confirmation screen
+  const [trackRef, setTrackRef] = useState("");
   const [applyTo, setApplyToState] = useState<{ id: string; name: string } | null>(() => {
     try { const r = sessionStorage.getItem(APPLY_KEY); return r ? JSON.parse(r) : null; } catch { return null; }
   });
@@ -143,6 +149,31 @@ function AppInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminPrograms]);
 
+  // ── Duplicate applications ───────────────────────────────────────────────────────────────
+  // Same email, phone number or National ID as an application already in the system (same kind of applicant) = rejected.
+  // The forms call `checkDuplicate` as the person types/continues; the submit handlers below check again as the final guard.
+  const checkDuplicate = (role: "mentee" | "mentor", who: ApplicantIdentity): DuplicateHit | null => {
+    const seeds = buildPeople({ entApps: [], mntApps: [], overrides: {} });
+    const existing: ApplicantIdentity[] = role === "mentee"
+      ? [...seeds.mentees, ...MOCK_ENT_APPS, ...incubationApplications]
+      : [...seeds.mentors, ...MOCK_MNT_APPS, ...mentorApplications];
+    return findDuplicate(who, existing);
+  };
+  const submitEntrepreneur = (app: EntrepreneurApplication, password: string): DuplicateHit | null => {
+    const dup = checkDuplicate("mentee", app);
+    if (dup) { toast.error(dup.message); return dup; }
+    setIncubationApplications(prev => [...prev, app]);
+    if (app.email) void registerCredential("mentee", app.email, app.id, password);
+    return null;
+  };
+  const submitMentor = (app: MentorApplication, password: string): DuplicateHit | null => {
+    const dup = checkDuplicate("mentor", app);
+    if (dup) { toast.error(dup.message); return dup; }
+    setMentorApplications(prev => [...prev, app]);
+    if (app.email) void registerCredential("mentor", app.email, app.id, password);
+    return null;
+  };
+
   // ── Sign-in ──────────────────────────────────────────────────────────────────────────────
   const peopleNow = () => buildPeople({ entApps: [...MOCK_ENT_APPS, ...incubationApplications], mntApps: [...MOCK_MNT_APPS, ...mentorApplications], overrides: loadOverrides() });
   const enter = (role: "mentee" | "mentor", person: Person) => {
@@ -187,7 +218,7 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <ApplicationTrackerPage onBack={() => navigate("home")} />
+        <ApplicationTrackerPage key={trackRef} onBack={() => navigate("home")} initialRef={trackRef} seedApps={[...MOCK_ENT_APPS, ...MOCK_MNT_APPS]} />
       </div>
     );
   }
@@ -208,7 +239,10 @@ function AppInner() {
         <MentorRegistrationForm
           onBack={() => navigate("mentors")}
           onNavigateHome={() => navigate("home")}
-          onSubmitMentorApplication={(app, password) => { setMentorApplications(prev => [...prev, app]); if (app.email) void registerCredential("mentor", app.email, app.id, password); }}
+          onTrack={(ref) => { setTrackRef(ref); navigate("track"); }}
+          onSubmitMentorApplication={submitMentor}
+          projects={splitProjects(adminPrograms).current.map(p => ({ id: p.id, name: p.name }))}
+          checkDuplicate={who => checkDuplicate("mentor", who)}
         />
       </div>
     );
@@ -246,7 +280,8 @@ function AppInner() {
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
         <ProgramManagersPage onBack={() => navigate("login")} onSignOut={() => navigate("login")} onNavigate={navigate}
-          manager={manager} programs={adminPrograms} onClaimProgram={handleClaimProgram} />
+          manager={manager} programs={adminPrograms} onClaimProgram={handleClaimProgram}
+          liveApplications={incubationApplications} liveMentorApplications={mentorApplications} />
       </div>
     );
   }
@@ -278,11 +313,22 @@ function AppInner() {
     );
   }
 
+  if (page === "about") {
+    return (
+      <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
+        <Toaster richColors position="top-right" />
+        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => { setTrackRef(""); navigate("track"); }} />
+        <AboutPage onNavigate={navigate} />
+        <Footer onNavigate={navigate} />
+      </div>
+    );
+  }
+
   if (page === "incubation") {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => navigate("track")} />
+        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => { setTrackRef(""); navigate("track"); }} />
         <IncubationPage
           onBack={() => navigate("home")}
           onApply={(id, name) => { setApplyTo({ id, name }); navigate("incubation-apply"); }}
@@ -290,7 +336,7 @@ function AppInner() {
           extraPrograms={adminPrograms.filter(p => p.published)}
           activeCount={activeCount}
         />
-        <Footer />
+        <Footer onNavigate={navigate} />
       </div>
     );
   }
@@ -303,7 +349,10 @@ function AppInner() {
           onBack={() => navigate("incubation")}
           programId={applyTo?.id}
           programName={applyTo?.name}
-          onSubmitApplication={(app, password) => { setIncubationApplications(prev => [...prev, app]); if (app.email) void registerCredential("mentee", app.email, app.id, password); }}
+          sectors={sectorsFor(adminPrograms.find(p => p.id === applyTo?.id))}
+          onTrack={(ref) => { setTrackRef(ref); navigate("track"); }}
+          onSubmitApplication={submitEntrepreneur}
+          checkDuplicate={who => checkDuplicate("mentee", who)}
         />
       </div>
     );
@@ -313,9 +362,9 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => navigate("track")} />
+        <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => { setTrackRef(""); navigate("track"); }} />
         <AccelerationPage onBack={() => navigate("home")} onApply={() => navigate("acceleration-apply")} onLogin={() => navigate("login")} />
-        <Footer />
+        <Footer onNavigate={navigate} />
       </div>
     );
   }
@@ -324,7 +373,7 @@ function AppInner() {
     return (
       <div style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <Toaster richColors position="top-right" />
-        <AccelerationApplicationForm onBack={() => navigate("acceleration")} onSubmitApplication={(app, password) => { setIncubationApplications(prev => [...prev, app]); if (app.email) void registerCredential("mentee", app.email, app.id, password); }} />
+        <AccelerationApplicationForm onBack={() => navigate("acceleration")} onSubmitApplication={submitEntrepreneur} checkDuplicate={who => checkDuplicate("mentee", who)} />
       </div>
     );
   }
@@ -332,7 +381,7 @@ function AppInner() {
   return (
     <div className="min-h-screen" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
       <Toaster richColors position="top-right" />
-      <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => navigate("track")} />
+      <Navbar onNavigate={navigate} onLogin={() => navigate("login")} onMentorLogin={() => navigate("mentor-login")} onTrack={() => { setTrackRef(""); navigate("track"); }} />
       <Hero />
       <Programs onNavigateIncubation={() => navigate("incubation")} onNavigateAcceleration={() => navigate("acceleration")} />
       <MentorshipSection onBecomeMentor={() => navigate("mentors")} />
@@ -344,7 +393,7 @@ function AppInner() {
       <Testimonials />
       <FAQ />
       <FinalCTA onApply={() => { document.getElementById("programs")?.scrollIntoView({ behavior: "smooth" }); }} />
-      <Footer />
+      <Footer onNavigate={navigate} />
     </div>
   );
 }

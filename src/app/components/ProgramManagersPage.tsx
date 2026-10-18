@@ -1,12 +1,15 @@
-import { useState, useEffect, useRef } from "react";
-import type { AdminProgram } from "../types";
-import { isUnassigned, managerNames, manages, type Manager } from "../data/managers";
+import { useState, useEffect, useMemo, useRef } from "react";
+import type { AdminProgram, EntrepreneurApplication, MentorApplication } from "../types";
+import { computeOverview, type RankedItem } from "../data/overview";
+import { INCUBATION_NAV_KEY, INCUBATION_TAB_KEY, useManagerNotifications } from "../data/notifications";
+import { INITIAL_NOTIFICATIONS, MOCK_ENT_APPS, MOCK_MNT_APPS, NotificationBellDropdown, notifAudience } from "./IncubationManagementPage";
+import { isUnassigned, managerNames, manages, programsFor, type Manager } from "../data/managers";
 import { SELECTED_PROJECT_KEY } from "../data/projectScope";
 import {
   LayoutDashboard, Users, MapPin, FileText, Award,
   Globe, Bell, Settings, Search,
   ChevronRight, X, BarChart2, Briefcase, Filter,
-  CheckCircle, UserCheck, GitMerge, Layers, GraduationCap,
+  Check, UserCheck, GitMerge, Layers, GraduationCap,
   UserPlus, Shield, ChevronDown, TrendingUp, PieChart, LogOut,
 } from "lucide-react";
 
@@ -25,9 +28,8 @@ const CHART_PALETTE = [
   "#46975D", // 9 Green
   "#78C41A", // 10 Lime
 ];
-const GENDER_FEMALE = "#FF0101"; // Red
-const GENDER_MALE   = "#1D6CBF"; // Royal Blue
-const GENDER_YOUTH  = "#F2EC32"; // Yellow
+const GENDER_FEMALE = "#ffb0c1"; // Pink
+const GENDER_MALE   = "#823dd1"; // Purple
 
 // ── CSS ─────────────────────────────────────────────────────────────────────
 const css = `
@@ -113,197 +115,6 @@ const css = `
   -webkit-text-fill-color:transparent;
 }
 `;
-
-// ── Data ─────────────────────────────────────────────────────────────────────
-const PROJECTS = [
-  "All Projects",
-  "ARISE Youth Incubation",
-  "AgriStart Malawi",
-  "Tech4Good Programme",
-  "Scale-Up Malawi",
-  "GrowBiz Accelerator",
-  "She Leads Malawi",
-  "Export Ready Programme",
-];
-
-interface SectorItem {
-  name: string;
-  count: number;
-  pct: number;
-}
-
-interface DistrictItem {
-  name: string;
-  count: number;
-  pct: number;
-}
-
-interface D {
-  programs:number; entrepreneurs:number; implemented:number;
-  mentors:number; districts:number; sectors:number; partners:number;
-  e_total:number; e_selected:number; e_approved:number; e_matching:number;
-  e_incubation:number; e_acceleration:number; e_alumni:number;
-  m_total:number; m_selected:number; m_approved:number; m_matching:number;
-  female:number; male:number; youth:number;
-  topSectors: SectorItem[];
-  topDistricts: DistrictItem[];
-}
-
-const DATA: Record<string,D> = {
-  "All Projects": {
-    programs:6,entrepreneurs:742,implemented:12,mentors:312,districts:18,sectors:9,partners:24,
-    e_total:742,e_selected:380,e_approved:245,e_matching:198,e_incubation:142,e_acceleration:88,e_alumni:56,
-    m_total:312,m_selected:168,m_approved:124,m_matching:98,
-    female:416,male:297,youth:29,
-    topSectors: [
-      { name: "Agriculture & Agribusiness", count: 254, pct: 34 },
-      { name: "Technology & ICT", count: 178, pct: 24 },
-      { name: "Renewable Energy & Climate", count: 118, pct: 16 },
-      { name: "Manufacturing & Crafts", count: 89, pct: 12 },
-      { name: "Trade & Financial Services", count: 60, pct: 8 },
-      { name: "Healthcare & Sanitation", count: 43, pct: 6 },
-    ],
-    topDistricts: [
-      { name: "Lilongwe", count: 215, pct: 29 },
-      { name: "Blantyre", count: 185, pct: 25 },
-      { name: "Zomba", count: 96, pct: 13 },
-      { name: "Mzuzu", count: 89, pct: 12 },
-      { name: "Kasungu", count: 59, pct: 8 },
-      { name: "Salima", count: 51, pct: 7 },
-      { name: "Mangochi", count: 47, pct: 6 },
-    ]
-  },
-  "ARISE Youth Incubation": {
-    programs:1,entrepreneurs:98,implemented:2,mentors:42,districts:7,sectors:4,partners:6,
-    e_total:98,e_selected:52,e_approved:38,e_matching:31,e_incubation:28,e_acceleration:0,e_alumni:8,
-    m_total:42,m_selected:24,m_approved:18,m_matching:14,
-    female:53,male:39,youth:6,
-    topSectors: [
-      { name: "Technology & Digital", count: 39, pct: 40 },
-      { name: "Agri-Enterprise", count: 29, pct: 30 },
-      { name: "Renewable Energy", count: 18, pct: 18 },
-      { name: "Creative Arts & Trade", count: 12, pct: 12 },
-    ],
-    topDistricts: [
-      { name: "Lilongwe", count: 35, pct: 36 },
-      { name: "Blantyre", count: 28, pct: 29 },
-      { name: "Zomba", count: 16, pct: 16 },
-      { name: "Mzuzu", count: 12, pct: 12 },
-      { name: "Salima", count: 7, pct: 7 },
-    ]
-  },
-  "AgriStart Malawi": {
-    programs:1,entrepreneurs:87,implemented:2,mentors:38,districts:8,sectors:3,partners:5,
-    e_total:87,e_selected:44,e_approved:30,e_matching:24,e_incubation:22,e_acceleration:0,e_alumni:6,
-    m_total:38,m_selected:20,m_approved:15,m_matching:11,
-    female:48,male:35,youth:4,
-    topSectors: [
-      { name: "Crop Production & Processing", count: 41, pct: 47 },
-      { name: "Livestock & Aquaculture", count: 24, pct: 28 },
-      { name: "AgriTech & Cold Storage", count: 14, pct: 16 },
-      { name: "Agro-forestry & Inputs", count: 8, pct: 9 },
-    ],
-    topDistricts: [
-      { name: "Lilongwe", count: 28, pct: 32 },
-      { name: "Kasungu", count: 21, pct: 24 },
-      { name: "Salima", count: 15, pct: 17 },
-      { name: "Mzuzu", count: 13, pct: 15 },
-      { name: "Zomba", count: 10, pct: 12 },
-    ]
-  },
-  "Tech4Good Programme": {
-    programs:1,entrepreneurs:62,implemented:1,mentors:28,districts:6,sectors:3,partners:4,
-    e_total:62,e_selected:32,e_approved:22,e_matching:18,e_incubation:14,e_acceleration:0,e_alumni:4,
-    m_total:28,m_selected:14,m_approved:11,m_matching:8,
-    female:28,male:31,youth:3,
-    topSectors: [
-      { name: "Software & Web Platforms", count: 26, pct: 42 },
-      { name: "FinTech & Payments", count: 18, pct: 29 },
-      { name: "HealthTech & EduTech", count: 11, pct: 18 },
-      { name: "Hardware & IoT", count: 7, pct: 11 },
-    ],
-    topDistricts: [
-      { name: "Blantyre", count: 26, pct: 42 },
-      { name: "Lilongwe", count: 22, pct: 35 },
-      { name: "Zomba", count: 8, pct: 13 },
-      { name: "Mzuzu", count: 6, pct: 10 },
-    ]
-  },
-  "Scale-Up Malawi": {
-    programs:1,entrepreneurs:72,implemented:2,mentors:34,districts:6,sectors:5,partners:7,
-    e_total:72,e_selected:38,e_approved:26,e_matching:20,e_incubation:0,e_acceleration:18,e_alumni:10,
-    m_total:34,m_selected:18,m_approved:14,m_matching:10,
-    female:39,male:30,youth:3,
-    topSectors: [
-      { name: "Manufacturing & FMCG", count: 27, pct: 38 },
-      { name: "Commercial Agriculture", count: 20, pct: 28 },
-      { name: "Clean Energy Solutions", count: 14, pct: 19 },
-      { name: "Logistics & Distribution", count: 11, pct: 15 },
-    ],
-    topDistricts: [
-      { name: "Blantyre", count: 28, pct: 39 },
-      { name: "Lilongwe", count: 24, pct: 33 },
-      { name: "Mzuzu", count: 11, pct: 15 },
-      { name: "Zomba", count: 9, pct: 13 },
-    ]
-  },
-  "GrowBiz Accelerator": {
-    programs:1,entrepreneurs:68,implemented:2,mentors:30,districts:7,sectors:4,partners:5,
-    e_total:68,e_selected:34,e_approved:24,e_matching:19,e_incubation:0,e_acceleration:16,e_alumni:9,
-    m_total:30,m_selected:16,m_approved:12,m_matching:9,
-    female:36,male:29,youth:3,
-    topSectors: [
-      { name: "Retail & Trade Distribution", count: 25, pct: 37 },
-      { name: "Agri-Processing", count: 19, pct: 28 },
-      { name: "Services & Hospitality", count: 14, pct: 21 },
-      { name: "Clean Tech & Waste", count: 10, pct: 14 },
-    ],
-    topDistricts: [
-      { name: "Lilongwe", count: 25, pct: 37 },
-      { name: "Blantyre", count: 22, pct: 32 },
-      { name: "Zomba", count: 12, pct: 18 },
-      { name: "Mangochi", count: 9, pct: 13 },
-    ]
-  },
-  "She Leads Malawi": {
-    programs:1,entrepreneurs:130,implemented:2,mentors:58,districts:10,sectors:5,partners:8,
-    e_total:130,e_selected:70,e_approved:48,e_matching:38,e_incubation:30,e_acceleration:12,e_alumni:14,
-    m_total:58,m_selected:32,m_approved:24,m_matching:18,
-    female:115,male:12,youth:3,
-    topSectors: [
-      { name: "Agri-Processing & Nutrition", count: 48, pct: 37 },
-      { name: "Textile & Craft Manufacturing", count: 32, pct: 25 },
-      { name: "Tech & Digital Services", count: 25, pct: 19 },
-      { name: "Health, Beauty & Wellbeing", count: 16, pct: 12 },
-      { name: "Eco-Packaging & Green Energy", count: 9, pct: 7 },
-    ],
-    topDistricts: [
-      { name: "Lilongwe", count: 42, pct: 32 },
-      { name: "Blantyre", count: 36, pct: 28 },
-      { name: "Zomba", count: 20, pct: 15 },
-      { name: "Mzuzu", count: 18, pct: 14 },
-      { name: "Salima", count: 14, pct: 11 },
-    ]
-  },
-  "Export Ready Programme": {
-    programs:1,entrepreneurs:43,implemented:1,mentors:22,districts:5,sectors:3,partners:4,
-    e_total:43,e_selected:22,e_approved:16,e_matching:12,e_incubation:0,e_acceleration:8,e_alumni:5,
-    m_total:22,m_selected:12,m_approved:9,m_matching:7,
-    female:24,male:17,youth:2,
-    topSectors: [
-      { name: "Specialty Tea & Macadamia", count: 18, pct: 42 },
-      { name: "Textiles & Garments", count: 12, pct: 28 },
-      { name: "Processed Foods", count: 8, pct: 19 },
-      { name: "Artisan & Handcrafts", count: 5, pct: 11 },
-    ],
-    topDistricts: [
-      { name: "Blantyre", count: 18, pct: 42 },
-      { name: "Thyolo & Mulanje", count: 12, pct: 28 },
-      { name: "Lilongwe", count: 8, pct: 19 },
-      { name: "Mzuzu", count: 5, pct: 11 },
-    ]
-  },
-};
 
 // ── Animated counter ──────────────────────────────────────────────────────────
 function useCount(target: number) {
@@ -415,7 +226,7 @@ function ProjectDropdown({ projects, value, onChange }: {
             style={{borderBottom:"1px solid rgba(255,255,255,0.18)"}}>
             <div className="flex items-center gap-2">
               <Search size={11} color="rgba(255,255,255,0.7)"/>
-              <span className="px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider text-white"
+              <span className="px-2.5 py-0.5 rounded-[3px] text-[10px] font-bold uppercase tracking-wider text-white"
                 style={{background: TEAL, border: "1px solid rgba(255,255,255,0.3)"}}>
                 Select Project
               </span>
@@ -436,7 +247,7 @@ function ProjectDropdown({ projects, value, onChange }: {
                 onMouseLeave={e=>{ if (!active) (e.currentTarget as HTMLElement).style.background="transparent";}}
               >
                 <span>{p}</span>
-                {active && <CheckCircle size={12} color="#fff" className="shrink-0"/>}
+                {active && <Check size={12} color="#fff" className="shrink-0"/>}
               </button>
             );
           })}
@@ -545,14 +356,13 @@ function ProfileMenu({ onSignOut, name = "Program Manager", title = "My Profile"
       {open && (
         <div className="absolute right-0 top-full mt-2 w-52 rounded-md overflow-hidden z-50"
           style={{
-            background:"rgba(15,18,40,0.98)",
+            background:"#ffffff",
             border:`1px solid ${TEAL}55`,
-            boxShadow:"0 16px 40px rgba(0,0,0,0.5)",
+            boxShadow:"0 16px 40px rgba(15,18,40,0.18)",
             animation:"pm-dropdown 0.2s ease both",
-            backdropFilter:"blur(20px)",
           }}>
           {/* Profile header */}
-          <div className="px-4 py-3 flex items-center gap-3" style={{borderBottom:`1px solid rgba(255,255,255,0.07)`}}>
+          <div className="px-4 py-3 flex items-center gap-3" style={{borderBottom:`1px solid rgba(76,128,138,0.18)`}}>
             <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
               style={{background:`linear-gradient(135deg,${NAVY},${TEAL})`,border:"1px solid rgba(255,255,255,0.2)"}}>
               <svg viewBox="0 0 28 28" width="28" height="28" fill="none">
@@ -561,7 +371,7 @@ function ProfileMenu({ onSignOut, name = "Program Manager", title = "My Profile"
               </svg>
             </div>
             <div className="min-w-0">
-              <div className="text-white text-xs font-bold truncate">{name}</div>
+              <div className="text-xs font-bold truncate" style={{color:NAVY}}>{name}</div>
               <div className="text-[10px] truncate" style={{color:`${TEAL}`}}>{title}</div>
             </div>
           </div>
@@ -575,13 +385,13 @@ function ProfileMenu({ onSignOut, name = "Program Manager", title = "My Profile"
               <button key={label}
                 onClick={() => setOpen(false)}
                 className="flex items-center gap-3 w-full px-4 py-2.5 text-xs font-semibold transition-all text-left"
-                style={{color:"rgba(255,255,255,0.65)"}}
-                onMouseEnter={e => (e.currentTarget.style.background = "rgba(76,128,138,0.15)")}
+                style={{color:"#4b5563"}}
+                onMouseEnter={e => (e.currentTarget.style.background = "rgba(76,128,138,0.10)")}
                 onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
               >
                 <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
                   style={{background:NAVY}}>
-                  <Icon size={11} color={TEAL}/>
+                  <Icon size={11} color="#ffffff"/>
                 </div>
                 {label}
               </button>
@@ -589,17 +399,17 @@ function ProfileMenu({ onSignOut, name = "Program Manager", title = "My Profile"
           </div>
 
           {/* Sign out */}
-          <div style={{borderTop:"1px solid rgba(255,255,255,0.07)"}}>
+          <div style={{borderTop:"1px solid rgba(76,128,138,0.18)"}}>
             <button
               onClick={() => { setOpen(false); onSignOut?.(); }}
               className="flex items-center gap-3 w-full px-4 py-3 text-xs font-bold transition-all text-left"
-              style={{color:"#fca5a5"}}
-              onMouseEnter={e => (e.currentTarget.style.background = "rgba(220,38,38,0.18)")}
+              style={{color:"#dc2626"}}
+              onMouseEnter={e => (e.currentTarget.style.background = "rgba(220,38,38,0.08)")}
               onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
             >
               <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
-                style={{background:"rgba(239,68,68,0.25)"}}>
-                <LogOut size={11} color="#fca5a5"/>
+                style={{background:"rgba(239,68,68,0.12)"}}>
+                <LogOut size={11} color="#dc2626"/>
               </div>
               Sign Out
             </button>
@@ -612,15 +422,15 @@ function ProfileMenu({ onSignOut, name = "Program Manager", title = "My Profile"
 }
 
 // ── Gender Donut Chart Card ───────────────────────────────────────────────────
-function GenderDonutCard({ female, male, youth, project }: {
-  female: number; male: number; youth: number; project: string;
+function GenderDonutCard({ female, male, other, pwd, youth }: {
+  female: number; male: number; other: number; pwd: number; youth: number;
 }) {
-  const [hovered, setHovered] = useState<"female" | "male" | "youth" | null>(null);
+  const [hovered, setHovered] = useState<"female" | "male" | null>(null);
 
-  const total = female + male + youth || 1;
+  const total = female + male || 1;
+  const inclusionTotal = female + male + other || 1;
   const femPct = Math.round((female / total) * 100);
-  const malPct = Math.round((male / total) * 100);
-  const ythPct = Math.max(0, 100 - femPct - malPct);
+  const malPct = 100 - femPct;
 
   // Donut geometry: viewBox 420 260, center (210, 130), radius 72, strokeWidth 22
   const cx = 210, cy = 130, r = 72, sw = 22;
@@ -629,11 +439,9 @@ function GenderDonutCard({ female, male, youth, project }: {
 
   const femFrac = female / total;
   const malFrac = male / total;
-  const ythFrac = Math.max(0, 1 - femFrac - malFrac);
 
   const fLen = Math.max(0, femFrac * circ - gap);
   const mLen = Math.max(0, malFrac * circ - gap);
-  const yLen = Math.max(0, ythFrac * circ - gap);
 
   // Angle calculations starting at 12 o'clock (-90 deg)
   const deltaF = femFrac * 360;
@@ -642,10 +450,6 @@ function GenderDonutCard({ female, male, youth, project }: {
   const deltaM = malFrac * 360;
   const alphaM = -90 + deltaF;
   const thetaM = alphaM + deltaM / 2;
-
-  const deltaY = ythFrac * 360;
-  const alphaY = alphaM + deltaM;
-  const thetaY = alphaY + deltaY / 2;
 
   const slices = [
     {
@@ -668,23 +472,7 @@ function GenderDonutCard({ female, male, youth, project }: {
       len: mLen,
       offset: -(fLen + gap),
     },
-    {
-      key: "youth" as const,
-      label: "Youth",
-      count: youth,
-      pct: ythPct,
-      color: GENDER_YOUTH,
-      theta: thetaY,
-      len: yLen,
-      offset: -(fLen + gap + mLen + gap),
-    },
   ];
-
-  // Active highlighted info in center
-  const activeLabel = hovered === "female" ? "Female" : hovered === "male" ? "Male" : hovered === "youth" ? "Youth" : "";
-  const activeCount = hovered === "female" ? female : hovered === "male" ? male : hovered === "youth" ? youth : total;
-  const activePct = hovered === "female" ? `${femPct}%` : hovered === "male" ? `${malPct}%` : hovered === "youth" ? `${ythPct}%` : `${femPct}% Female`;
-  const activeColor = hovered === "female" ? GENDER_FEMALE : hovered === "male" ? GENDER_MALE : hovered === "youth" ? GENDER_YOUTH : GENDER_FEMALE;
 
   return (
     <div className="pm-up rounded-md p-6 flex flex-col justify-between" style={{
@@ -703,7 +491,7 @@ function GenderDonutCard({ female, male, youth, project }: {
           <div>
             <div className="font-black text-base" style={{color:TEAL}}>Gender Distribution</div>
             <div className="text-[11px] font-semibold text-gray-500">
-              Participant representation by gender
+              Entrepreneurs by gender
             </div>
           </div>
         </div>
@@ -739,37 +527,17 @@ function GenderDonutCard({ female, male, youth, project }: {
             ))}
           </g>
 
-          {/* Center text */}
+          {/* Center text: total only */}
           <text
             x={cx}
-            y={cy - 14}
+            y={cy}
             textAnchor="middle"
-            fill="#6b7280"
-            fontSize="11"
-            fontWeight="700"
-            letterSpacing="0.06em"
-          >
-            {activeLabel ? activeLabel.toUpperCase() : "TOTAL"}
-          </text>
-          <text
-            x={cx}
-            y={cy + 9}
-            textAnchor="middle"
-            fill={activeColor}
-            fontSize="24"
+            dominantBaseline="central"
+            fill={NAVY}
+            fontSize="32"
             fontWeight="900"
           >
-            {activeCount.toLocaleString()}
-          </text>
-          <text
-            x={cx}
-            y={cy + 26}
-            textAnchor="middle"
-            fill={activeColor}
-            fontSize="12"
-            fontWeight="700"
-          >
-            {activePct}
+            {total === 1 && female + male === 0 ? 0 : (female + male).toLocaleString()}
           </text>
 
           {/* Line Pointers & Values */}
@@ -784,8 +552,8 @@ function GenderDonutCard({ female, male, youth, project }: {
             };
 
             const p2 = {
-              x: cx + (r + sw / 2 + 18) * cos,
-              y: cy + (r + sw / 2 + 18) * sin,
+              x: cx + (r + sw / 2 + 28) * cos,
+              y: cy + (r + sw / 2 + 28) * sin,
             };
 
             const isRight = cos >= 0;
@@ -858,7 +626,7 @@ function GenderDonutCard({ female, male, youth, project }: {
           onMouseLeave={() => setHovered(null)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all cursor-pointer"
           style={{
-            background: hovered === "female" ? "rgba(255,1,1,0.12)" : "transparent",
+            background: hovered === "female" ? "rgba(255,176,193,0.25)" : "transparent",
           }}
         >
           <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: GENDER_FEMALE }} />
@@ -872,34 +640,33 @@ function GenderDonutCard({ female, male, youth, project }: {
           onMouseLeave={() => setHovered(null)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all cursor-pointer"
           style={{
-            background: hovered === "male" ? "rgba(29,108,191,0.12)" : "transparent",
+            background: hovered === "male" ? "rgba(130,61,209,0.12)" : "transparent",
           }}
         >
           <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: GENDER_MALE }} />
           <span className="text-xs font-bold text-gray-700">Male</span>
         </button>
+      </div>
 
-        <button
-          type="button"
-          onClick={() => setHovered(hovered === "youth" ? null : "youth")}
-          onMouseEnter={() => setHovered("youth")}
-          onMouseLeave={() => setHovered(null)}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-all cursor-pointer"
-          style={{
-            background: hovered === "youth" ? "rgba(242,236,50,0.18)" : "transparent",
-          }}
-        >
-          <div className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: GENDER_YOUTH }} />
-          <span className="text-xs font-bold text-gray-700">Youth</span>
-        </button>
+      {/* Inclusion figures from the Demographics tick-boxes on the application form */}
+      <div className="grid grid-cols-2 gap-3 mt-3" data-testid="inclusion-figures">
+        {[
+          { label: "Persons with disability", n: pwd },
+          { label: "Youth (18-35)", n: youth },
+        ].map(x => (
+          <div key={x.label} className="rounded-md px-3 py-2 text-center" style={{ background: "rgba(76,128,138,0.07)" }}>
+            <div className="font-black text-sm" style={{ color: NAVY }}>{x.n.toLocaleString()} <span className="text-[11px] font-bold" style={{ color: TEAL }}>({Math.round((x.n / inclusionTotal) * 100)}%)</span></div>
+            <div className="text-[10px] font-semibold text-gray-500">{x.label}</div>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
 // ── Sector & District Representation Card ─────────────────────────────────────
-function SectorDistrictCard({ sectors, districts, project }: {
-  sectors: SectorItem[]; districts: DistrictItem[]; project: string;
+function SectorDistrictCard({ sectors, districts }: {
+  sectors: RankedItem[]; districts: RankedItem[];
 }) {
   const [view, setView] = useState<"sectors" | "districts">("sectors");
   const [showPct, setShowPct] = useState(false);
@@ -916,7 +683,7 @@ function SectorDistrictCard({ sectors, districts, project }: {
     return () => clearInterval(interval);
   }, []);
 
-  const topDistrict = districts[0] ?? { name: "Lilongwe", count: 0, pct: 0 };
+  const topDistrict = districts[0];
 
   const barColors = CHART_PALETTE;
 
@@ -948,7 +715,7 @@ function SectorDistrictCard({ sectors, districts, project }: {
         <div className="flex items-center bg-gray-100 p-0.5 rounded-md self-start sm:self-auto">
           <button
             onClick={() => setView("sectors")}
-            className="px-3 py-1 rounded text-xs font-bold transition-all"
+            className="px-3 py-1 rounded-[3px] text-xs font-bold transition-all"
             style={{
               background: view === "sectors" ? TEAL : "transparent",
               color: view === "sectors" ? "#fff" : "#4b5563",
@@ -959,7 +726,7 @@ function SectorDistrictCard({ sectors, districts, project }: {
           </button>
           <button
             onClick={() => setView("districts")}
-            className="px-3 py-1 rounded text-xs font-bold transition-all"
+            className="px-3 py-1 rounded-[3px] text-xs font-bold transition-all"
             style={{
               background: view === "districts" ? TEAL : "transparent",
               color: view === "districts" ? "#fff" : "#4b5563",
@@ -973,7 +740,9 @@ function SectorDistrictCard({ sectors, districts, project }: {
 
       {/* Progress Bars List */}
       <div className="flex flex-col gap-3 my-1">
-        {view === "sectors" ? (
+        {(view === "sectors" ? sectors : districts).length === 0 ? (
+          <div className="text-xs text-gray-400 py-6 text-center">No applications yet, so there is nothing to chart.</div>
+        ) : view === "sectors" ? (
           sectors.slice(0, 5).map((sec, idx) => (
             <div key={sec.name} className="group">
               <div className="flex items-center justify-between text-xs mb-1">
@@ -1037,7 +806,7 @@ function SectorDistrictCard({ sectors, districts, project }: {
       {/* Footer Banner */}
       <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-[11px]">
         <div className="text-gray-600 truncate pr-2">
-          {view === "districts" && (
+          {view === "districts" && topDistrict && (
             <span><strong>Lead Hub:</strong> {topDistrict.name} — {topDistrict.pct}% of cohort</span>
           )}
         </div>
@@ -1058,7 +827,7 @@ function ProjectsDirectory({ programs, manager, onOpen, onClaim }: { programs: A
   return (
     <div data-testid="projects-directory">
       <div className="mb-4 flex items-center justify-between">
-        <span className="text-xs font-bold uppercase tracking-wider" style={{color:TEAL}}>All Projects ({list.length})</span>
+        <span className="text-xs font-bold uppercase tracking-wider" style={{color:TEAL}}>All Projects</span>
         <span className="text-[11px]" style={{color:"#6b7280"}}>You champion {mine} of {list.length}</span>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -1069,7 +838,7 @@ function ProjectsDirectory({ programs, manager, onOpen, onClaim }: { programs: A
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-black" style={{color:NAVY}}>{p.name}</p>
               </div>
-              <p className="text-[11px]" style={{color:"#6b7280"}}>{p.status}{p.sector ? ` · ${p.sector}` : ""}</p>
+              <p className="text-[11px]" style={{color:"#6b7280"}}>{p.status}{p.sector ? ` ${p.sector}` : ""}</p>
               <p className="text-[11px]" style={{color:"#374151"}}>{none ? "No manager yet" : `Managed by ${names.join(", ")}`}</p>
               <div className="mt-auto pt-2">
                 {mineP && <button onClick={()=>onOpen(p.id)} className="text-[11px] font-bold px-3 py-1.5 rounded-md text-white" style={{background:TEAL}}>Open in Incubation Management</button>}
@@ -1083,20 +852,28 @@ function ProjectsDirectory({ programs, manager, onOpen, onClaim }: { programs: A
   );
 }
 
-export function ProgramManagersPage({ onBack, onNavigate, onSignOut, manager = null, programs = [], onClaimProgram }: {
+export function ProgramManagersPage({ onBack, onNavigate, onSignOut, manager = null, programs = [], onClaimProgram, liveApplications = [], liveMentorApplications = [] }: {
   onBack:()=>void; onNavigate?:(page:string)=>void; onSignOut?:()=>void;
   /** The signed-in programme manager. */
   manager?: Manager | null;
   /** Every program (all managers'). Incubation Management only shows the ones this manager champions. */
   programs?: AdminProgram[];
   onClaimProgram?: (programId: string) => void;
+  /** Submitted applications; together with the sample records they feed the summary cards and charts. */
+  liveApplications?: EntrepreneurApplication[];
+  liveMentorApplications?: MentorApplication[];
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [activeNav, setActiveNav] = useState("Dashboard");
-  const [project, setProject] = useState("All Projects");
+  // Every figure below is computed from the programs that were set up and the applications received.
+  const d = useMemo(
+    () => computeOverview(programs, [...MOCK_ENT_APPS, ...liveApplications], [...MOCK_MNT_APPS, ...liveMentorApplications]),
+    [programs, liveApplications, liveMentorApplications],
+  );
 
-  const d = DATA[project] ?? DATA["All Projects"];
+  const mineIds = useMemo(() => programsFor(programs, manager?.id).map(p => p.id), [programs, manager?.id]);
+  const feed = useManagerNotifications({ seed: INITIAL_NOTIFICATIONS, allowedIds: mineIds, entApps: liveApplications, mntApps: liveMentorApplications });
 
   const overviewCards = [
     {icon:Layers,    label:"Total Programs",           value:d.programs,      accent:TEAL},
@@ -1105,7 +882,7 @@ export function ProgramManagersPage({ onBack, onNavigate, onSignOut, manager = n
     {icon:UserCheck, label:"Mentors Reached",          value:d.mentors,       accent:TEAL},
     {icon:MapPin,    label:"Districts Reached",        value:d.districts,     accent:TEAL},
     {icon:Globe,     label:"Sectors Reached",          value:d.sectors,       accent:TEAL},
-    {icon:Shield,    label:"Project Partners Engaged", value:d.partners,      accent:TEAL},
+    {icon:Shield,    label:"Mentor Organisations Engaged", value:d.organisations, accent:TEAL},
   ];
 
   return (
@@ -1167,12 +944,21 @@ export function ProgramManagersPage({ onBack, onNavigate, onSignOut, manager = n
           </div>
           <div className="flex-1"/>
 
-          {/* Notification */}
-          <button className="w-8 h-8 rounded-md flex items-center justify-center relative shrink-0"
-            style={{background:"transparent",border:"none"}}>
-            <Bell size={13} color="#fff"/>
-            <div className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{background:"#e85454"}}/>
-          </button>
+          {/* Notifications */}
+          <NotificationBellDropdown
+            notifications={feed.notifications}
+            onMarkRead={feed.markRead}
+            onMarkAllRead={feed.markAllRead}
+            onClearAll={feed.clearAll}
+            onRemove={feed.remove}
+            onNavigate={(target, n) => {
+              try {
+                sessionStorage.setItem(INCUBATION_NAV_KEY, target);
+                sessionStorage.setItem(INCUBATION_TAB_KEY, notifAudience(n) === "mentor" ? "mentors" : "entrepreneurs");
+              } catch { /* ignore */ }
+              onNavigate?.("incubation-management");
+            }}
+          />
 
           {/* Profile menu */}
           <ProfileMenu onSignOut={onSignOut ?? onBack} name={manager?.name} title={manager?.title} />
@@ -1205,8 +991,8 @@ export function ProgramManagersPage({ onBack, onNavigate, onSignOut, manager = n
 
           {/* ── Analytics Visualizations: Gender Distribution & Sector/District Representation ── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <GenderDonutCard female={d.female} male={d.male} youth={d.youth} project={project} />
-            <SectorDistrictCard sectors={d.topSectors} districts={d.topDistricts} project={project} />
+            <GenderDonutCard female={d.female} male={d.male} other={d.otherGender} pwd={d.pwd} youth={d.youth} />
+            <SectorDistrictCard sectors={d.topSectors} districts={d.topDistricts} />
           </div>
 
           <div className="h-4"/>

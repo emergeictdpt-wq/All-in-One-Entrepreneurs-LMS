@@ -2,7 +2,7 @@ import { ArrowRight, Play, TrendingUp, Users, DollarSign } from "lucide-react";
 
 const stories = [
   {
-    founder: "Amina Diallo",
+    founder: "Chikondi Phiri",
     startup: "AgroFresh Technologies",
     program: "GrowthScale Accelerator '24",
     funding: "$2.4M",
@@ -13,7 +13,7 @@ const stories = [
     sector: "AgriTech",
   },
   {
-    founder: "Daniel Omondi",
+    founder: "Towera Mwale",
     startup: "PaySwift Africa",
     program: "FinTech Frontier '23",
     funding: "$5.8M",
@@ -38,7 +38,7 @@ const stories = [
 
 export function SuccessStories() {
   return (
-    <section className="py-20 bg-white" id="stories">
+    <section className="py-20 bg-[#f8f9fb]" id="stories">
       <div className="max-w-[1400px] mx-auto px-4 lg:px-8">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-10">
           <div>
@@ -80,10 +80,10 @@ export function SuccessStories() {
                     { icon: Users, label: "Jobs", value: s.jobs },
                     { icon: TrendingUp, label: "Growth", value: s.growth },
                   ].map(({ icon: Icon, label, value }) => (
-                    <div key={label} className="bg-white/10 rounded-md p-2 text-center">
-                      <Icon className="w-3 h-3 text-white/60 mx-auto mb-0.5" />
-                      <div className="text-white font-bold text-sm">{value}</div>
-                      <div className="text-white/50 text-[9px]">{label}</div>
+                    <div key={label} className="bg-white rounded-md p-2 text-center">
+                      <Icon className="w-3 h-3 text-[#4C808A] mx-auto mb-0.5" />
+                      <div className="text-[#4C808A] font-bold text-sm">{value}</div>
+                      <div className="text-[#4C808A] text-[9px]">{label}</div>
                     </div>
                   ))}
                 </div>

@@ -22,6 +22,8 @@ export type EntrepreneurApplication = {
   firstName?: string;
   lastName?: string;
   email?: string;
+  /** National ID (or passport) number. Used with email and phone to reject duplicate applications. */
+  nationalId?: string;
   businessName?: string;
   stage?: string;
   gender?: string;
@@ -40,6 +42,31 @@ export type EntrepreneurApplication = {
   matchedMentorId?: string;
   matchScore?: number;
   introDate?: string;
+  /** ── Collected on the application form (the Applications table reads these names) ── */
+  /** "18-35" or "35+", chosen by the applicant */
+  ageGroup?: "18-35" | "35+";
+  nationality?: string;
+  address?: string;
+  region?: string;
+  languages?: string;
+  youthOwned?: boolean;
+  womanOwned?: boolean;
+  /** Person with disability */
+  pwd?: boolean;
+  locationType?: string;
+  qualification?: string;
+  fieldStudy?: string;
+  institution?: string;
+  bizExperience?: string;
+  whyEntrepreneur?: string;
+  yearStarted?: string;
+  bizRegStatus?: string;
+  targetCustomers?: string;
+  bizStage?: string;
+  coFounderName?: string;
+  coFounderRole?: string;
+  /** Everything the applicant filled in, section by section (never the password). */
+  submission?: Record<string, unknown>;
 };
 
 export type MentorApplication = {
@@ -54,8 +81,11 @@ export type MentorApplication = {
   program: "Incubation" | "Acceleration";
   /** project (admin-created programme) this mentor is attached to; unset = programme-wide mentor pool */
   programId?: string;
+  programName?: string;
   isMockup: boolean;
   email?: string;
+  /** National ID (or passport) number. Used with email and phone to reject duplicate applications. */
+  nationalId?: string;
   title?: string;
   employer?: string;
   gender?: string;
@@ -75,6 +105,21 @@ export type MentorApplication = {
   matchState?: "Awaiting mentee" | "Mentoring" | "At capacity";
   load?: number;
   mentees?: { pairId: string; menteeId?: string; name: string; sector: string; score: number; rematch: boolean; introDate?: string }[];
+  /** ── Collected on the registration form (the Applications table reads these names) ── */
+  /** "18-35" or "35+", chosen by the applicant */
+  ageGroup?: "18-35" | "35+";
+  nationality?: string;
+  address?: string;
+  region?: string;
+  languages?: string;
+  yearsExp?: string;
+  availability?: string;
+  qualification?: string;
+  institution?: string;
+  /** Person with disability */
+  pwd?: boolean;
+  /** Everything the applicant filled in, section by section (never the password). */
+  submission?: Record<string, unknown>;
 };
 
 export type AdminProgram = {
@@ -101,4 +146,6 @@ export type AdminProgram = {
   cohortId?: number;
   /** Programme managers who champion this program (see data/managers.ts). Only they see it in Incubation Management. */
   managerIds?: string[];
+  /** Sectors applicants can pick from on this project's entrepreneur application form. Unset = the standard list. */
+  applicationSectors?: string[];
 };

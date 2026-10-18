@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect, useMemo, createContext, useContext } from "react";
+import { useState, useRef, useEffect, useMemo, createContext, useContext, Fragment } from "react";
 import { toast } from "sonner";
 import {
-  LayoutGrid, FileText, CheckCircle, ThumbsUp, GitMerge,
+  LayoutGrid, FileText, Check, ThumbsUp, GitMerge,
   XCircle, Settings, Mail, Activity, Users,
   ChevronDown, ChevronRight, ChevronLeft, Bell, Search, User,
   Eye, Download, MoreHorizontal, Share2,
@@ -10,15 +10,20 @@ import {
   Send, Inbox, Star, Trash2, Sliders,
   GraduationCap, Award, BookOpen, CheckSquare, UserCheck, Plus,
   Calendar, Video, Cloud, Link2, MessageSquare, ClipboardList, Image as ImageIcon, Camera,
-  Filter, X, Layers, FileCheck, Lightbulb, RotateCcw, FileX, Phone, Sparkles, CheckCheck, BellRing, Folder, Check,
+  Filter, X, Layers, FileCheck, Lightbulb, RotateCcw, FileX, Phone, Sparkles, CheckCheck, BellRing, Folder,
 } from "lucide-react";
 import type { AdminProgram, TimelineEntry, EntrepreneurApplication, MentorApplication } from "../types";
-import { useProgramme, fmtDate, sameMentee, isMentorOf, MAX_MENTOR_CAPACITY } from "../data/programmeStore";
+import { useProgramme, fmtDate, sameMentee, isMentorOf, MAX_MENTOR_CAPACITY, cohortEnrolled, mentorKey } from "../data/programmeStore";
+import { DEFAULT_APPLICATION_SECTORS, cleanSectors } from "../data/sectors";
 import { DECISIONS_KEY } from "../data/applicationTracker";
+import { INCUBATION_NAV_KEY, INCUBATION_TAB_KEY } from "../data/notifications";
 import { SAMPLE_CORE, SAMPLE_SHE } from "../data/directory";
 import type { Manager } from "../data/managers";
 import { ALL_PROJECTS, ALL_SCOPE, SELECTED_PROJECT_KEY, inScope, mentorInScope, isCompletedProject, splitProjects, type ProjectScope } from "../data/projectScope";
 import { ProfileAvatar } from "./ProfileAvatar";
+import { BatchEmailModal } from "./BatchEmailModal";
+import { campaignVisible, defaultTemplate, loadCampaigns, markCampaignSent, renderFor, sendCampaign, type Campaign, type EmailAudience } from "../data/emailCampaigns";
+import { isEmail } from "../data/auth";
 
 const TEAL = "#4C808A";
 const NAVY = "#3B4167";
@@ -79,7 +84,7 @@ const css = `
 .im-main::-webkit-scrollbar-thumb { background: rgba(76,128,138,0.3); border-radius: 4px; }
 
 /* status badge */
-.im-badge { display:inline-flex; align-items:center; padding:2px 10px; border-radius:20px; font-size:10px; font-weight:700; }
+.im-badge { display:inline-flex; align-items:center; padding:2px 10px; border-radius:3px; font-size:10px; font-weight:700; }
 
 @keyframes im-spin {
   to { transform: rotate(360deg); }
@@ -92,12 +97,14 @@ export type NavKey =
   | "Email Dashboard" | "Program Health" | "Alumni" | "Program Setup"
   | "Pairing & Matching" | "Relationship Health" | "Cohort Management" | "Reports & Analytics" | "Integration Hub"
   | "Settings";
+const NAV_KEYS: NavKey[] = ["Applications","Selection","Rejected","Matching","Dropouts","Email Dashboard","Program Health","Alumni","Program Setup","Pairing & Matching","Relationship Health","Cohort Management","Reports & Analytics","Integration Hub","Settings"];
 
 export interface PairHealthRow {
   pairId: string; programId?: string; mentee: string; mentor: string;
   health: "Healthy" | "At Risk" | "Stalled" | "New";
   sessions7d: number; satisfaction: number | null; goalPct: number;
   flagged: boolean; trend: "up" | "down" | "stable"; reasons: string[]; intervention: boolean;
+  daysSince?: number | null; sessionsTotal?: number; taskPct?: number | null;
 }
 
 export interface MentorPair {
@@ -132,7 +139,16 @@ export interface IncubationNotification {
   actionTarget?: NavKey;
   /** project the notification is about (unset = general) */
   programId?: string;
+  /** whose pipeline it belongs to; older notifications without it are worked out from the candidate id */
+  audience?: "entrepreneur" | "mentor";
 }
+
+export type AppTab = "entrepreneurs" | "mentors";
+export type NotifAudience = "entrepreneur" | "mentor";
+/** Entrepreneur or mentor? Mentor ids start with MNT. */
+export const notifAudience = (n: { audience?: NotifAudience; candidateId?: string }): NotifAudience =>
+  n.audience ?? (n.candidateId?.startsWith("MNT") ? "mentor" : "entrepreneur");
+const tabAudience = (t: AppTab): NotifAudience => (t === "mentors" ? "mentor" : "entrepreneur");
 
 // ── Application data context ──────────────────────────────────────────────────
 const AppDataCtx = createContext<{
@@ -170,6 +186,9 @@ const AppDataCtx = createContext<{
   removeNotification: (id: string) => void;
   /** which project the admin is looking at; every section filters its data with this */
   scope: ProjectScope;
+  /** Entrepreneurs or Mentors: shared by the Applications / Selection / Rejected / Matching / Dropouts views and the sidebar */
+  appTab: AppTab;
+  setAppTab: (t: AppTab) => void;
 }>({
   entApps: [],
   mntApps: [],
@@ -187,6 +206,8 @@ const AppDataCtx = createContext<{
   clearNotifications: () => {},
   removeNotification: () => {},
   scope: ALL_SCOPE,
+  appTab: "entrepreneurs",
+  setAppTab: () => {},
 });
 
 
@@ -276,7 +297,7 @@ const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
   Scheduled: { bg: "rgba(245,158,11,0.15)",  color: "#d97706" },
 };
 
-const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
+export const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
   {
     id: "notif-1",
     section: "Selection",
@@ -361,10 +382,71 @@ const INITIAL_NOTIFICATIONS: IncubationNotification[] = [
     type: "info",
     actionTarget: "Applications",
   },
+  // Mentors go through the same stages, so they raise the same kind of notification
+  {
+    id: "notif-m1",
+    audience: "mentor",
+    section: "Selection",
+    title: "Mentor Selected",
+    message: "Ms. Rejoice Mwale (MNT-003) was selected as an Incubation mentor and is ready for mentee matching.",
+    candidateName: "Ms. Rejoice Mwale",
+    candidateId: "MNT-003",
+    programId: SAMPLE_CORE,
+    timestamp: "30m ago",
+    createdAt: Date.now() - 30 * 60 * 1000,
+    read: false,
+    type: "success",
+    actionTarget: "Selection",
+  },
+  {
+    id: "notif-m2",
+    audience: "mentor",
+    section: "Matching",
+    title: "Mentor Moved to Matching",
+    message: "Mr. Chikumbe Phiri (MNT-002) joined the mentor matching pool. Ready for mentee pairing.",
+    candidateName: "Mr. Chikumbe Phiri",
+    candidateId: "MNT-002",
+    programId: SAMPLE_SHE,
+    timestamp: "3h ago",
+    createdAt: Date.now() - 3 * 60 * 60 * 1000,
+    read: false,
+    type: "info",
+    actionTarget: "Matching",
+  },
+  {
+    id: "notif-m3",
+    audience: "mentor",
+    section: "Rejected",
+    title: "Mentor Application Declined",
+    message: "Ellen Chimwaza (MNT-013) was not accepted as a mentor. Reason: Mentorship track record and executive governance documentation incomplete",
+    candidateName: "Ellen Chimwaza",
+    candidateId: "MNT-013",
+    programId: SAMPLE_SHE,
+    timestamp: "6h ago",
+    createdAt: Date.now() - 6 * 60 * 60 * 1000,
+    read: true,
+    type: "danger",
+    actionTarget: "Rejected",
+  },
+  {
+    id: "notif-m4",
+    audience: "mentor",
+    section: "Applications",
+    title: "New Mentor Application",
+    message: "Ms. Chimwemwe Banda (MNT-011) applied to mentor on the Incubation programme (Digital Marketing).",
+    candidateName: "Ms. Chimwemwe Banda",
+    candidateId: "MNT-011",
+    programId: SAMPLE_SHE,
+    timestamp: "1d ago",
+    createdAt: Date.now() - 26 * 60 * 60 * 1000,
+    read: true,
+    type: "info",
+    actionTarget: "Applications",
+  },
 ];
 
 // ── Notification bell dropdown ──────────────────────────────────────────────
-function NotificationBellDropdown({
+export function NotificationBellDropdown({
   notifications,
   onMarkRead,
   onMarkAllRead,
@@ -377,9 +459,10 @@ function NotificationBellDropdown({
   onMarkAllRead: () => void;
   onClearAll: () => void;
   onRemove: (id: string) => void;
-  onNavigate: (target: NavKey) => void;
+  onNavigate: (target: NavKey, notif: IncubationNotification) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [who, setWho] = useState<"all" | NotifAudience>("all");
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -393,6 +476,7 @@ function NotificationBellDropdown({
   }, []);
 
   const unreadCount = notifications.filter(n => !n.read).length;
+  const shown = who === "all" ? notifications : notifications.filter(n => notifAudience(n) === who);
 
   return (
     <div ref={ref} className="relative">
@@ -405,7 +489,7 @@ function NotificationBellDropdown({
         <Bell size={13} color="#fff" />
         {unreadCount > 0 && (
           <span
-            className="absolute -top-1 -right-1 px-1 min-w-[17px] h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white shadow-md animate-pulse"
+            className="absolute -top-1 -right-1 px-1 min-w-[17px] h-4 rounded-[3px] flex items-center justify-center text-[9px] font-black text-white shadow-md animate-pulse"
             style={{ background: "#e85454", border: "1.5px solid #3B4167" }}
           >
             {unreadCount > 9 ? "9+" : unreadCount}
@@ -421,7 +505,7 @@ function NotificationBellDropdown({
           {/* Header */}
           <div
             className="px-4 py-3 text-white flex items-center justify-between"
-            style={{ background: "linear-gradient(135deg, #2a3054 0%, #3B4167 60%, #4C808A 100%)" }}
+            style={{ background: "#3B4167" }}
           >
             <div className="flex items-center gap-2">
               <div className="w-6 h-6 rounded-full bg-white shadow-xs flex items-center justify-center">
@@ -438,7 +522,7 @@ function NotificationBellDropdown({
               {unreadCount > 0 && (
                 <button
                   onClick={() => onMarkAllRead()}
-                  className="px-2 py-1 rounded bg-white hover:bg-gray-100 text-[10px] font-bold text-[#4C808A] shadow-xs transition-colors cursor-pointer flex items-center gap-1"
+                  className="px-2 py-1 rounded-[3px] bg-white hover:bg-gray-100 text-[10px] font-bold text-[#4C808A] shadow-xs transition-colors cursor-pointer flex items-center gap-1"
                   title="Mark all as read"
                 >
                   <CheckCheck size={11} color="#4C808A" /> Read all
@@ -456,25 +540,36 @@ function NotificationBellDropdown({
             </div>
           </div>
 
+          {/* Entrepreneur / mentor filter */}
+          <div className="flex items-center gap-1 px-3 py-2 bg-gray-50 border-b border-gray-200">
+            {([["all", "All"], ["entrepreneur", "Entrepreneurs"], ["mentor", "Mentors"]] as const).map(([k, label]) => (
+              <button key={k} onClick={() => setWho(k)} aria-pressed={who === k}
+                className="px-2.5 py-1 rounded-[3px] text-[10px] font-bold cursor-pointer flex items-center gap-1 transition-colors"
+                style={{ background: who === k ? "#4C808A" : "#fff", color: who === k ? "#fff" : "#4b5563", border: "1px solid " + (who === k ? "#4C808A" : "#e5e7eb") }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
           {/* Notifications List */}
           <div className="max-h-[340px] overflow-y-auto divide-y divide-gray-100">
-            {notifications.length === 0 ? (
+            {shown.length === 0 ? (
               <div className="p-8 text-center text-gray-400">
                 <Inbox size={26} className="mx-auto mb-2 opacity-40 text-gray-400" />
-                <p className="text-xs font-bold text-gray-600">No notifications</p>
+                <p className="text-xs font-bold text-gray-600">{who === "all" ? "No notifications" : `No ${who} notifications`}</p>
                 <p className="text-[10px] text-gray-400 mt-1 max-w-[220px] mx-auto">
                   Notification actions taken across Applications, Selection, Rejected, Matching & Dropouts are tracked here.
                 </p>
               </div>
             ) : (
-              notifications.map(notif => {
+              shown.map(notif => {
                 return (
                   <div
                     key={notif.id}
                     onClick={() => {
                       if (!notif.read) onMarkRead(notif.id);
                       if (notif.actionTarget) {
-                        onNavigate(notif.actionTarget);
+                        onNavigate(notif.actionTarget, notif);
                         setOpen(false);
                       }
                     }}
@@ -489,7 +584,7 @@ function NotificationBellDropdown({
                           e.stopPropagation();
                           onRemove(notif.id);
                         }}
-                        className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded bg-white hover:bg-gray-100 border border-gray-200 shadow-xs transition-all cursor-pointer flex items-center justify-center"
+                        className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded-[3px] bg-white hover:bg-gray-100 border border-gray-200 shadow-xs transition-all cursor-pointer flex items-center justify-center"
                         title="Dismiss"
                       >
                         <X size={10} color="#4C808A" />
@@ -678,21 +773,21 @@ function ProfileDropdown({ name = "Programme Manager", title = "Program Manager"
 
       {open && (
         <div className="absolute right-0 top-full mt-2 w-52 rounded-md overflow-hidden z-50 im-dd"
-          style={{ background: "#4C808A", border: "1px solid rgba(255,255,255,0.25)", boxShadow: "0 16px 40px rgba(0,0,0,0.35)", backdropFilter: "blur(20px)" }}>
-          <div className="px-4 py-3 flex items-center gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.18)" }}>
+          style={{ background: "#ffffff", border: "1px solid #e5e7eb", boxShadow: "0 16px 40px rgba(0,0,0,0.25)" }}>
+          <div className="px-4 py-3 flex items-center gap-3" style={{ borderBottom: "1px solid #e5e7eb" }}>
             <ProfileAvatar size={36} />
             <div className="min-w-0">
-              <div className="text-white text-xs font-bold truncate">{name}</div>
-              <div className="text-[10px] truncate text-white/80 font-medium">{title}</div>
+              <div className="text-xs font-bold truncate" style={{ color: NAVY }}>{name}</div>
+              <div className="text-[10px] truncate text-gray-500 font-medium">{title}</div>
             </div>
           </div>
           <div className="py-1.5">
             {[{ icon: User, label: "My Profile" }, { icon: Settings, label: "Settings" }].map(({ icon: Icon, label }) => (
               <button key={label} onClick={() => setOpen(false)}
                 className="flex items-center gap-3 w-full px-4 py-2.5 text-xs font-semibold transition-all text-left"
-                style={{ color: "#ffffff" }}
-                onMouseEnter={e => (e.currentTarget.style.background = "rgba(27,54,93,0.35)")}
-                onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                style={{ color: NAVY, background: "#ffffff" }}
+                onMouseEnter={e => (e.currentTarget.style.background = "#f3f4f6")}
+                onMouseLeave={e => (e.currentTarget.style.background = "#ffffff")}>
                 <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: NAVY }}>
                   <Icon size={11} color="#ffffff" />
                 </div>
@@ -708,9 +803,11 @@ function ProfileDropdown({ name = "Programme Manager", title = "Program Manager"
 
 // ── Sidebar nav item ──────────────────────────────────────────────────────────
 function NavItem({
-  icon: Icon, label, active, onClick, indent = false, count, extra,
+  icon: Icon, label, active, onClick, indent = false, count, extra, unread = 0,
 }: {
   icon: React.ElementType; label: string; active: boolean; onClick: () => void; indent?: boolean; count?: number; extra?: React.ReactNode;
+  /** unread notifications for this section (for the entrepreneur or mentor tab that is open) */
+  unread?: number;
 }) {
   return (
     <button
@@ -723,11 +820,18 @@ function NavItem({
         fontWeight: active ? 700 : 500,
         fontSize: indent ? 11 : 12,
       }}
-      onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#4c808a"; }}
       onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
     >
       <Icon size={indent ? 12 : 14} color={active ? "#fff" : "rgba(255,255,255,0.55)"} />
       <span className="flex-1 truncate">{label}</span>
+      {unread > 0 && (
+        <span title={`${unread} unread notification${unread === 1 ? "" : "s"}`} aria-label={`${unread} unread notification${unread === 1 ? "" : "s"} in ${label}`}
+          className="text-[9px] font-black px-1.5 py-0.5 rounded-[3px] text-white"
+          style={{ background: "#e85454" }}>
+          {unread > 9 ? "9+" : unread}
+        </span>
+      )}
       {count !== undefined && (
         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md"
           style={{ background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)", color: active ? "#fff" : "rgba(255,255,255,0.6)" }}>
@@ -911,7 +1015,7 @@ function CustomBarChart({
 }
 
 // ── SVG Donut — leader lines to outside values, size matching SectorPieChart ──
-function DonutChart({ male, female, totalApps, onFilter }: { male: number; female: number; totalApps?: number; onFilter?: (g: string | null) => void }) {
+function DonutChart({ male, female, pwd = 0, totalApps, onFilter }: { male: number; female: number; pwd?: number; totalApps?: number; onFilter?: (g: string | null) => void }) {
   const total = male + female;
   const displayTotal = totalApps ?? total;
 
@@ -921,11 +1025,24 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
         <div style={{ position: "relative", width: 90, height: 90, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <svg width={90} height={90} viewBox="0 0 90 90">
             <circle cx={45} cy={45} r={30} fill="none" stroke="#e5e7eb" strokeWidth={14} />
-            <text x={45} y={45} textAnchor="middle" fontSize={15} fontWeight="900" fill={NAVY}>0</text>
-            <text x={45} y={54} textAnchor="middle" fontSize={7} fontWeight="700" fill="#9ca3af">TOTAL</text>
+            <text x={45} y={45} textAnchor="middle" dominantBaseline="central" fontSize={18} fontWeight="900" fill={NAVY}>0</text>
           </svg>
         </div>
         <div style={{ fontSize: 9, color: "#9ca3af", fontWeight: 600, marginTop: 4 }}>No data</div>
+
+      {/* Persons with disability (PWD) figure, from the application form's demographics tick-box */}
+      <div
+        data-testid="pwd-figure"
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          marginTop: 6, padding: "5px 10px", borderRadius: 3,
+          background: "rgba(76,128,138,0.07)", width: "100%",
+        }}
+      >
+        <span style={{ fontSize: 10, lineHeight: 1.2, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>Persons with disability</span>
+        <span style={{ fontSize: 10, lineHeight: 1.2, fontWeight: 900, color: NAVY }}>{pwd}</span>
+        <span style={{ fontSize: 10, lineHeight: 1.2, fontWeight: 700, color: TEAL }}>(0%)</span>
+      </div>
       </div>
     );
   }
@@ -948,11 +1065,11 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
   // Outer radius of donut slice is r + sw/2 = 45 + 19 = 64 (matches SectorPieChart R = 64)
   const outerR = r + sw / 2;
   const fStart = toXY(femMidDeg, outerR);
-  const fElbow = toXY(femMidDeg, outerR + 9);
+  const fElbow = toXY(femMidDeg, outerR + 16);
   const fEnd = { x: fElbow.x + 8, y: fElbow.y };
 
   const mStart = toXY(malMidDeg, outerR);
-  const mElbow = toXY(malMidDeg, outerR + 9);
+  const mElbow = toXY(malMidDeg, outerR + 16);
   const mEnd = { x: mElbow.x - 8, y: mElbow.y };
 
   const gap = female > 0 && male > 0 ? 2 : 0;
@@ -1012,10 +1129,8 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
 
           {/* Center: gradient ring accent + realistic total figure */}
           <circle cx={cx} cy={cy} r={r - sw / 2 - 3} fill="none" stroke="url(#genderDonutGrad)" strokeWidth={1.5} opacity={0.35} />
-          <text x={cx} y={cy} textAnchor="middle" fontSize={15} fontWeight="900" fill={NAVY} style={{ cursor: "pointer" }}
+          <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central" fontSize={20} fontWeight="900" fill={NAVY} style={{ cursor: "pointer" }}
             onClick={() => onFilter?.(null)}>{displayTotal}</text>
-          <text x={cx} y={cy + 10} textAnchor="middle" fontSize={7.5} fontWeight="700" fill="#9ca3af" letterSpacing="0.05em" style={{ cursor: "pointer" }}
-            onClick={() => onFilter?.(null)}>TOTAL</text>
         </svg>
       </div>
 
@@ -1039,6 +1154,20 @@ function DonutChart({ male, female, totalApps, onFilter }: { male: number; femal
           <div style={{ width: 8, height: 8, borderRadius: "50%", background: GENDER_FEMALE, flexShrink: 0 }} />
           <span style={{ fontSize: 9.5, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>Female</span>
         </div>
+      </div>
+
+      {/* Persons with disability (PWD) figure, from the application form's demographics tick-box */}
+      <div
+        data-testid="pwd-figure"
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          marginTop: 6, padding: "5px 10px", borderRadius: 3,
+          background: "rgba(76,128,138,0.07)", width: "100%",
+        }}
+      >
+        <span style={{ fontSize: 10, lineHeight: 1.2, color: "#374151", fontWeight: 600, whiteSpace: "nowrap" }}>Persons with disability</span>
+        <span style={{ fontSize: 10, lineHeight: 1.2, fontWeight: 900, color: NAVY }}>{pwd}</span>
+        <span style={{ fontSize: 10, lineHeight: 1.2, fontWeight: 700, color: TEAL }}>({Math.round((pwd / total) * 100)}%)</span>
       </div>
     </div>
   );
@@ -1178,12 +1307,20 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
   const isRejectedSection  = filterStatus === "Rejected";
   const isSelectionSection = filterStatus === "Selected";
   const isMatchingSection  = filterStatus === "Matching";
+  const isDropoutsSection  = filterStatus === "Dropouts";
 
-  // Section base pool (before drill-through filters)
+  // Section base pool (before drill-through filters).
+  // Stats follow the pipeline, so someone moving on never makes an earlier section's numbers disappear:
+  //  - Selection counts everyone who was selected, including those since moved to Approved or Matching
+  //  - the other sections count their own status (Applications counts everyone who applied)
+  const PASSED_SELECTION = ["Selected", "Approved", "Matching"];
   const sectionBasePool = useMemo(() => {
+    if (filterStatus === "Selected") return pool.filter((a: any) => PASSED_SELECTION.includes(a.status));
     if (filterStatus) return pool.filter((a: any) => a.status === filterStatus);
     return pool;
   }, [pool, filterStatus]);
+  // How many of the "selected" stats have since moved on (shown as a note under the Selection tiles)
+  const movedOnCount = pool.filter((a: any) => a.status === "Approved" || a.status === "Matching").length;
 
   // Combined active pool — all filters (sector, district, gender) applied together for drill-through table and KPIs
   const activePool = useMemo(() => {
@@ -1207,6 +1344,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
   const maleCount   = chartFilteredPool.filter((a: any) => a.gender === "Male").length;
   const femaleCount = chartFilteredPool.filter((a: any) => a.gender === "Female").length;
   const genderTotal = maleCount + femaleCount;
+  const pwdCount    = chartFilteredPool.filter((a: any) => !!a.pwd).length;
 
   // Dynamic district data matching current section and chart filters
   const dynamicDistData = useMemo(() => {
@@ -1263,12 +1401,22 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
     mntApps.filter(a => a.status === "Matching").length
   );
 
-  const metricCards = isRejectedSection ? [
+  // Dropout metrics (rate is out of everyone who entered the programme: still in it, plus those who dropped out)
+  const dropoutTotal = pool.filter((a: any) => a.status === "Dropouts").length;
+  const dropoutRate = Math.round((dropoutTotal / ((inProgress + dropoutTotal) || 1)) * 100);
+
+  const metricCards = isDropoutsSection ? [
+    { label: isEnt ? "Total Dropouts" : "Total Mentor Dropouts",            value: activePool.length,      icon: Trash2      },
+    { label: "Dropout Rate (of enrolled)",                                  value: `${dropoutRate}%`,      icon: AlertCircle },
+    { label: "Districts Affected",                                          value: districts,              icon: MapPin      },
+    { label: isEnt ? "Sectors Affected" : "Expertise Areas Affected",       value: categories,             icon: Layers      },
+    { label: "Average Candidate Score",                                     value: `${avgGeneralScore}%`,  icon: Award       },
+  ] : isRejectedSection ? [
     { label: isEnt ? "Total Rejected Applicants" : "Total Rejected Mentors", value: activePool.length,      icon: XCircle     },
     { label: "Overall Disqualification Rate",                                value: `${rejectionRate}%`,    icon: AlertCircle },
     { label: "Average Evaluation Score",                                     value: `${avgRejectedScore}%`, icon: FileX       },
     { label: "Below Passing Threshold (<50)",                                value: belowCutoffCount,       icon: TrendingUp  },
-    { label: "Evaluations Completed",                                        value: activePool.length,      icon: CheckCircle },
+    { label: "Evaluations Completed",                                        value: activePool.length,      icon: Check },
   ] : isMatchingSection ? [
     { label: isEnt ? "Entrepreneurs in Matching" : "Mentors in Matching Pool", value: activePool.length,       icon: GitMerge    },
     { label: "Active Matched Pairings",                                       value: Math.max(matchedPairsCount, 3), icon: Users },
@@ -1276,7 +1424,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
     { label: "Average Readiness Score",                                       value: `${avgMatchingScore}%`, icon: Award       },
     { label: isEnt ? "Available Mentors in Pool" : "Entrepreneurs Awaiting",  value: counterMatchingCount,   icon: UserCheck   },
   ] : isSelectionSection ? [
-    { label: isEnt ? "Total Applicants Selected" : "Total Mentors Selected",  value: activePool.length,       icon: CheckCircle },
+    { label: isEnt ? "Total Applicants Selected" : "Total Mentors Selected",  value: activePool.length,       icon: Check },
     { label: "Selected Districts Covered",                                   value: selectedDistricts,       icon: MapPin      },
     { label: isEnt ? "Priority Sectors Represented" : "Selected Expertise Areas", value: selectedCategories, icon: Layers      },
     { label: "Average Selection Score",                                      value: `${avgSelectionScore}%`, icon: Award       },
@@ -1289,8 +1437,8 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
     { label: "Average Candidate Score",                                      value: `${avgGeneralScore}%`, icon: Award    },
   ];
 
-  const targetCards = (isRejectedSection || isMatchingSection) ? [] : isSelectionSection ? [
-    { label: "Selection Cohort Target", value: 120, sub: "Pre-Incubation Shortlist Goal", icon: CheckCircle },
+  const targetCards = (isRejectedSection || isMatchingSection || isDropoutsSection) ? [] : isSelectionSection ? [
+    { label: "Selection Cohort Target", value: 120, sub: "Pre-Incubation Shortlist Goal", icon: Check },
     { label: "Due Diligence Approval Target", value: targets.approval, sub: "Vetting & Verification Target", icon: UserCheck },
     { label: "Incubation Induction Target", value: targets.incubation, sub: "Final Cohort Onboarding Goal", icon: Lightbulb },
   ] : [
@@ -1312,8 +1460,8 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
               flex: 1, minWidth: 0,
               display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
               background: "#4C808A",
-              border: "1px solid rgba(255,255,255,0.2)",
-              borderRadius: 6,
+              border: "1px solid #4c808a",
+              borderRadius: 3,
               padding: "10px 8px",
               boxShadow: "0 4px 14px rgba(76,128,138,0.22)",
               textAlign: "center",
@@ -1344,7 +1492,13 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         })}
       </div>
 
-      {/* ROW 2: target cards (hidden in rejected section) */}
+      {isSelectionSection && movedOnCount > 0 && (
+        <p style={{ color: "#6b7280", fontSize: 10, margin: "-6px 0 0" }}>
+          These figures include {movedOnCount} {isEnt ? "applicant" : "mentor"}{movedOnCount === 1 ? "" : "s"} already moved on to Approved or Matching. The table below lists only those still waiting at the Selection stage.
+        </p>
+      )}
+
+      {/* ROW 2: target cards (hidden in rejected, matching and dropouts sections) */}
       {targetCards.length > 0 && (
         <div style={{ display: "flex", gap: 14 }}>
           {targetCards.map((t: any) => {
@@ -1355,8 +1509,8 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
                 display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
                 padding: "12px 14px",
                 background: "#fff",
-                border: `2px solid ${TEAL}55`,
-                borderRadius: 6,
+                border: "1px solid #4c808a",
+                borderRadius: 3,
                 boxShadow: "0 2px 10px rgba(76,128,138,0.08)",
                 textAlign: "center",
               }}>
@@ -1379,27 +1533,27 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {sectorFilter && (
             <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
-              color: "#fff", background: TEAL, borderRadius: 6, padding: "2px 8px" }}>
+              color: "#fff", background: TEAL, borderRadius: 3, padding: "2px 8px" }}>
               Sector: {sectorFilter}
               <button onClick={() => setSectorFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
             </span>
           )}
           {districtFilter && (
             <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
-              color: "#fff", background: NAVY, borderRadius: 6, padding: "2px 8px" }}>
+              color: "#fff", background: NAVY, borderRadius: 3, padding: "2px 8px" }}>
               District: {districtFilter}
               <button onClick={() => setDistrictFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
             </span>
           )}
           {genderFilter && (
             <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700,
-              color: "#fff", background: genderFilter === "Male" ? GENDER_MALE : GENDER_FEMALE, borderRadius: 6, padding: "2px 8px" }}>
+              color: "#fff", background: genderFilter === "Male" ? GENDER_MALE : GENDER_FEMALE, borderRadius: 3, padding: "2px 8px" }}>
               Gender: {genderFilter}
               <button onClick={() => setGenderFilter(null)} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>×</button>
             </span>
           )}
           <button onClick={() => { setSectorFilter(null); setDistrictFilter(null); setGenderFilter(null); }}
-            style={{ fontSize: 9, fontWeight: 700, color: "#6b7280", background: "#f3f4f6", border: "none", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }}>
+            style={{ fontSize: 9, fontWeight: 700, color: "#6b7280", background: "#f3f4f6", border: "none", borderRadius: 3, padding: "2px 8px", cursor: "pointer" }}>
             Clear all
           </button>
         </div>
@@ -1410,8 +1564,8 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         {/* District by Gender bar chart */}
         <div style={{
           flex: 1, minWidth: 0,
-          background: "#fff", border: `2px solid ${TEAL}55`,
-          borderRadius: 6, padding: "10px 12px",
+          background: "#fff", border: "1px solid #4c808a",
+          borderRadius: 3, padding: "10px 12px",
           boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
           display: "flex", flexDirection: "column",
         }}>
@@ -1451,8 +1605,8 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
         {/* Total Apps Received by Sectors */}
         <div style={{
           flex: 1, minWidth: 0,
-          background: "#fff", border: `2px solid ${sectorFilter ? TEAL : TEAL}55`,
-          borderRadius: 6, padding: "10px 12px",
+          background: "#fff", border: "1px solid #4c808a",
+          borderRadius: 3, padding: "10px 12px",
           boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
           display: "flex", flexDirection: "column",
         }}>
@@ -1472,8 +1626,8 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
 
         {/* Donut card */}
         <div style={{
-          background: "#fff", border: `2px solid ${TEAL}55`,
-          borderRadius: 6, padding: "10px 12px",
+          background: "#fff", border: "1px solid #4c808a",
+          borderRadius: 3, padding: "10px 12px",
           boxShadow: "0 2px 16px rgba(76,128,138,0.08)",
           display: "flex", flexDirection: "column",
           flex: 1, minWidth: 0,
@@ -1488,7 +1642,7 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
                   : "Gender Distribution"}
           </div>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", width: "100%" }}>
-            <DonutChart male={maleCount} female={femaleCount}
+            <DonutChart male={maleCount} female={femaleCount} pwd={pwdCount}
               totalApps={genderTotal}
               onFilter={g => setGenderFilter(g === genderFilter ? null : g)} />
           </div>
@@ -1500,6 +1654,142 @@ function ApplicationsDashboard({ tab, filterStatus }: { tab: "entrepreneurs" | "
 }
 
 // ── App Detail Panel ─────────────────────────────────────────────────────────
+const DETAIL_SKIP_KEYS = new Set(["password", "confirmPassword", "submittedAt"]);
+
+function detailLabel(key: string): string {
+  const spaced = key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function detailIsEmpty(v: unknown): boolean {
+  if (v === undefined || v === null || v === "") return true;
+  if (Array.isArray(v)) return v.every(detailIsEmpty);
+  if (typeof v === "object") return Object.values(v as object).every(detailIsEmpty);
+  return false;
+}
+
+/** Turns any stored answer (text, yes/no, list, nested group) into display rows. */
+function detailRows(value: unknown, prefix = ""): { label: string; value: string }[] {
+  if (detailIsEmpty(value)) return [];
+  if (typeof value === "boolean") return [{ label: prefix, value: value ? "Yes" : "No" }];
+  if (typeof value === "string" || typeof value === "number") return [{ label: prefix, value: String(value) }];
+  if (Array.isArray(value)) {
+    if (value.every(v => v === null || typeof v !== "object")) {
+      return [{ label: prefix, value: value.filter(v => !detailIsEmpty(v)).map(v => typeof v === "boolean" ? (v ? "Yes" : "No") : String(v)).join(", ") }];
+    }
+    return value.flatMap((v, i) => detailRows(v, `${prefix} ${i + 1}`.trim()));
+  }
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([k]) => !DETAIL_SKIP_KEYS.has(k))
+    .flatMap(([k, v]) => {
+      const label = detailLabel(k);
+      return detailRows(v, prefix ? `${prefix} · ${label}` : label);
+    });
+}
+
+/** Every question on each application form, grouped as the form groups them, so unanswered ones still show. */
+type FormSection = { title: string; key: string; fields?: string[]; repeat?: boolean };
+const ENT_FORM_SECTIONS: FormSection[] = [
+  { title: "Personal Details", key: "personal", fields: ["firstName","lastName","gender","ageGroup","nationality","email","phone","nationalId","address","district","region","country","languages","ruralUrban","youthOwned","womanOwned","disability"] },
+  { title: "Founder Background", key: "founder", fields: ["qualification","fieldOfStudy","institution","employmentHistory","businessExperience","industryExperience","skills","whyEntrepreneur","motivation"] },
+  { title: "Business Idea & Venture", key: "business", fields: ["name","industry","sector","yearStarted","registrationStatus","problem","whoExperiences","solution","differentiation","ideaDescription","inspiration","idealCustomer"] },
+  { title: "Market Validation", key: "business", fields: ["spokeToCustomers","interviewsCompleted","surveysCompleted","marketResearch","competitors"] },
+  { title: "Traction", key: "business", fields: ["productDeveloped","prototypeCompleted","mvpLaunched","users","customerFeedback","customersAcquired","payingCustomers","monthlyRevenue","teamSize"] },
+  { title: "Team", key: "team", fields: ["coFounderName","coFounderRole","coFounderSkills","teamMemberPosition","teamMemberResponsibilities"] },
+  { title: "Support Needs", key: "needs" },
+  { title: "Business Stages", key: "stages" },
+];
+const MNT_FORM_SECTIONS: FormSection[] = [
+  { title: "Account", key: "account", fields: ["firstName","middleName","lastName","preferredName","gender","ageGroup","nationality","nationalId","email","mobile","altPhone","program","pwd"] },
+  { title: "Profile", key: "profile", fields: ["title","occupation","employer","yearsExp","country","region","district","address","photo"] },
+  { title: "Biography", key: "bio", fields: ["biography","career","interests","motivation"] },
+  { title: "Qualifications", key: "qualifications", fields: ["qualification","field","institution","country","year"], repeat: true },
+  { title: "Work Experience", key: "experiences", fields: ["org","position","industry","startDate","endDate","responsibilities","achievements"], repeat: true },
+  { title: "Entrepreneurial Experience", key: "entExpChecks" },
+  { title: "Business Owned", key: "entBiz", fields: ["name","industry","years","status","achievements","employees","revenue"] },
+  { title: "Mentoring Experience", key: "hasMentored" },
+  { title: "Previous Mentoring", key: "mentoringExp", fields: ["org","program","startups","years","types"] },
+  { title: "Programme Interest", key: "progInterest" },
+  { title: "Stages Experienced", key: "stageExp" },
+  { title: "Industry Experience", key: "industryExp" },
+  { title: "Functional Expertise", key: "funcExp" },
+  { title: "Preferred Stages", key: "prefStages" },
+  { title: "Preferred Industries", key: "prefIndustries" },
+  { title: "Preferred Founder Types", key: "prefFounderTypes" },
+  { title: "Languages", key: "languages" },
+  { title: "Mentoring Mode", key: "mentoringMode" },
+  { title: "Reference 1", key: "ref1", fields: ["name","email","phone","org"] },
+  { title: "Reference 2", key: "ref2", fields: ["name","email","phone","org"] },
+  { title: "Online Presence", key: "socials", fields: ["linkedin","website","portfolio","github","researchgate","scholar","twitter","facebook"] },
+  { title: "Conflict of Interest", key: "conflict" },
+  { title: "Conflict Explanation", key: "conflictExplain" },
+  { title: "Self-Assessment", key: "assessment", fields: ["coaching","communication","personality","digital","commitment"] },
+  { title: "Availability", key: "availability" },
+  { title: "Hours per Month", key: "hoursPerMonth" },
+  { title: "Documents Uploaded", key: "documents", fields: ["cv","nationalId","acadCerts"] },
+];
+const FIELD_LABELS: Record<string, string> = {
+  nationalId: "National ID", ruralUrban: "Rural / Urban", disability: "Person with Disability", pwd: "Person with Disability",
+  yearsExp: "Years of Experience", mobile: "Mobile", altPhone: "Alternative Phone", ageGroup: "Age Group", fieldOfStudy: "Field of Study",
+  acadCerts: "Academic Certificates", cv: "CV / Resume", org: "Organisation", ref1: "Reference 1", ref2: "Reference 2",
+  idealCustomer: "Ideal Customer", ideaDescription: "Idea Description", whoExperiences: "Who Experiences the Problem",
+  spokeToCustomers: "Spoke to Customers", mvpLaunched: "MVP Launched",
+};
+const fieldLabel = (k: string) => FIELD_LABELS[k] ?? detailLabel(k);
+
+/** One answer as display text; blank answers return undefined so the row shows a dash. */
+function answerText(v: unknown): string | undefined {
+  if (detailIsEmpty(v)) return undefined;
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (typeof v === "string" || typeof v === "number") return String(v);
+  const rows = detailRows(v);
+  if (Array.isArray(v) && v.every(x => x === null || typeof x !== "object")) return rows[0]?.value;
+  return rows.map(r => `${r.label}: ${r.value}`).join("\n");
+}
+
+/** Rows for one form section: every known question, plus any extra answers stored under it. */
+function formSectionRows(section: FormSection, submission: Record<string, unknown>): { label: string; value?: string }[] {
+  const raw = submission[section.key];
+  if (!section.fields) {
+    if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+      const rows = detailRows(raw);
+      return rows.length ? rows : [{ label: "Answer" }];
+    }
+    return [{ label: "Answer", value: answerText(raw) }];
+  }
+  const toRows = (obj: Record<string, unknown> | undefined, prefix = "") => {
+    const extra = Object.keys(obj ?? {}).filter(k => !section.fields!.includes(k) && !DETAIL_SKIP_KEYS.has(k));
+    return [...section.fields!, ...extra].map(k => ({ label: prefix + fieldLabel(k), value: answerText(obj?.[k]) }));
+  };
+  if (section.repeat) {
+    const items = Array.isArray(raw) && raw.length ? raw as Record<string, unknown>[] : [undefined];
+    return items.flatMap((item, i) => toRows(item, items.length > 1 ? `#${i + 1} ` : ""));
+  }
+  return toRows(raw && typeof raw === "object" ? raw as Record<string, unknown> : undefined);
+}
+
+const yesNo = (v?: boolean) => (v === undefined || v === null ? undefined : v ? "Yes" : "No");
+
+function DetailRow({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="flex gap-4 py-2.5" style={{ borderBottom: "1px solid #f3f4f6" }}>
+      <span className="w-40 shrink-0 text-[11px] font-bold uppercase tracking-wider text-gray-400">{label}</span>
+      <span className="text-[13px] text-gray-700 whitespace-pre-line break-words min-w-0">{value || "—"}</span>
+    </div>
+  );
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+      <div className="px-5 py-3" style={{ background: `linear-gradient(135deg,${NAVY}08,${TEAL}10)`, borderBottom: "1px solid #e9edf2" }}>
+        <span className="font-black text-[11px] uppercase tracking-widest" style={{ color: NAVY }}>{title}</span>
+      </div>
+      <div className="px-5 py-1">{children}</div>
+    </div>
+  );
+}
+
 function AppDetailPanel({
   app,
   kind,
@@ -1514,26 +1804,27 @@ function AppDetailPanel({
   const isEnt = kind === "entrepreneur";
   const ent = app as EntrepreneurApplication;
   const mnt = app as MentorApplication;
+  const loose = app as any;
   const sc = STATUS_COLORS[app.status as keyof typeof STATUS_COLORS] ?? STATUS_COLORS["Pending"];
-  function Row({ label, value }: { label: string; value?: string }) {
-    return (
-      <div className="flex gap-4 py-2.5" style={{ borderBottom: "1px solid #f3f4f6" }}>
-        <span className="w-40 shrink-0 text-[11px] font-bold uppercase tracking-wider text-gray-400">{label}</span>
-        <span className="text-[13px] text-gray-700">{value || "—"}</span>
-      </div>
-    );
-  }
 
-  function Section({ title, children }: { title: string; children: React.ReactNode }) {
-    return (
-      <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
-        <div className="px-5 py-3" style={{ background: `linear-gradient(135deg,${NAVY}08,${TEAL}10)`, borderBottom: "1px solid #e9edf2" }}>
-          <span className="font-black text-[11px] uppercase tracking-widest" style={{ color: NAVY }}>{title}</span>
-        </div>
-        <div className="px-5 py-1">{children}</div>
-      </div>
-    );
-  }
+  // Pairing details come only from what is recorded; nothing is filled in with sample text.
+  const mentorMentees = !isEnt ? (mnt.mentees ?? []) : [];
+  const partnerName: string | undefined = isEnt
+    ? (ent.matchedMentor || undefined)
+    : (loose.matchedMentee || (mentorMentees.length ? mentorMentees.map(m => m.name).join(", ") : undefined));
+  const pairScore: number | undefined = isEnt
+    ? ent.matchScore
+    : (loose.matchScore ?? (mentorMentees.length === 1 ? mentorMentees[0].score : undefined));
+  const pairStage: string | undefined = (loose.matchingStage && loose.matchingStage !== "—") ? loose.matchingStage : (isEnt ? ent.matchState : mnt.matchState);
+  const pairIntro: string | undefined = loose.introSession || (isEnt ? ent.introDate : mentorMentees.find(m => m.introDate)?.introDate) || undefined;
+
+  // The rest of the form: every stored answer, section by section.
+  const submission = (app.submission ?? {}) as Record<string, unknown>;
+  const formSections = isEnt ? ENT_FORM_SECTIONS : MNT_FORM_SECTIONS;
+  const knownKeys = new Set(formSections.map(sec => sec.key));
+  const unlistedRows = Object.entries(submission)
+    .filter(([k]) => !knownKeys.has(k) && !DETAIL_SKIP_KEYS.has(k) && !["programmeId", "programmeName"].includes(k))
+    .flatMap(([k, v]) => detailRows(v, fieldLabel(k)));
 
   return (
     <div className="im-fade space-y-5">
@@ -1556,7 +1847,8 @@ function AppDetailPanel({
             <div className="text-[11px] mt-0.5 font-medium" style={{ color: "rgba(255,255,255,0.75)" }}>{app.id} &nbsp;{isEnt ? "Entrepreneur" : "Mentor"}</div>
             <div className="mt-1.5">
               <span className="im-badge" style={{
-                background: app.status === "Pending" ? "#ffffff" : sc.bg,
+                background: "#ffffff",
+                borderRadius: 3,
                 color: app.status === "Pending" ? "#4C808A" : sc.color,
                 fontWeight: 800,
                 boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
@@ -1577,10 +1869,10 @@ function AppDetailPanel({
         <div className="rounded-md overflow-hidden border border-emerald-200 bg-white shadow-xs">
           <div className="px-5 py-3 flex items-center justify-between" style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.08), rgba(5,150,105,0.14))", borderBottom: "1px solid #d1fae5" }}>
             <div className="flex items-center gap-2">
-              <CheckCircle size={16} className="text-emerald-600" />
+              <Check size={16} className="text-emerald-600" />
               <span className="font-black text-xs uppercase tracking-wider text-emerald-800">Selection Assessment & Shortlist Details</span>
             </div>
-            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">Shortlisted for Incubation</span>
+            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-[3px] bg-emerald-100 text-emerald-800 border border-emerald-200">Shortlisted for Incubation</span>
           </div>
           <div className="p-5 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1597,7 +1889,7 @@ function AppDetailPanel({
               <div className="p-3 rounded-md bg-emerald-50/60 border border-emerald-100">
                 <span className="text-[10px] font-bold uppercase text-emerald-600">Admission Stage</span>
                 <div className="text-sm font-black text-teal-700 mt-1 flex items-center gap-1">
-                  <CheckCircle size={12} /> Pre-Incubation Shortlist
+                  <Check size={12} /> Pre-Incubation Shortlist
                 </div>
                 <span className="text-[9px] text-gray-500">Eligibility verified</span>
               </div>
@@ -1640,7 +1932,7 @@ function AppDetailPanel({
               <XCircle size={16} className="text-red-600" />
               <span className="font-black text-xs uppercase tracking-wider text-red-800">Rejection Assessment & Feedback Details</span>
             </div>
-            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">Disqualified</span>
+            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-[3px] bg-red-100 text-red-800 border border-red-200">Disqualified</span>
           </div>
           <div className="p-5 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1688,70 +1980,124 @@ function AppDetailPanel({
               <GitMerge size={16} className="text-purple-600" />
               <span className="font-black text-xs uppercase tracking-wider text-purple-900">Mentorship Pairing & Compatibility Details</span>
             </div>
-            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">Active Pairing Queue</span>
+            <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-[3px] bg-purple-100 text-purple-800 border border-purple-200">Active Pairing Queue</span>
           </div>
           <div className="p-5 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
                 <span className="text-[10px] font-bold uppercase text-purple-600">{isEnt ? "Assigned Mentor" : "Assigned Mentee"}</span>
-                <div className="text-sm font-black text-gray-900 mt-1">
-                  {isEnt ? (app.matchedMentor ?? "Mrs. Faith Nyirenda (Marketing)") : (app.matchedMentee ?? "Chisomo Banda (Agri-Business)")}
-                </div>
-                <span className="text-[9px] text-gray-500">Expertise alignment matched</span>
+                <div className="text-sm font-black text-gray-900 mt-1">{partnerName ?? "Not yet matched"}</div>
+                <span className="text-[9px] text-gray-500">{partnerName ? "From the pairing record" : "No pairing recorded"}</span>
               </div>
               <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
                 <span className="text-[10px] font-bold uppercase text-purple-600">Compatibility Alignment</span>
                 <div className="text-sm font-black text-purple-800 mt-1 flex items-center gap-1">
-                  <Star size={12} className="fill-purple-600 text-purple-600" />
-                  {app.matchScore ? `${app.matchScore}% Match` : "92% Compatibility"}
+                  {pairScore ? <><Star size={12} className="fill-purple-600 text-purple-600" />{pairScore}% Match</> : "Not yet matched"}
                 </div>
-                <span className="text-[9px] text-gray-500">High sector & domain synergy</span>
+                <span className="text-[9px] text-gray-500">{pairScore ? "Recorded match score" : "No match score recorded"}</span>
               </div>
               <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
                 <span className="text-[10px] font-bold uppercase text-purple-600">Matching Pipeline Stage</span>
-                <div className="text-sm font-black text-gray-800 mt-1">{app.matchingStage ?? "Pairing Confirmed"}</div>
-                <span className="text-[9px] text-gray-500">Awaiting intro session</span>
+                <div className="text-sm font-black text-gray-800 mt-1">{pairStage ?? "Not yet matched"}</div>
               </div>
               <div className="p-3 rounded-md bg-purple-50/60 border border-purple-100">
                 <span className="text-[10px] font-bold uppercase text-purple-600">Introductory Call</span>
-                <div className="text-sm font-black text-teal-700 mt-1">{app.introSession ?? "Friday 10:00 AM"}</div>
-                <span className="text-[9px] text-gray-500">Google Meet link sent</span>
+                <div className="text-sm font-black text-teal-700 mt-1">{pairIntro ?? "Not yet scheduled"}</div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Sections */}
-      <Section title="Personal Information">
-        <Row label="Full Name"    value={app.name} />
-        <Row label="District"     value={app.district} />
-        <Row label="Phone"        value={app.phone} />
-        <Row label="Email"        value={isEnt ? ent.email : mnt.email} />
-        {isEnt && <Row label="Gender" value={ent.gender} />}
-      </Section>
+      {/* ── Application sections ── */}
+      <DetailSection title="Personal Information">
+        <DetailRow label="Full Name"      value={app.name} />
+        {isEnt && <DetailRow label="First Name" value={ent.firstName} />}
+        {isEnt && <DetailRow label="Last Name"  value={ent.lastName} />}
+        {!isEnt && <DetailRow label="Title" value={mnt.title} />}
+        <DetailRow label="Gender"         value={app.gender} />
+        <DetailRow label="Age Group"      value={app.ageGroup} />
+        <DetailRow label="Nationality"    value={app.nationality} />
+        <DetailRow label="National ID"    value={app.nationalId} />
+        <DetailRow label="Languages"      value={app.languages} />
+      </DetailSection>
+
+      <DetailSection title="Location">
+        <DetailRow label="Address"        value={app.address} />
+        <DetailRow label="District / City" value={app.district} />
+        <DetailRow label="Region"         value={app.region} />
+        {isEnt
+          ? <DetailRow label="Location Type" value={ent.locationType} />
+          : <DetailRow label="Location" value={mnt.location} />}
+      </DetailSection>
+
+      <DetailSection title="Education">
+        <DetailRow label="Highest Qualification" value={app.qualification} />
+        {isEnt && <DetailRow label="Field of Study" value={ent.fieldStudy} />}
+        <DetailRow label="Institution"    value={app.institution} />
+      </DetailSection>
 
       {isEnt ? (
-        <Section title="Business Information">
-          <Row label="Business Name" value={ent.businessName} />
-          <Row label="Sector"        value={ent.sector} />
-          <Row label="Stage"         value={ent.stage} />
-        </Section>
+        <DetailSection title="Business Information">
+          <DetailRow label="Business Name"     value={ent.businessName} />
+          <DetailRow label="Sector"            value={ent.sector} />
+          <DetailRow label="Stage"             value={ent.bizStage || ent.stage} />
+          <DetailRow label="Year Started"      value={ent.yearStarted} />
+          <DetailRow label="Registration Status" value={ent.bizRegStatus} />
+          <DetailRow label="Target Customers"  value={ent.targetCustomers} />
+          <DetailRow label="Co-Founder"        value={ent.coFounderName} />
+          <DetailRow label="Co-Founder Role"   value={ent.coFounderRole} />
+          <DetailRow label="Business Description" value={ent.bio} />
+          <DetailRow label="Business Experience" value={ent.bizExperience} />
+          <DetailRow label="Why Become an Entrepreneur" value={ent.whyEntrepreneur} />
+        </DetailSection>
       ) : (
-        <Section title="Professional Information">
-          <Row label="Title / Designation" value={mnt.title} />
-          <Row label="Employer / Company"  value={mnt.employer} />
-          <Row label="Expertise Area"      value={mnt.expertise} />
-        </Section>
+        <DetailSection title="Professional Information">
+          <DetailRow label="Title / Designation" value={mnt.title} />
+          <DetailRow label="Employer / Company"  value={mnt.employer} />
+          <DetailRow label="Expertise Area"      value={mnt.expertise} />
+          <DetailRow label="All Expertise Areas" value={mnt.expertiseAreas?.join(", ")} />
+          <DetailRow label="Years of Experience" value={mnt.yearsExp} />
+          <DetailRow label="Availability"        value={mnt.availability} />
+          <DetailRow label="Hours per Month"     value={mnt.hoursPerMonth} />
+          <DetailRow label="Preferred Stages"    value={mnt.preferredStages?.join(", ")} />
+          <DetailRow label="Industries"          value={mnt.industries?.join(", ")} />
+          <DetailRow label="Biography"           value={mnt.bio} />
+        </DetailSection>
       )}
 
-      <Section title="Application Details">
-        <Row label="Application ID" value={app.id} />
-        <Row label="Programme"      value={app.program} />
-        <Row label="Date Applied"   value={app.date} />
-        <Row label="Status"         value={app.status} />
-        <Row label="Score"          value={String(app.score)} />
-      </Section>
+      <DetailSection title="Inclusion">
+        {isEnt && <DetailRow label="Youth-Owned" value={yesNo(ent.youthOwned)} />}
+        {isEnt && <DetailRow label="Woman-Owned" value={yesNo(ent.womanOwned)} />}
+        <DetailRow label="Person with Disability" value={yesNo(app.pwd)} />
+      </DetailSection>
+
+      <DetailSection title="Contact">
+        <DetailRow label="Phone" value={app.phone} />
+        <DetailRow label="Email" value={app.email} />
+      </DetailSection>
+
+      <DetailSection title="Application Details">
+        <DetailRow label="Application ID" value={app.id} />
+        <DetailRow label="Programme"      value={app.program} />
+        {app.programName && <DetailRow label="Project" value={app.programName} />}
+        <DetailRow label="Date Applied"   value={app.date} />
+        <DetailRow label="Status"         value={app.status} />
+        <DetailRow label="Score"          value={String(app.score)} />
+      </DetailSection>
+
+      {/* Every question on the form, answered or not */}
+      <div className="text-[11px] font-black uppercase tracking-widest pt-2" style={{ color: NAVY }}>Full Form Answers</div>
+      {formSections.map(sec => (
+        <DetailSection key={sec.title} title={sec.title}>
+          {formSectionRows(sec, submission).map((r, i) => <DetailRow key={i} label={r.label} value={r.value} />)}
+        </DetailSection>
+      ))}
+      {unlistedRows.length > 0 && (
+        <DetailSection title="Other Answers">
+          {unlistedRows.map((r, i) => <DetailRow key={i} label={r.label} value={r.value} />)}
+        </DetailSection>
+      )}
     </div>
   );
 }
@@ -1762,11 +2108,13 @@ function filterByStatus<T extends { status: string }>(pool: T[], status: string 
   return pool.filter(a => a.status === status);
 }
 
-type AppTab = "entrepreneurs" | "mentors";
-
 function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
-  const { entApps, mntApps, setStatusOverride, reassignPartner, addNotification } = useContext(AppDataCtx);
-  const [tab, setTab] = useState<AppTab>("entrepreneurs");
+  const { entApps, mntApps, setStatusOverride, reassignPartner, addNotification, notifications, appTab: tab, setAppTab: setTab } = useContext(AppDataCtx);
+  // People with an unread notification in the section being viewed get a "New" marker in the table
+  const newIds = useMemo(() => {
+    const section = filterStatus === "Selected" ? "Selection" : filterStatus || "Applications";
+    return new Set(notifications.filter(n => !n.read && n.section === section && n.candidateId && notifAudience(n) === tabAudience(tab)).map(n => n.candidateId!));
+  }, [notifications, filterStatus, tab]);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All Sectors");
   const [viewingApp, setViewingApp] = useState<(EntrepreneurApplication | MentorApplication) | null>(null);
@@ -1897,7 +2245,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
         case "Score": return a.score != null ? String(a.score) : "";
         case "Status": return isMatching
           ? ((a.matchingStage === "Re-match Requested" || a.reMatchReq || a.status === "Re-match Requested" || a.approvalStatus === "Re-match Requested") ? "Re-match Requested" : (a.approvalStatus ?? "Approved"))
-          : (a.status ?? "");
+          : (!filterStatus ? "Pending" : (a.status ?? ""));
         case "Selection Reason": return a.selectionReason ?? "High professional domain experience and availability for incubatees";
         case "Selected Date": return a.selectedDate ?? a.date ?? "2026-02-18";
         case "Rejection Reason": return a.rejectionReason ?? (a.score < 50 ? "Weekly availability below required 4 hours/month minimum threshold" : "Mentorship credentials verification incomplete");
@@ -1959,6 +2307,19 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
   );
   const activeFilterCount = activeColumnFilterKeys.length;
   const clearAllColumnFilters = () => setColumnFilters({});
+
+  // Nothing is delivered from the browser: this records a one-person "Rejected" campaign (so it shows in the Email Dashboard and
+  // counts as emailed) and opens their notice, with their own reason filled in, in the admin's mail app.
+  const resendNotice = (a: any) => {
+    if (!a.email || !isEmail(a.email)) { toast.error(`${a.name} has no valid email address, so no notice was prepared.`); return; }
+    const r = { id: a.id, name: a.name, email: String(a.email).trim(), kind: (isEntrepreneur ? "entrepreneur" : "mentor") as "entrepreneur" | "mentor", programId: a.programId, programName: a.programName, reason: a.rejectionReason || undefined };
+    const tpl = defaultTemplate("Rejected");
+    const msg = renderFor(r, tpl);
+    const { saved } = sendCampaign({ audience: "Rejected", recipients: [r], subject: msg.subject, body: msg.body }, loadCampaigns());
+    if (!saved) { toast.error("Could not save this notice in your browser (storage is full or blocked), so it was not recorded or opened."); return; }
+    window.location.href = `mailto:${encodeURIComponent(r.email)}?subject=${encodeURIComponent(msg.subject)}&body=${encodeURIComponent(msg.body)}`;
+    toast.success(`Notice for ${a.name} recorded as Queued in the Email Dashboard and opened in your mail app. Nothing is sent until you send it from there.`);
+  };
 
   const handleOpenEditReason = (appToEdit: any, action: "Select" | "Reject") => {
     const defaultReason = action === "Select"
@@ -2141,7 +2502,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
   }, [isRejected, isMatching, isSelected, isDropouts, isEntrepreneur]);
 
   if (viewingApp) {
-    const appToView = (!filterStatus && isEntrepreneur)
+    const appToView = !filterStatus
       ? { ...viewingApp, status: "Pending" }
       : viewingApp;
     return (
@@ -2170,7 +2531,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
               onClick={() => { setTab(t); setSearch(""); setCategoryFilter("All Sectors"); setColumnFilters({}); }}
               className="px-5 py-2 rounded-md text-xs font-bold capitalize transition-all"
               style={{
-                background: tab === t ? `linear-gradient(135deg, ${NAVY}, ${TEAL})` : "transparent",
+                background: tab === t ? NAVY : "transparent",
                 color: tab === t ? "#fff" : "#6b7280",
                 boxShadow: tab === t ? "0 2px 8px rgba(59,65,103,0.25)" : "none",
               }}
@@ -2207,10 +2568,9 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
       {/* Table */}
       <div className="rounded-md overflow-hidden" style={{ border: "1px solid #e5e7eb", background: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
         {/* Table header bar - dot removed in front of Entrepreneur Applications */}
-        <div className="px-5 py-3 flex items-center justify-between gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.3)", background: isEntrepreneur ? "#4C808A" : "#f9fafb" }}>
+        <div className="px-5 py-3 flex items-center justify-between gap-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.3)", background: "#4C808A" }}>
           <div className="flex items-center gap-2">
-            {!isEntrepreneur && <div className="w-2 h-2 rounded-full" style={{ background: NAVY }} />}
-            <span className="text-xs font-black uppercase tracking-wider" style={{ color: isEntrepreneur ? "#ffffff" : "#374151" }}>
+            <span className="text-xs font-black uppercase tracking-wider" style={{ color: "#ffffff" }}>
               {filterStatus === "Rejected"
                 ? (isEntrepreneur ? "Details and Feedback of Rejected Applications" : "Details and Feedback of Rejected Applications")
                 : (filterStatus === "Selected"
@@ -2224,7 +2584,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
           {activeFilterCount > 0 && (
             <button
               onClick={clearAllColumnFilters}
-              className="text-[11px] font-bold px-3 py-1 rounded bg-white text-[#4C808A] hover:bg-gray-100 flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+              className="text-[11px] font-bold px-3 py-1 rounded-[3px] bg-white text-[#4C808A] hover:bg-gray-100 flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
             >
               <X size={12} /> Clear all filters ({activeFilterCount})
             </button>
@@ -2238,7 +2598,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
               <Filter size={10} /> Active Filters ({activeFilterCount}):
             </span>
             {activeColumnFilterKeys.map(([k, v]) => (
-              <span key={k} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-white text-gray-800 px-2 py-0.5 rounded border border-amber-300 shadow-xs">
+              <span key={k} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-white text-gray-800 px-2 py-0.5 rounded-[3px] border border-amber-300 shadow-xs">
                 <span className="text-gray-500 font-bold">{k}:</span>
                 <span className="text-amber-800 font-bold">{v}</span>
                 <button
@@ -2265,16 +2625,16 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
           <table style={{ borderCollapse: "collapse", fontSize: 11, minWidth: isRejected || isMatching ? "1400px" : "2800px", width: "100%" }}>
             <thead>
               {/* Header Title Row */}
-              <tr style={{ background: isEntrepreneur ? "#4C808A" : "#f9fafb", borderBottom: isEntrepreneur ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb" }}>
+              <tr style={{ background: "#4C808A", borderBottom: "1px solid rgba(255,255,255,0.4)" }}>
                 {columns.map(h => {
                   const hasFilter = Boolean(columnFilters[h]);
                   return (
                     <th key={h} className="px-3 py-2.5 text-left font-bold text-[9px] uppercase tracking-wider whitespace-nowrap"
                       style={{
-                        color: isEntrepreneur ? "#ffffff" : "#6b7280",
-                        background: isEntrepreneur ? (hasFilter ? "#36636c" : "#4C808A") : (hasFilter ? "#e5e7eb" : undefined),
-                        borderRight: isEntrepreneur ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
-                        borderBottom: isEntrepreneur ? "1px solid rgba(255,255,255,0.4)" : "1px solid #e5e7eb",
+                        color: "#ffffff",
+                        background: hasFilter ? "#36636c" : "#4C808A",
+                        borderRight: "1px solid rgba(255,255,255,0.4)",
+                        borderBottom: "1px solid rgba(255,255,255,0.4)",
                         position: "relative",
                       }}>
                       {h === "Actions" ? (
@@ -2284,7 +2644,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                               type="button"
                               onClick={clearAllColumnFilters}
                               title="Clear all filters"
-                              className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-white text-[#4C808A] hover:bg-gray-100 transition-all flex items-center gap-0.5 cursor-pointer"
+                              className="text-[8px] font-bold px-1.5 py-0.5 rounded-[3px] bg-white text-[#4C808A] hover:bg-gray-100 transition-all flex items-center gap-0.5 cursor-pointer"
                             >
                               <X size={8} /> Reset
                             </button>
@@ -2301,12 +2661,10 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                               e.stopPropagation();
                               setOpenFilterCol(openFilterCol === h ? null : h);
                             }}
-                            className={`p-1 rounded transition-all cursor-pointer ${
+                            className={`p-1 rounded-[3px] transition-all cursor-pointer ${
                               hasFilter
                                 ? "bg-amber-400 text-gray-900 font-black shadow-sm"
-                                : isEntrepreneur
-                                ? "text-white/80 hover:bg-white/20 hover:text-white"
-                                : "text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                                : "text-white/80 hover:bg-white/20 hover:text-white"
                             }`}
                             title={`Filter ${h}`}
                           >
@@ -2326,7 +2684,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                             left: 0,
                             zIndex: 100,
                             background: "#ffffff",
-                            borderRadius: 8,
+                            borderRadius: 3,
                             boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
                             border: "1px solid #e5e7eb",
                             minWidth: 210,
@@ -2345,7 +2703,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                             <button
                               type="button"
                               onClick={() => setOpenFilterCol(null)}
-                              className="w-5 h-5 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-700 flex items-center justify-center text-xs cursor-pointer"
+                              className="w-5 h-5 rounded-[3px] hover:bg-gray-100 text-gray-400 hover:text-gray-700 flex items-center justify-center text-xs cursor-pointer"
                             >
                               ✕
                             </button>
@@ -2356,7 +2714,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                             value={columnFilters[h] ?? ""}
                             onChange={e => setColumnFilters(prev => ({ ...prev, [h]: e.target.value }))}
                             placeholder={`Filter ${h}...`}
-                            className="w-full text-xs px-2.5 py-1.5 rounded border border-gray-200 focus:outline-none focus:border-[#4C808A] mb-2"
+                            className="w-full text-xs px-2.5 py-1.5 rounded-[3px] border border-gray-200 focus:outline-none focus:border-[#4C808A] mb-2"
                             autoFocus
                           />
 
@@ -2366,7 +2724,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                               onClick={() => {
                                 setColumnFilters(prev => { const n = { ...prev }; delete n[h]; return n; });
                               }}
-                              className={`w-full text-left px-2 py-1 rounded text-[11px] font-medium transition-all cursor-pointer ${
+                              className={`w-full text-left px-2 py-1 rounded-[3px] text-[11px] font-medium transition-all cursor-pointer ${
                                 !columnFilters[h] ? "bg-[#4C808A]/15 text-[#4C808A] font-bold" : "hover:bg-gray-50 text-gray-700"
                               }`}
                             >
@@ -2381,7 +2739,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                   onClick={() => {
                                     setColumnFilters(prev => ({ ...prev, [h]: opt }));
                                   }}
-                                  className={`w-full text-left px-2 py-1 rounded text-[11px] truncate block transition-all cursor-pointer ${
+                                  className={`w-full text-left px-2 py-1 rounded-[3px] text-[11px] truncate block transition-all cursor-pointer ${
                                     isSelected ? "bg-[#4C808A]/15 text-[#4C808A] font-bold" : "hover:bg-gray-50 text-gray-700"
                                   }`}
                                 >
@@ -2398,7 +2756,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                 setColumnFilters(prev => { const n = { ...prev }; delete n[h]; return n; });
                                 setOpenFilterCol(null);
                               }}
-                              className="w-full py-1 text-center text-[10px] font-bold text-red-600 hover:bg-red-50 rounded transition-all border border-red-200 cursor-pointer"
+                              className="w-full py-1 text-center text-[10px] font-bold text-red-600 hover:bg-red-50 rounded-[3px] transition-all border border-red-200 cursor-pointer"
                             >
                               Clear filter
                             </button>
@@ -2411,26 +2769,26 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
               </tr>
 
               {/* Dedicated Inline Filter Controls Sub-Row */}
-              <tr style={{ background: isEntrepreneur ? "#3d6b74" : "#f3f4f6", borderBottom: "1px solid #e5e7eb" }}>
+              <tr style={{ background: "#3d6b74", borderBottom: "1px solid #e5e7eb" }}>
                 {columns.map(h => {
                   if (h === "Actions") {
                     return (
                       <th key={`sub-${h}`} className="px-2 py-1 text-center whitespace-nowrap"
                         style={{
                           borderBottom: "1px solid #e5e7eb",
-                          background: isEntrepreneur ? "#3d6b74" : "#f3f4f6",
+                          background: "#3d6b74",
                         }}>
                         {activeFilterCount > 0 ? (
                           <button
                             type="button"
                             onClick={clearAllColumnFilters}
-                            className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-400 hover:bg-amber-500 text-gray-900 transition-all shadow-sm cursor-pointer"
+                            className="text-[9px] font-bold px-2 py-0.5 rounded-[3px] bg-amber-400 hover:bg-amber-500 text-gray-900 transition-all shadow-sm cursor-pointer"
                             title="Clear all column filters"
                           >
                             Clear ({activeFilterCount})
                           </button>
                         ) : (
-                          <span className="text-[9px] font-semibold" style={{ color: isEntrepreneur ? "rgba(255,255,255,0.4)" : "#9ca3af" }}>—</span>
+                          <span className="text-[9px] font-semibold" style={{ color: "rgba(255,255,255,0.4)" }}>—</span>
                         )}
                       </th>
                     );
@@ -2442,15 +2800,15 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                   return (
                     <th key={`sub-${h}`} className="px-1.5 py-1 whitespace-nowrap"
                       style={{
-                        borderRight: isEntrepreneur ? "1px solid rgba(255,255,255,0.3)" : "1px solid #e5e7eb",
+                        borderRight: "1px solid rgba(255,255,255,0.3)",
                         borderBottom: "1px solid #e5e7eb",
-                        background: isEntrepreneur ? (hasFilter ? "#32575f" : "#3d6b74") : (hasFilter ? "#e2e8f0" : "#f3f4f6"),
+                        background: hasFilter ? "#32575f" : "#3d6b74",
                       }}>
                       <div className="relative flex items-center">
                         <select
                           value={columnFilters[h] ?? ""}
                           onChange={e => setColumnFilters(prev => ({ ...prev, [h]: e.target.value }))}
-                          className="w-full text-[10px] font-semibold px-1.5 py-0.5 rounded focus:outline-none focus:ring-1 focus:ring-amber-300 cursor-pointer"
+                          className="w-full text-[10px] font-semibold px-1.5 py-0.5 rounded-[3px] focus:outline-none focus:ring-1 focus:ring-amber-300 cursor-pointer"
                           style={{
                             background: hasFilter ? "#fff" : "rgba(255,255,255,0.92)",
                             color: "#111827",
@@ -2510,7 +2868,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                               {menuOpenId === a.id && (
                                 <div ref={menuRef} className="im-dd" style={{
                                   position: "absolute", top: "100%", right: 0, zIndex: 100,
-                                  background: "#fff", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+                                  background: "#fff", borderRadius: 3, boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
                                   border: "1px solid #e5e7eb", minWidth: 175, padding: "5px 0", marginTop: 4,
                                 }}>
                                   {isRejected ? (
@@ -2531,7 +2889,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                       <button
                                         onClick={() => {
                                           setMenuOpenId(null);
-                                          toast.info(`Formal feedback notice re-sent to ${a.name} via Email.`);
+                                          resendNotice(a);
                                         }}
                                         style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", cursor: "pointer", fontSize: 11, color: TEAL, fontWeight: 600, textAlign: "left" }}
                                         onMouseEnter={e => (e.currentTarget.style.background = "#f0fdfa")}
@@ -2609,7 +2967,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                                         onMouseEnter={e => (e.currentTarget.style.background = "#f0fdf4")}
                                         onMouseLeave={e => (e.currentTarget.style.background = "none")}
                                       >
-                                        <CheckCircle size={13} color="#059669" /> Select
+                                        <Check size={13} color="#059669" /> Select
                                       </button>
                                       <div style={{ height: 1, background: "#f3f4f6", margin: "3px 0" }} />
                                       <button
@@ -2648,7 +3006,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                       }
 
                       if (col === "Status") {
-                        const isEntAppSection = !filterStatus && isEntrepreneur;
+                        const isEntAppSection = !filterStatus;
                         const statusVal = isMatching
                           ? ((a.matchingStage === "Re-match Requested" || (a as any).reMatchReq || a.status === "Re-match Requested" || a.approvalStatus === "Re-match Requested")
                               ? "Re-match Requested"
@@ -2697,6 +3055,9 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                         return (
                           <td key={col} className="px-3 py-2.5 font-bold whitespace-nowrap" style={{ color: "#111827", borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
                             {a.name}
+                            {newIds.has(a.id) && (
+                              <span className="ml-2 px-1.5 py-0.5 rounded-[3px] text-[8px] font-black uppercase text-white align-middle" style={{ background: "#e85454" }} title="Unread notification">New</span>
+                            )}
                           </td>
                         );
                       }
@@ -2750,7 +3111,7 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
                         return (
                           <td key={col} className="px-3 py-2.5 text-gray-500 whitespace-nowrap" style={{ borderRight: "1px solid #e5e7eb", borderBottom: "1px solid #e5e7eb" }}>
                             {isReg ? (
-                              <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: "#d1fae5", color: "#065f46" }}>Registered</span>
+                              <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 3, background: "#d1fae5", color: "#065f46" }}>Registered</span>
                             ) : (
                               getColValue(a, col)
                             )}
@@ -2919,20 +3280,44 @@ function ApplicationsView({ filterStatus }: { filterStatus: string | null }) {
 }
 
 // ── View: Email Dashboard ─────────────────────────────────────────────────────
+/** The built-in sample campaigns, in the same shape as the ones the admin sends. Their open/click numbers are demo data. */
+const SAMPLE_CAMPAIGNS: Campaign[] = EMAILS.map(e => ({
+  id: `SAMPLE-${e.id}`, subject: e.subject, body: "", recipients: e.recipients, opened: e.status === "Delivered" ? e.opened : null, clicked: e.status === "Delivered" ? e.clicked : null,
+  sent: e.sent, status: e.status as Campaign["status"], programIds: e.programId ? [e.programId] : [], programId: e.programId, sample: true,
+}));
+const EMAIL_STATUS: Record<string, { bg: string; color: string }> = {
+  Delivered: { bg: "rgba(16,185,129,0.15)", color: "#059669" },
+  Sent:      { bg: "rgba(16,185,129,0.15)", color: "#059669" },
+  Queued:    { bg: "rgba(245,158,11,0.15)", color: "#b45309" },
+  Scheduled: { bg: "rgba(59,130,246,0.15)", color: "#2563eb" },
+};
+
 function EmailDashboardView() {
-  const { scope } = useContext(AppDataCtx);
-  const emails = EMAILS.filter(e => inScope(scope, e));
-  const delivered = emails.filter(e => e.status === "Delivered");
-  const avg = (f: (e: typeof EMAILS[number]) => number) => delivered.length ? Math.round(delivered.reduce((a, e) => a + (e.recipients ? f(e) / e.recipients : 0), 0) / delivered.length * 100) : 0;
+  const { scope, entApps, mntApps } = useContext(AppDataCtx);
+  const [stored, setStored] = useState<Campaign[]>(loadCampaigns);
+  const [compose, setCompose] = useState<EmailAudience | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const markSent = (id: string) => {
+    const r = markCampaignSent(id, stored);
+    if (!r.saved) { toast.error("Could not save the change (browser storage is full or blocked). The campaign is still Queued."); return; }
+    setStored(r.all); toast.success("Marked as sent.");
+  };
+  const emails = [...stored, ...SAMPLE_CAMPAIGNS].filter(c => campaignVisible(c, scope));
+  // The built-in sample campaigns are demo rows: they are listed (and labelled) but never counted in the figures.
+  const real = emails.filter(e => !e.sample);
+  const queued = real.filter(e => e.status === "Queued");
+  const sentReal = real.filter(e => e.status === "Sent" || e.status === "Delivered");
+  const tracked = real.filter(e => e.opened !== null && e.recipients > 0);
+  const avg = (f: (e: Campaign) => number | null) => tracked.length ? `${Math.round(tracked.reduce((a, e) => a + (f(e) ?? 0) / e.recipients, 0) / tracked.length * 100)}%` : "—";
   return (
     <div className="im-fade space-y-6">
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
-          { icon: Send,    label: "Sent",      value: String(emails.length),    color: TEAL  },
-          { icon: Inbox,   label: "Delivered",  value: String(delivered.length),    color: "#059669" },
-          { icon: Star,    label: "Avg. Open",  value: `${avg(e => e.opened)}%`,  color: "#7c3aed" },
-          { icon: TrendingUp, label: "Avg. Click", value: `${avg(e => e.clicked)}%`, color: "#d97706" },
+          { icon: Inbox,   label: "Queued",    value: String(queued.length),     color: "#b45309" },
+          { icon: Send,    label: "Sent",      value: String(sentReal.length),   color: "#059669" },
+          { icon: Star,    label: "Avg. Open",  value: avg(e => e.opened),        color: "#7c3aed" },
+          { icon: TrendingUp, label: "Avg. Click", value: avg(e => e.clicked),    color: "#d97706" },
         ].map(s => (
           <div key={s.label} className="rounded-md p-4 flex flex-col gap-2"
             style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 8px rgba(0,0,0,0.05)" }}>
@@ -2947,10 +3332,15 @@ function EmailDashboardView() {
 
       {/* Campaigns table */}
       <div className="rounded-md overflow-hidden" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
-        <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid #f3f4f6" }}>
+        <div className="px-5 py-4 flex flex-wrap items-center justify-between gap-2" style={{ borderBottom: "1px solid #f3f4f6" }}>
           <h3 className="font-black text-sm" style={{ color: NAVY }}>Email Campaigns</h3>
-          <button className="flex items-center gap-1.5 text-xs font-bold text-white px-3 py-1.5 rounded-md"
-            style={{ background: TEAL }}><PlusCircle size={12} /> New Campaign</button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => setCompose("Selected")} className="flex items-center gap-1.5 text-xs font-bold text-white px-3 py-1.5 rounded-md" style={{ background: "#2563eb" }}><Send size={12} /> Email all selected</button>
+            <button onClick={() => setCompose("Rejected")} className="flex items-center gap-1.5 text-xs font-bold text-white px-3 py-1.5 rounded-md" style={{ background: "#dc2626" }}><Send size={12} /> Email all rejected</button>
+          </div>
+        </div>
+        <div className="px-5 py-2 text-[11px]" style={{ background: "#fffbeb", color: "#92400e", borderBottom: "1px solid #f3f4f6" }}>
+          No mail server is connected yet. A batch is recorded here as "Queued"; you deliver it from your own mail app, then click "Mark as sent". Open and click rates only appear once a mail service is connected.
         </div>
         <table className="w-full" style={{ borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
@@ -2961,69 +3351,98 @@ function EmailDashboardView() {
             </tr>
           </thead>
           <tbody>
-            {emails.map((e, i) => {
-              const sc = STATUS_COLORS[e.status] ?? { bg: "#f3f4f6", color: "#374151" };
-              const openRate = e.recipients > 0 ? Math.round((e.opened / e.recipients) * 100) : 0;
-              const clickRate = e.recipients > 0 ? Math.round((e.clicked / e.recipients) * 100) : 0;
+            {emails.map(e => {
+              const sc = EMAIL_STATUS[e.status] ?? { bg: "#f3f4f6", color: "#374151" };
+              const rate = (n: number | null) => (n === null || e.recipients <= 0 ? null : Math.round((n / e.recipients) * 100));
+              const openRate = rate(e.opened), clickRate = rate(e.clicked);
+              const bar = (v: number | null, color: string) => v === null ? <span className="text-gray-400">—</span> : (
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 w-14 rounded-full bg-gray-100 overflow-hidden"><div className="h-full rounded-md" style={{ width: `${v}%`, background: color }} /></div>
+                  <span className="text-[11px] font-bold" style={{ color: "#374151" }}>{v}%</span>
+                </div>
+              );
+              const expandable = !!e.log;
               return (
-                <tr key={e.id} className="im-row" style={{ borderBottom: "1px solid #f3f4f6" }}>
-                  <td className="px-4 py-3 font-semibold max-w-[240px] truncate" style={{ color: "#111827" }}>{e.subject}</td>
-                  <td className="px-4 py-3 font-bold text-center" style={{ color: NAVY }}>{e.recipients}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-14 rounded-full bg-gray-100 overflow-hidden">
-                        <div className="h-full rounded-md" style={{ width: `${openRate}%`, background: "#7c3aed" }} />
+                <Fragment key={e.id}>
+                  <tr className="im-row" style={{ borderBottom: "1px solid #f3f4f6", cursor: expandable ? "pointer" : "default" }} onClick={() => expandable && setOpenId(openId === e.id ? null : e.id)}>
+                    <td className="px-4 py-3 font-semibold max-w-[320px]" style={{ color: "#111827" }}>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="truncate" title={e.subject}>{e.subject}</span>
+                        {e.sample && <span className="shrink-0 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-[3px]" style={{ background: "#f3f4f6", color: "#6b7280" }} title="Demo row: not counted in the figures above">Sample</span>}
                       </div>
-                      <span className="text-[11px] font-bold" style={{ color: "#374151" }}>{openRate}%</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-14 rounded-full bg-gray-100 overflow-hidden">
-                        <div className="h-full rounded-md" style={{ width: `${clickRate}%`, background: "#d97706" }} />
-                      </div>
-                      <span className="text-[11px] font-bold" style={{ color: "#374151" }}>{clickRate}%</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{e.sent}</td>
-                  <td className="px-4 py-3 text-gray-600 font-medium">
-                    {e.status}
-                  </td>
-                </tr>
+                    </td>
+                    <td className="px-4 py-3 font-bold text-center" style={{ color: NAVY }}>{e.recipients}</td>
+                    <td className="px-4 py-3">{bar(openRate, "#7c3aed")}</td>
+                    <td className="px-4 py-3">{bar(clickRate, "#d97706")}</td>
+                    <td className="px-4 py-3 text-gray-500">{e.sent}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="text-[11px] font-bold" style={{ color: sc.color }} title={e.sentOn ? `Marked as sent on ${e.sentOn}` : undefined}>{e.status}</span>
+                      {!e.sample && e.status === "Queued" && (
+                        <button onClick={ev => { ev.stopPropagation(); markSent(e.id); }} title="Click once you have delivered this batch from your mail app"
+                          className="ml-2 text-[10px] font-bold px-2 py-0.5 rounded-[3px] border cursor-pointer" style={{ color: "#059669", borderColor: "#059669", background: "#fff" }}>Mark as sent</button>
+                      )}
+                    </td>
+                  </tr>
+                  {openId === e.id && e.log && (
+                    <tr style={{ background: "#f9fafb", borderBottom: "1px solid #f3f4f6" }}>
+                      <td colSpan={6} className="px-4 py-3 text-[11px]" style={{ color: "#374151" }}>
+                        <div className="font-bold mb-1" style={{ color: NAVY }}>Sent to {e.log.length}</div>
+                        <div className="max-h-28 overflow-y-auto mb-2">{e.log.map(l => <div key={`${l.kind}-${l.id}`}>{l.name} <span className="text-gray-400">&nbsp; {l.email} &nbsp; {l.kind}</span></div>)}</div>
+                        <div className="font-bold mb-1" style={{ color: NAVY }}>Message</div>
+                        <div style={{ whiteSpace: "pre-wrap" }}>{e.body}</div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
           </tbody>
         </table>
         {emails.length === 0 && <div className="p-4"><ProjectEmptyNotice scope={scope} what="email campaigns" /></div>}
       </div>
+      {compose && (
+        <BatchEmailModal entApps={entApps} mntApps={mntApps} campaigns={stored} scopeName={scope.project?.name} initialAudience={compose}
+          onSent={setStored} onClose={() => setCompose(null)} />
+      )}
     </div>
   );
 }
 
 // ── View: Program Health ──────────────────────────────────────────────────────
 function ProgramHealthView() {
-  const { entApps, scope } = useContext(AppDataCtx);
+  const { entApps, scope, pairHealth } = useContext(AppDataCtx);
   const count = (st: string) => entApps.filter(a => a.status === st).length;
   const alumniCount = ALUMNI.filter(a => inScope(scope, a)).length;
   const hasData = entApps.length > 0;
-  const metrics = [
-    { label: "Application Completion Rate", value: 87, color: "#059669", icon: CheckCircle },
-    { label: "Mentor Matching Rate",         value: 73, color: TEAL,     icon: GitMerge    },
-    { label: "Cohort Retention Rate",        value: 91, color: "#7c3aed",icon: Users        },
-    { label: "Business Plan Submission",     value: 68, color: "#d97706",icon: FileText     },
-    { label: "Milestone Achievement",        value: 79, color: NAVY,     icon: CheckSquare  },
-    { label: "Alumni Satisfaction",          value: 94, color: "#059669",icon: Star         },
+
+  // Everything below is worked out from the applications and mentoring pairs in the selected project(s)
+  const approvalOf = (a: unknown) => (a as { approvalStatus?: string }).approvalStatus;
+  const active = count("Selected") + count("Approved") + count("Matching");
+  const matched = entApps.filter(a => a.status === "Matching" && approvalOf(a) === "Approved").length;
+  const awaitingApproval = entApps.filter(a => a.status === "Matching" && approvalOf(a) !== "Approved").length;
+  const decided = entApps.filter(a => a.status !== "Pending").length;
+  const pendingCount = count("Pending");
+  const onTrack = pairHealth.filter(p => p.health === "Healthy" || p.health === "New").length;
+  const flagged = pairHealth.filter(p => p.flagged).length;
+  const rated = pairHealth.filter(p => p.satisfaction != null);
+  const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : null);
+  const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+
+  const metrics: { label: string; value: number | null; hint: string; color: string; icon: React.ElementType }[] = [
+    { label: "Applications Reviewed",  value: pct(decided, entApps.length), hint: `${decided} of ${entApps.length} applications have a decision`, color: "#059669", icon: FileText },
+    { label: "Mentor Matching Rate",   value: pct(matched, active),         hint: `${matched} of ${active} selected entrepreneurs have an approved mentor`, color: TEAL, icon: GitMerge },
+    { label: "Cohort Retention Rate",  value: pct(active, active + count("Dropouts")), hint: `${count("Dropouts")} dropout${count("Dropouts") === 1 ? "" : "s"} so far`, color: "#7c3aed", icon: Users },
+    { label: "Pairs On Track",         value: pct(onTrack, pairHealth.length), hint: `${onTrack} of ${pairHealth.length} mentoring pairs are healthy`, color: NAVY, icon: Activity },
+    { label: "Average Goal Progress",  value: avg(pairHealth.map(p => p.goalPct)), hint: "Across all mentoring pairs", color: "#d97706", icon: CheckSquare },
+    { label: "Mentee Satisfaction",    value: avg(rated.map(p => p.satisfaction as number)), hint: `Recent session ratings from ${rated.length} pair${rated.length === 1 ? "" : "s"}`, color: "#059669", icon: Star },
   ];
 
-  const alerts = [
-    { level: "warning", programId: SAMPLE_CORE, msg: "3 applicants have not submitted business plans (deadline: 2026-02-15)." },
-    { level: "info",    programId: SAMPLE_CORE, msg: "Mentor matching for cohort 3 is 73% complete — 8 unmatched entrepreneurs remain." },
-    { level: "success", programId: SAMPLE_CORE, msg: "ARISE Youth cohort achieved 91% retention — highest in programme history." },
-  ];
-  const pendingCount = count("Pending");
-  const visibleAlerts: { level: string; programId?: string; msg: string }[] = [
-    ...alerts.filter(a => inScope(scope, a)),
+  const visibleAlerts: { level: string; msg: string }[] = [
+    ...(flagged > 0 ? [{ level: "warning", msg: `${flagged} mentoring pair${flagged === 1 ? " is" : "s are"} at risk or stalled. Open Relationship Health to review.` }] : []),
     ...(pendingCount > 0 ? [{ level: "info", msg: `${pendingCount} application${pendingCount === 1 ? " is" : "s are"} still awaiting review${scope.project ? ` in ${scope.project.name}` : ""}.` }] : []),
+    ...(count("Selected") > 0 ? [{ level: "info", msg: `${count("Selected")} selected entrepreneur${count("Selected") === 1 ? " is" : "s are"} waiting to be matched with a mentor.` }] : []),
+    ...(awaitingApproval > 0 ? [{ level: "info", msg: `${awaitingApproval} match${awaitingApproval === 1 ? " is" : "es are"} waiting for approval in Pairing and Matching.` }] : []),
+    ...(pairHealth.length > 0 && flagged === 0 ? [{ level: "success", msg: `All ${pairHealth.length} mentoring pair${pairHealth.length === 1 ? " is" : "s are"} on track.` }] : []),
   ];
 
   return (
@@ -3035,7 +3454,7 @@ function ProgramHealthView() {
           const config = {
             warning: { bg: "rgba(245,158,11,0.08)", border: "#d9770620", icon: AlertCircle, color: "#d97706" },
             info:    { bg: "rgba(59,130,246,0.08)",  border: "#2563eb20", icon: Clock,        color: "#2563eb" },
-            success: { bg: "rgba(16,185,129,0.08)",  border: "#05996920", icon: CheckCircle,  color: "#059669" },
+            success: { bg: "rgba(16,185,129,0.08)",  border: "#05996920", icon: Check,  color: "#059669" },
           }[a.level] ?? { bg: "rgba(59,130,246,0.08)", border: "#2563eb20", icon: Clock, color: "#2563eb" };
           return (
             <div key={i} className="flex items-start gap-3 rounded-md px-4 py-3"
@@ -3048,32 +3467,38 @@ function ProgramHealthView() {
       </div>
 
       {/* Metric bars */}
-      <div className="rounded-md p-5 space-y-4" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
-        <h3 className="font-black text-sm mb-2" style={{ color: NAVY }}>Programme KPIs</h3>
-        {(hasData ? metrics : []).map(m => (
-          <div key={m.label} className="space-y-1">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <m.icon size={12} color={m.color} />
-                <span className="text-xs font-semibold text-gray-700">{m.label}</span>
-              </div>
-              <span className="text-xs font-black" style={{ color: m.color }}>{m.value}%</span>
-            </div>
-            <div className="h-2 bg-gray-100 rounded-md overflow-hidden">
-              <div className="h-full rounded-md transition-all duration-700" style={{ width: `${m.value}%`, background: m.color }} />
-            </div>
+      {hasData && (
+        <div className="rounded-md p-5 space-y-4" style={{ background: "#fff", border: "1px solid #e5e7eb", boxShadow: "0 2px 12px rgba(0,0,0,0.05)" }}>
+          <div>
+            <h3 className="font-black text-sm" style={{ color: NAVY }}>Programme KPIs</h3>
+            <p className="text-[10px] text-gray-500">Calculated live from applications and mentoring activity{scope.project ? ` in ${scope.project.name}` : ""}.</p>
           </div>
-        ))}
-      </div>
+          {metrics.map(m => (
+            <div key={m.label} className="space-y-1">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <m.icon size={12} color={m.color} />
+                  <span className="text-xs font-semibold text-gray-700">{m.label}</span>
+                </div>
+                <span className="text-xs font-black" style={{ color: m.value == null ? "#9ca3af" : m.color }}>{m.value == null ? "—" : `${m.value}%`}</span>
+              </div>
+              <div className="h-2 bg-gray-100 rounded-md overflow-hidden">
+                <div className="h-full rounded-md transition-all duration-700" style={{ width: `${m.value ?? 0}%`, background: m.color }} />
+              </div>
+              <p className="text-[10px] text-gray-400">{m.value == null ? "No data yet" : m.hint}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Stage overview */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         {[
           { icon: FileText,      label: "Applications",  value: entApps.length,  color: NAVY  },
-          { icon: CheckCircle,   label: "Selected",       value: count("Selected"),  color: TEAL  },
+          { icon: Check,   label: "Selected",       value: count("Selected"),  color: TEAL  },
           { icon: UserCheck,     label: "Approved",       value: count("Approved"),  color: "#059669" },
-          { icon: GitMerge,      label: "Matched",        value: count("Matching"),  color: "#7c3aed" },
-          { icon: Activity,      label: "Active Cohort",  value: count("Selected") + count("Approved") + count("Matching"),  color: "#d97706" },
+          { icon: GitMerge,      label: "Matched",        value: matched,  color: "#7c3aed" },
+          { icon: Activity,      label: "Active Cohort",  value: active,  color: "#d97706" },
           { icon: GraduationCap, label: "Alumni",          value: alumniCount,   color: "#059669" },
         ].map(c => (
           <div key={c.label} className="rounded-md p-4 flex flex-col gap-2"
@@ -3130,7 +3555,7 @@ function AlumniView() {
 }
 
 // ── View: Program Setup ───────────────────────────────────────────────────────
-type SetupTab = "Overview" | "Timeline" | "Benefits" | "Eligibility";
+type SetupTab = "Overview" | "Timeline" | "Benefits" | "Eligibility" | "Sectors";
 
 const PROG_STATUS_COLORS: Record<string, string> = {
   "Accepting Applications": "#16a34a",
@@ -3160,6 +3585,9 @@ function ProgramSetupView({
   const [tlForm,     setTlForm]     = useState({ title: "", date: "", description: "" });
   const [addingTl,   setAddingTl]   = useState(false);
   const [tlEntries,  setTlEntries]  = useState<TimelineEntry[]>([]);
+  // Sectors applicants can choose from on this project's entrepreneur application form
+  const [sectors,     setSectors]     = useState<string[]>(DEFAULT_APPLICATION_SECTORS);
+  const [sectorDraft, setSectorDraft] = useState("");
 
   const emptyProg = {
     name: "", sector: "", description: "",
@@ -3210,6 +3638,20 @@ function ProgramSetupView({
     setAddingTl(false);
   };
 
+  const handleSectorAdd = () => {
+    const next = cleanSectors([...sectors, sectorDraft]);
+    if (next.length === sectors.length) { if (sectorDraft.trim()) toast.error("That sector is already in the list."); return; }
+    setSectors(next);
+    setSectorDraft("");
+  };
+  const handleSectorRemove = (name: string) => setSectors(prev => prev.filter(x => x !== name));
+  const handleSectorMove = (idx: number, dir: -1 | 1) => setSectors(prev => {
+    const to = idx + dir;
+    if (to < 0 || to >= prev.length) return prev;
+    const copy = [...prev]; [copy[idx], copy[to]] = [copy[to], copy[idx]];
+    return copy;
+  });
+
   const handleTlRemove = (id: string) => {
     setTlEntries(prev => prev.filter(e => e.id !== id));
   };
@@ -3221,6 +3663,7 @@ function ProgramSetupView({
 
   const handleCreate = () => {
     if (!savedOnce) return;
+    if (sectors.length === 0) { toast.error("Add at least one sector applicants can choose from."); setAppTab("Sectors"); return; }
     const prog: AdminProgram = {
       id: editingId ?? Date.now().toString(),
       name: newProg.name,
@@ -3236,6 +3679,7 @@ function ProgramSetupView({
       benefits: newProg.benefits,
       eligibility: newProg.eligibility,
       published: true,
+      applicationSectors: sectors,
     };
     if (editingId) {
       onUpdateProgram(prog);
@@ -3247,6 +3691,8 @@ function ProgramSetupView({
     setNewProg(emptyProg);
     setCoverUrl("");
     setTlEntries([]);
+    setSectors(DEFAULT_APPLICATION_SECTORS);
+    setSectorDraft("");
     setSavedOnce(false);
     setEditingId(null);
     setAddOpen(false);
@@ -3263,6 +3709,8 @@ function ProgramSetupView({
     });
     setCoverUrl(p.coverUrl);
     setTlEntries(p.timelineEntries);
+    setSectors(p.applicationSectors?.length ? p.applicationSectors : DEFAULT_APPLICATION_SECTORS);
+    setSectorDraft("");
     setSavedOnce(false);
     setAddOpen(true);
     setAppTab("Overview");
@@ -3272,6 +3720,8 @@ function ProgramSetupView({
     setNewProg(emptyProg);
     setCoverUrl("");
     setTlEntries([]);
+    setSectors(DEFAULT_APPLICATION_SECTORS);
+    setSectorDraft("");
     setSavedOnce(false);
     setEditingId(null);
     setAddOpen(false);
@@ -3280,7 +3730,7 @@ function ProgramSetupView({
 
   const statusColor = PROG_STATUS_COLORS[newProg.status] ?? "#6b7280";
   // Overview tab hidden per requirements — sourced from Program Description
-  const appTabs: SetupTab[] = ["Timeline", "Benefits", "Eligibility"];
+  const appTabs: SetupTab[] = ["Timeline", "Benefits", "Eligibility", "Sectors"];
 
   // Auto-compute Application Deadline from timeline "Applications Close" entry
   const autoDeadline = tlEntries.find(e =>
@@ -3308,7 +3758,7 @@ function ProgramSetupView({
                 {!p.coverUrl && <div className="w-12 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: `${TEAL}15` }}><FileText size={14} color={TEAL} /></div>}
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-xs truncate" style={{ color: NAVY }}>{p.name || "Untitled"}</div>
-                  <div className="text-[10px]" style={{ color: "#6b7280" }}>{p.sector || "—"} · {p.format}</div>
+                  <div className="text-[10px]" style={{ color: "#6b7280" }}>{p.sector || "—"} &nbsp; {p.format}</div>
                 </div>
                 <span className="text-[9px] font-bold px-2 py-0.5 rounded-md shrink-0"
                   style={{ background: NAVY, color: "#fff" }}>
@@ -3517,7 +3967,7 @@ function ProgramSetupView({
                   </div>
                   <div className="flex gap-1">
                     {appTabs.map((t, i) => (
-                      <div key={t} className="flex-1 h-1 rounded-full" style={{ background: [tlEntries.length > 0, !!newProg.benefits, !!newProg.eligibility][i] ? progBarColor(100) : "rgba(255,255,255,0.3)" }} />
+                      <div key={t} className="flex-1 h-1 rounded-full" style={{ background: [tlEntries.length > 0, !!newProg.benefits, !!newProg.eligibility, sectors.length > 0][i] ? progBarColor(100) : "rgba(255,255,255,0.3)" }} />
                     ))}
                   </div>
                 </div>
@@ -3631,6 +4081,44 @@ function ProgramSetupView({
                       className="w-full rounded-md px-3 py-2.5 text-xs font-semibold focus:outline-none resize-none"
                       style={{ background: "#fff", border: "1px solid #e5e7eb", color: "#111827" }} />
                   )}
+                  {appTab === "Sectors" && (
+                    <div className="space-y-3">
+                      <p className="text-[11px] leading-relaxed" style={{ color: "#6b7280" }}>
+                        Sectors entrepreneurs can choose from when applying to this project. Leave the standard list or tailor it to this project's focus.
+                      </p>
+                      <div className="flex gap-2">
+                        <input value={sectorDraft} onChange={e => setSectorDraft(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleSectorAdd(); } }}
+                          placeholder="Add a sector, e.g. Fisheries"
+                          className="flex-1 rounded-md px-3 py-2 text-xs font-semibold focus:outline-none"
+                          style={{ background: "#fff", border: "1px solid #e5e7eb", color: "#111827" }} />
+                        <button type="button" onClick={handleSectorAdd}
+                          className="px-4 py-2 rounded-md text-xs font-bold text-white" style={{ background: TEAL }}>Add</button>
+                      </div>
+                      {sectors.length === 0 ? (
+                        <p className="text-[11px] font-semibold" style={{ color: "#ef4444" }}>No sectors yet. Applicants need at least one to choose from.</p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {sectors.map((name, idx) => (
+                            <li key={name} className="flex items-center gap-2 rounded-md px-3 py-2" style={{ background: "#fff", border: "1px solid #e5e7eb" }}>
+                              <span className="flex-1 text-xs font-semibold" style={{ color: "#111827" }}>{name}</span>
+                              <button type="button" aria-label={`Move ${name} up`} disabled={idx === 0} onClick={() => handleSectorMove(idx, -1)}
+                                className="text-[11px] font-bold px-1.5" style={{ color: idx === 0 ? "#d1d5db" : TEAL }}>↑</button>
+                              <button type="button" aria-label={`Move ${name} down`} disabled={idx === sectors.length - 1} onClick={() => handleSectorMove(idx, 1)}
+                                className="text-[11px] font-bold px-1.5" style={{ color: idx === sectors.length - 1 ? "#d1d5db" : TEAL }}>↓</button>
+                              <button type="button" aria-label={`Remove ${name}`} onClick={() => handleSectorRemove(name)}
+                                className="text-[11px] font-bold px-1.5" style={{ color: "#ef4444" }}>✕</button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-[10px]" style={{ color: "#9ca3af" }}>{sectors.length} sector{sectors.length !== 1 ? "s" : ""}</span>
+                        <button type="button" onClick={() => setSectors(DEFAULT_APPLICATION_SECTORS)}
+                          className="text-[10px] font-bold" style={{ color: TEAL }}>Reset to standard list</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -3641,7 +4129,7 @@ function ProgramSetupView({
                   disabled={!savedOnce}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-md text-xs font-bold text-white transition-all"
                   style={{ background: savedOnce ? TEAL : "#d1d5db", cursor: savedOnce ? "pointer" : "not-allowed" }}>
-                  <CheckCircle size={13} /> {editingId ? "Save Edits" : "Create Program"}
+                  <Check size={13} /> {editingId ? "Save Edits" : "Create Program"}
                 </button>
                 {!savedOnce && (
                   <span className="text-[10px] self-center" style={{ color: "#9ca3af" }}>Click "Save Changes" in the preview first</span>
@@ -3755,7 +4243,7 @@ function ProgramSetupView({
                 onClick={handleSaveChanges}
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-md text-xs font-bold text-white transition-all"
                 style={{ background: TEAL, color: "#fff" }}>
-                <CheckCircle size={13} /> Save Changes
+                <Check size={13} /> Save Changes
               </button>
               {savedOnce && (
                 <p className="text-[10px] text-center font-semibold" style={{ color: "#16a34a" }}>
@@ -3824,13 +4312,6 @@ function loadDecisions(): { statusOverrides?: any; pairings?: any; notifications
   try { const v = JSON.parse(localStorage.getItem(DECISIONS_KEY) ?? "null"); return v && typeof v === "object" ? v : {}; } catch { return {}; }
 }
 
-const COHORTS_DATA = [
-  { id: 1, programId: SAMPLE_CORE, name: "Cohort 5 — 2025", status: "Active", startDate: "Jan 2025", endDate: "Dec 2025", mentees: 18, mentors: 8, avgProgress: 62, sector: "Mixed" },
-  { id: 2, programId: SAMPLE_CORE, name: "Cohort 4 — 2024", status: "Completed", startDate: "Jan 2024", endDate: "Dec 2024", mentees: 22, mentors: 10, avgProgress: 100, sector: "AgriTech" },
-  { id: 3, programId: SAMPLE_CORE, name: "Cohort 3 — 2023", status: "Completed", startDate: "Jan 2023", endDate: "Dec 2023", mentees: 16, mentors: 7, avgProgress: 100, sector: "CleanEnergy" },
-  { id: 4, programId: SAMPLE_SHE,  name: "Cohort 1 — 2025", status: "Active", startDate: "Aug 2025", endDate: "Jan 2026", mentees: 8, mentors: 4, avgProgress: 48, sector: "Women-led" },
-];
-type CohortRow = { id: number; programId?: string; name: string; status: string; startDate: string; endDate: string; mentees: number; mentors: number; avgProgress: number; sector: string };
 
 // ── AI Matching Engine — Data & Algorithm ─────────────────────────────────────
 interface EntMatchProfile {
@@ -4232,8 +4713,8 @@ function CapacityEditor({ mentorId, name, fallback }: { mentorId: string; name: 
         <span><strong>{load}</strong> of <strong>{cap}</strong> mentee slots used{load >= cap ? " (full)" : ""}</span>
         <span className="flex items-center gap-2 ml-auto">
           <label htmlFor={`cap-${mentorId}`} className="text-[10px] font-bold text-gray-500 uppercase">Limit</label>
-          <input id={`cap-${mentorId}`} aria-label="Mentee limit" type="number" min={1} max={MAX_MENTOR_CAPACITY} value={draft} onChange={e => setDraft(e.target.value)} className="w-16 border border-gray-300 rounded px-2 py-1" />
-          <button onClick={save} disabled={Number(draft) === cap} className="px-3 py-1 rounded text-white font-bold disabled:opacity-40" style={{ background: TEAL }}>Save</button>
+          <input id={`cap-${mentorId}`} aria-label="Mentee limit" type="number" min={1} max={MAX_MENTOR_CAPACITY} value={draft} onChange={e => setDraft(e.target.value)} className="w-16 border border-gray-300 rounded-[3px] px-2 py-1" />
+          <button onClick={save} disabled={Number(draft) === cap} className="px-3 py-1 rounded-[3px] text-white font-bold disabled:opacity-40" style={{ background: TEAL }}>Save</button>
         </span>
       </div>
     </div>
@@ -4289,7 +4770,7 @@ function MentorProfileModal({
                 {mentor.expertise && (
                   <span
                     style={{ background: "#4C808A", color: "#ffffff", border: "1px solid rgba(255,255,255,0.25)" }}
-                    className="text-[10px] font-bold px-2.5 py-0.5 rounded shadow-xs"
+                    className="text-[10px] font-bold px-2.5 py-0.5 rounded-[3px] shadow-xs"
                   >
                     {mentor.expertise.replace(/&/g, "and")}
                   </span>
@@ -4297,7 +4778,7 @@ function MentorProfileModal({
                 {mentor.district && (
                   <span
                     style={{ background: "#4C808A", color: "#ffffff", border: "1px solid rgba(255,255,255,0.25)" }}
-                    className="text-[10px] font-medium px-2 py-0.5 rounded shadow-xs"
+                    className="text-[10px] font-medium px-2 py-0.5 rounded-[3px] shadow-xs"
                   >
                     {mentor.district}
                   </span>
@@ -4326,13 +4807,13 @@ function MentorProfileModal({
                   </span>
                 </div>
                 {matchContext.result && (
-                  <span style={{ background: "#4C808A", color: "#ffffff", border: "none", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 800 }}>
+                  <span style={{ background: "#4C808A", color: "#ffffff", border: "none", padding: "3px 10px", borderRadius: 3, fontSize: 11, fontWeight: 800 }}>
                     {matchContext.result.score}/100 Match
                   </span>
                 )}
               </div>
               {matchContext.result?.explanation && (
-                <div style={{ background: "#4C808A", borderRadius: 6, padding: "8px 12px", border: "1px solid #4C808A" }}>
+                <div style={{ background: "#4C808A", borderRadius: 3, padding: "8px 12px", border: "1px solid #4C808A" }}>
                   <p className="text-white text-[11px] leading-relaxed m-0">
                     <strong className="text-white font-bold">Why this match: </strong>
                     {matchContext.result.explanation.replace(/\.$/, "")}
@@ -4370,7 +4851,7 @@ function MentorProfileModal({
               {mentor.personality && !isRemovedPersonality(mentor.personality) && (
                 <div className="flex items-center gap-2 pt-1 flex-wrap">
                   <span className="text-[10px] font-bold text-gray-500">Mentoring Approach:</span>
-                  <span className="text-[11px] font-semibold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200 italic">
+                  <span className="text-[11px] font-semibold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-[3px] border border-purple-200 italic">
                     "{mentor.personality}"
                   </span>
                 </div>
@@ -4389,7 +4870,7 @@ function MentorProfileModal({
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Target Business Stages</span>
                   <div className="flex gap-1.5 flex-wrap">
                     {mentor.stageExpertise.filter(st => !isRemovedBadge(st)).map(st => (
-                      <span key={st} className="px-2 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 font-medium text-[10px]">
+                      <span key={st} className="px-2 py-0.5 rounded-[3px] bg-teal-50 text-teal-700 border border-teal-200 font-medium text-[10px]">
                         {st}
                       </span>
                     ))}
@@ -4401,7 +4882,7 @@ function MentorProfileModal({
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Industry Expertise</span>
                   <div className="flex gap-1.5 flex-wrap">
                     {mentor.industryExpertise.filter(ind => !isRemovedBadge(ind)).map(ind => (
-                      <span key={ind} className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-medium text-[10px]">
+                      <span key={ind} className="px-2 py-0.5 rounded-[3px] bg-blue-50 text-blue-700 border border-blue-200 font-medium text-[10px]">
                         {ind.replace(/&/g, "and")}
                       </span>
                     ))}
@@ -4413,7 +4894,7 @@ function MentorProfileModal({
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Functional Expertise</span>
                   <div className="flex gap-1.5 flex-wrap">
                     {mentor.functionalExpertise.filter(fx => !isRemovedBadge(fx)).map(fx => (
-                      <span key={fx} className="px-2 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200 font-medium text-[10px]">
+                      <span key={fx} className="px-2 py-0.5 rounded-[3px] bg-purple-50 text-purple-700 border border-purple-200 font-medium text-[10px]">
                         {fx}
                       </span>
                     ))}
@@ -4476,7 +4957,7 @@ function MentorProfileModal({
                 background: "#fff",
                 color: matchContext.isConfirmed ? "#059669" : TEAL,
                 border: `1px solid ${matchContext.isConfirmed ? "#059669" : TEAL}`,
-                borderRadius: 2,
+                borderRadius: 3,
                 cursor: matchContext.isConfirmed ? "default" : "pointer",
               }}
             >
@@ -4607,7 +5088,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
   return (
     <div style={{ display: "grid", gap: 18 }}>
       {/* Header */}
-      <div style={{ background: "#4C808A", borderRadius: 8, padding: "14px 18px", border: "1px solid #4C808A" }}>
+      <div style={{ background: "#4C808A", borderRadius: 3, padding: "14px 18px", border: "1px solid #4C808A" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <GitMerge size={16} color="#ffffff" />
           <span style={{ color: "#ffffff", fontWeight: 800, fontSize: 13 }}>Matching Engine</span>
@@ -4641,7 +5122,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                 key={ent.id}
                 style={{
                   background: "#fff",
-                  borderRadius: 8,
+                  borderRadius: 3,
                   padding: "14px 16px",
                   border: `2px solid ${isConfirmed ? "#059669" : isSelected ? TEAL : "#e5e7eb"}`,
                   boxShadow: isSelected ? `0 0 0 3px ${TEAL}20` : "0 2px 8px rgba(0,0,0,0.05)",
@@ -4656,31 +5137,31 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <p style={{ color: NAVY, fontWeight: 700, fontSize: 11, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ent.name}</p>
                       {isRematchCandidate && (
-                        <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 8, padding: "1px 5px", borderRadius: 4, fontWeight: 700, flexShrink: 0 }}>
+                        <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 8, padding: "1px 5px", borderRadius: 3, fontWeight: 700, flexShrink: 0 }}>
                           RE-MATCH
                         </span>
                       )}
                     </div>
                     <p style={{ color: "#888", fontSize: 9, margin: 0 }}>{ent.district}</p>
                   </div>
-                  {isConfirmed && <CheckCircle size={16} color="#059669" />}
+                  {isConfirmed && <Check size={16} color="#059669" />}
                 </div>
 
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
                   {ent.businessStage && !isRemovedBadge(ent.businessStage) && (
-                    <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>{ent.businessStage}</span>
+                    <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 7px", borderRadius: 3, fontWeight: 600 }}>{ent.businessStage}</span>
                   )}
                   {ent.sector && !isRemovedBadge(ent.sector) && (
-                    <span style={{ background: "#f3f4f6", color: "#555", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>{ent.sector}</span>
+                    <span style={{ background: "#f3f4f6", color: "#555", fontSize: 9, padding: "2px 7px", borderRadius: 3, fontWeight: 600 }}>{ent.sector}</span>
                   )}
                   {ent.isYouth && !isRemovedBadge("Youth") && (
-                    <span style={{ background: "#eff6ff", color: "#2563eb", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>Youth</span>
+                    <span style={{ background: "#eff6ff", color: "#2563eb", fontSize: 9, padding: "2px 7px", borderRadius: 3, fontWeight: 600 }}>Youth</span>
                   )}
                   {ent.isWoman && !isRemovedBadge("Woman") && (
-                    <span style={{ background: "#fdf4ff", color: "#9333ea", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>Woman</span>
+                    <span style={{ background: "#fdf4ff", color: "#9333ea", fontSize: 9, padding: "2px 7px", borderRadius: 3, fontWeight: 600 }}>Woman</span>
                   )}
                   {ent.isRural && !isRemovedBadge("Rural") && (
-                    <span style={{ background: "#f0fdf4", color: "#16a34a", fontSize: 9, padding: "2px 7px", borderRadius: 10, fontWeight: 600 }}>Rural</span>
+                    <span style={{ background: "#f0fdf4", color: "#16a34a", fontSize: 9, padding: "2px 7px", borderRadius: 3, fontWeight: 600 }}>Rural</span>
                   )}
                 </div>
 
@@ -4695,7 +5176,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                 )}
 
                 {isConfirmed ? (
-                  <div style={{ marginTop: 10, background: "#f0fdf4", borderRadius: 6, padding: "6px 10px", textAlign: "center" }}>
+                  <div style={{ marginTop: 10, background: "#f0fdf4", borderRadius: 3, padding: "6px 10px", textAlign: "center" }}>
                     <span style={{ color: "#059669", fontSize: 9, fontWeight: 700 }}>✓ Pairing Confirmed</span>
                   </div>
                 ) : (
@@ -4711,7 +5192,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                         background: "#3B4167",
                         color: "#ffffff",
                         border: "none",
-                        borderRadius: 6,
+                        borderRadius: 3,
                         padding: "7px 12px",
                         fontSize: 10,
                         fontWeight: 700,
@@ -4748,7 +5229,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
       {selectedEnt && (
         <div>
           {running ? (
-            <div style={{ background: "#fff", borderRadius: 8, padding: "32px", textAlign: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+            <div style={{ background: "#fff", borderRadius: 3, padding: "32px", textAlign: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
               <div style={{ width: 40, height: 40, borderRadius: "50%", border: `3px solid ${TEAL}30`, borderTop: `3px solid ${TEAL}`, margin: "0 auto 14px", animation: "im-spin 0.9s linear infinite" }} />
               <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 4px" }}>Running Matching Engine...</p>
               <p style={{ color: "#888", fontSize: 11, margin: 0 }}>Applying eligibility filters → weighted scoring → semantic alignment</p>
@@ -4766,7 +5247,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                 const isConfirmed = confirmedPairs.has(selectedEnt.id);
                 return (
                   <div key={result.mentor.id} style={{
-                    background: "#fff", borderRadius: 8, overflow: "hidden",
+                    background: "#fff", borderRadius: 3, overflow: "hidden",
                     boxShadow: idx === 0 ? `0 4px 16px ${TEAL}20` : "0 2px 8px rgba(0,0,0,0.06)",
                     border: idx === 0 ? `1.5px solid ${TEAL}40` : "1px solid #e5e7eb",
                   }}>
@@ -4802,7 +5283,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                       </div>
 
                       {/* Explanation */}
-                      <div style={{ background: "#4C808A", borderRadius: 6, padding: "9px 13px", marginBottom: 10, border: "1px solid #4C808A" }}>
+                      <div style={{ background: "#4C808A", borderRadius: 3, padding: "9px 13px", marginBottom: 10, border: "1px solid #4C808A" }}>
                         <p style={{ color: "#ffffff", fontSize: 10, margin: 0, lineHeight: 1.6 }}>
                           <strong style={{ color: "#ffffff", fontWeight: 800 }}>Why this match: </strong>{result.explanation.replace(/\.$/, "")}
                         </p>
@@ -4815,7 +5296,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                           { label: "Languages", val: result.mentor.languages.join(", ") },
                           { label: "Monthly Hours", val: `${result.mentor.hoursPerMonth} hrs/mo` },
                         ].map(item => (
-                          <div key={item.label} style={{ background: "#3B4167", borderRadius: 5, padding: "4px 10px", border: "1px solid #3B4167" }}>
+                          <div key={item.label} style={{ background: "#3B4167", borderRadius: 3, padding: "4px 10px", border: "1px solid #3B4167" }}>
                             <p style={{ color: "rgba(255, 255, 255, 0.75)", fontSize: 8, margin: "0 0 1px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{item.label}</p>
                             <p style={{ color: "#ffffff", fontSize: 10, margin: 0, fontWeight: 700 }}>{item.val}</p>
                           </div>
@@ -4832,14 +5313,14 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                       {isExpanded && (
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 }}>
                           {result.breakdown.map(b => (
-                            <div key={b.label} style={{ background: "#f8f9fb", borderRadius: 5, padding: "6px 10px" }}>
+                            <div key={b.label} style={{ background: "#f8f9fb", borderRadius: 3, padding: "6px 10px" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                                 <span style={{ color: "#666", fontSize: 9, fontWeight: 600 }}>{b.label}</span>
                                 <span style={{ color: scoreColor(b.score), fontSize: 9, fontWeight: 800 }}>{b.score}%</span>
                               </div>
                               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <div style={{ flex: 1, height: 4, background: "#e5e7eb", borderRadius: 4 }}>
-                                  <div style={{ height: "100%", width: `${b.score}%`, background: scoreColor(b.score), borderRadius: 4, transition: "width 0.5s ease" }} />
+                                <div style={{ flex: 1, height: 4, background: "#e5e7eb", borderRadius: 3 }}>
+                                  <div style={{ height: "100%", width: `${b.score}%`, background: scoreColor(b.score), borderRadius: 3, transition: "width 0.5s ease" }} />
                                 </div>
                                 <span style={{ color: "#bbb", fontSize: 8 }}>×{b.weight}%</span>
                               </div>
@@ -4855,7 +5336,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                           style={{
                             background: "#fff",
                             border: `1px solid ${TEAL}`,
-                            borderRadius: 2,
+                            borderRadius: 3,
                             padding: "7px 14px",
                             fontSize: 10,
                             color: TEAL,
@@ -4871,7 +5352,7 @@ function AIMatchingEngine({ initialSelectedEntId }: { initialSelectedEntId?: str
                           style={{
                             background: "#fff",
                             border: `1px solid ${isConfirmed ? "#059669" : TEAL}`,
-                            borderRadius: 2,
+                            borderRadius: 3,
                             padding: "7px 18px",
                             fontSize: 10,
                             color: isConfirmed ? "#059669" : TEAL,
@@ -4999,7 +5480,7 @@ function AdminPairingView() {
             key={s.label}
             style={{
               background: "#4C808A",
-              borderRadius: 6,
+              borderRadius: 3,
               padding: "12px 16px",
               boxShadow: "0 2px 8px rgba(76,128,138,0.25)",
               border: "1px solid #4C808A",
@@ -5016,16 +5497,16 @@ function AdminPairingView() {
         <div style={{ flex: 1, position: "relative" }}>
           <Search size={13} color="#bbb" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search mentee or mentor..."
-            style={{ width: "100%", paddingLeft: 34, padding: "9px 12px 9px 34px", border: "1px solid #e0e0e0", borderRadius: 6, fontSize: 12, outline: "none", background: "#fff", boxSizing: "border-box" }} />
+            style={{ width: "100%", paddingLeft: 34, padding: "9px 12px 9px 34px", border: "1px solid #e0e0e0", borderRadius: 3, fontSize: 12, outline: "none", background: "#fff", boxSizing: "border-box" }} />
         </div>
         <button onClick={() => setShowReMatchOnly(r => !r)}
-          style={{ padding: "9px 14px", borderRadius: 6, border: `1px solid ${showReMatchOnly ? "#ef4444" : "#e0e0e0"}`, background: showReMatchOnly ? "#fef2f2" : "#fff", color: showReMatchOnly ? "#ef4444" : "#666", fontSize: 11, cursor: "pointer", fontWeight: showReMatchOnly ? 700 : 400 }}>
+          style={{ padding: "9px 14px", borderRadius: 3, border: `1px solid ${showReMatchOnly ? "#ef4444" : "#e0e0e0"}`, background: showReMatchOnly ? "#fef2f2" : "#fff", color: showReMatchOnly ? "#ef4444" : "#666", fontSize: 11, cursor: "pointer", fontWeight: showReMatchOnly ? 700 : 400 }}>
           Re-match Requests {rematchCount > 0 ? `(${rematchCount})` : ""} {showReMatchOnly ? "✕" : ""}
         </button>
       </div>
 
       {/* Table */}
-      <div style={{ background: "#fff", borderRadius: 6, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
+      <div style={{ background: "#fff", borderRadius: 3, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11 }}>
             <thead>
@@ -5043,14 +5524,14 @@ function AdminPairingView() {
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <ProfileAvatar size={28} />
                         <span style={{ color: NAVY, fontWeight: 600 }}>{p.mentee}</span>
-                        {p.reMatchReq && <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 8, padding: "1px 6px", borderRadius: 6, fontWeight: 700 }}>RE-MATCH</span>}
+                        {p.reMatchReq && <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 8, padding: "1px 6px", borderRadius: 3, fontWeight: 700 }}>RE-MATCH</span>}
                       </div>
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.menteeVenture}</td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: p.mentor === "Unmatched" ? "#bbb" : NAVY, fontStyle: p.mentor === "Unmatched" ? "italic" : "normal" }}>{p.mentor}</td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
                       {p.stage && !isRemovedBadge(p.stage) ? (
-                        <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 600 }}>{p.stage}</span>
+                        <span style={{ background: `${TEAL}15`, color: TEAL, fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 600 }}>{p.stage}</span>
                       ) : (
                         <span style={{ color: "#bbb", fontSize: 10 }}>—</span>
                       )}
@@ -5058,15 +5539,15 @@ function AdminPairingView() {
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
                       {p.matchScore > 0 ? (
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <div style={{ width: 50, height: 5, background: "#f0f0f0", borderRadius: 4 }}>
-                            <div style={{ height: "100%", width: `${p.matchScore}%`, background: "#059669", borderRadius: 4 }} />
+                          <div style={{ width: 50, height: 5, background: "#f0f0f0", borderRadius: 3 }}>
+                            <div style={{ height: "100%", width: `${p.matchScore}%`, background: "#059669", borderRadius: 3 }} />
                           </div>
                           <span style={{ color: NAVY, fontWeight: 700, fontSize: 10 }}>{p.matchScore}%</span>
                         </div>
                       ) : <span style={{ color: "#bbb", fontSize: 10 }}>—</span>}
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5" }}>
-                      <span style={{ background: p.status === "Active" ? "#f0fdf4" : "#fffbeb", color: p.status === "Active" ? "#059669" : "#f59e0b", fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{p.status}</span>
+                      <span style={{ background: p.status === "Active" ? "#f0fdf4" : "#fffbeb", color: p.status === "Active" ? "#059669" : "#f59e0b", fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 700 }}>{p.status}</span>
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.sessions}</td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f5f5f5", color: "#666" }}>{p.lastSession}</td>
@@ -5081,7 +5562,7 @@ function AdminPairingView() {
                               setSelectedEntId(entId);
                               setPairingTab("ai-engine");
                             }}
-                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#4C808A", border: "1px solid #4C808A", borderRadius: 3, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
                           >
                             Review Re-match
                           </button>
@@ -5089,7 +5570,7 @@ function AdminPairingView() {
                         {p.reMatchReq && p.rematchId && (
                           <button
                             onClick={(e) => { e.stopPropagation(); P.declineRematch(p.rematchId!); toast.success(`Re-match request for ${p.mentee} declined. Both people were notified.`); }}
-                            style={{ background: "#fff", border: "1px solid #d1d5db", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#6b7280", cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#fff", border: "1px solid #d1d5db", borderRadius: 3, padding: "4px 8px", fontSize: 9, color: "#6b7280", cursor: "pointer", fontWeight: 700 }}
                           >
                             Keep Pair
                           </button>
@@ -5100,7 +5581,7 @@ function AdminPairingView() {
                               e.stopPropagation();
                               handleDirectConfirm(p);
                             }}
-                            style={{ background: "#059669", border: "1px solid #059669", borderRadius: 6, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#059669", border: "1px solid #059669", borderRadius: 3, padding: "4px 8px", fontSize: 9, color: "#fff", cursor: "pointer", fontWeight: 700 }}
                           >
                             Confirm Match
                           </button>
@@ -5134,7 +5615,7 @@ function AdminPairingView() {
                               };
                               setViewingMentorModal({ mentor: found });
                             }}
-                            style={{ background: "#fff", border: `1px solid ${TEAL}`, borderRadius: 2, padding: "4px 8px", fontSize: 9, color: TEAL, cursor: "pointer", fontWeight: 700 }}
+                            style={{ background: "#fff", border: `1px solid ${TEAL}`, borderRadius: 3, padding: "4px 8px", fontSize: 9, color: TEAL, cursor: "pointer", fontWeight: 700 }}
                           >
                             View Full Profile
                           </button>
@@ -5152,7 +5633,7 @@ function AdminPairingView() {
                             { label: "Industry Overlap", val: `${Math.round(p.matchScore * 1.02)}%` },
                             { label: "Working Style", val: `${Math.round(p.matchScore * 0.92)}%` },
                           ].map(f => (
-                            <div key={f.label} style={{ background: "#fff", borderRadius: 6, padding: "10px 12px" }}>
+                            <div key={f.label} style={{ background: "#fff", borderRadius: 3, padding: "10px 12px" }}>
                               <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{f.label}</p>
                               <p style={{ color: TEAL, fontSize: 16, fontWeight: 800, margin: 0 }}>{f.val}</p>
                             </div>
@@ -5183,12 +5664,17 @@ function AdminRelHealthView() {
   const { scope, pairHealth } = useContext(AppDataCtx);
   const P = useProgramme();
   const HEALTH = pairHealth;
-  const [filterHealth, setFilterHealth] = useState<string | null>(null);
+  type Bucket = "Healthy" | "At Risk" | "Stalled";
+  const [filterHealth, setFilterHealth] = useState<Bucket | null>(null);
+  const [openPairId, setOpenPairId] = useState<string | null>(null);
 
-  const filtered = filterHealth ? HEALTH.filter(p => filterHealth === "Healthy" ? (p.health === "Healthy" || p.health === "New") : p.health === filterHealth) : HEALTH;
-  const healthyCnt = HEALTH.filter(p => p.health === "Healthy" || p.health === "New").length;
-  const atRiskCnt = HEALTH.filter(p => p.health === "At Risk").length;
-  const stalledCnt = HEALTH.filter(p => p.health === "Stalled").length;
+  // "New" pairs (no session yet, started within 3 weeks) count as healthy, the same as the cohort and programme dashboards
+  const inBucket = (p: PairHealthRow, b: Bucket) => (b === "Healthy" ? p.health === "Healthy" || p.health === "New" : p.health === b);
+  const filtered = filterHealth ? HEALTH.filter(p => inBucket(p, filterHealth)) : HEALTH;
+  const healthyCnt = HEALTH.filter(p => inBucket(p, "Healthy")).length;
+  const atRiskCnt = HEALTH.filter(p => inBucket(p, "At Risk")).length;
+  const stalledCnt = HEALTH.filter(p => inBucket(p, "Stalled")).length;
+  const lastSessionText = (d: number | null | undefined) => (d == null ? "None yet" : d === 0 ? "Today" : d === 1 ? "Yesterday" : `${d} days ago`);
 
   return (
     <div className="im-fade" style={{ display: "grid", gap: 16 }}>
@@ -5197,73 +5683,101 @@ function AdminRelHealthView() {
         <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Monitor mentor–mentee pair health, flag at-risk relationships and track engagement metrics</p>
       </div>
 
-      {/* Summary gauges */}
+      {/* Summary gauges: click one to filter the list, click it again to clear */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-        {[
-          { label: "Healthy Pairs", val: healthyCnt, total: HEALTH.length, color: "#059669", desc: "≥ 1 session/wk, satisfaction > 80%" },
-          { label: "At Risk Pairs", val: atRiskCnt, total: HEALTH.length, color: "#f59e0b", desc: "< 1 session/wk or satisfaction < 70%" },
-          { label: "Stalled Pairs", val: stalledCnt, total: HEALTH.length, color: "#ef4444", desc: "0 sessions in 2+ weeks, flagged" },
-        ].map(g => (
-          <button key={g.label} onClick={() => setFilterHealth(filterHealth === g.label.split(" ")[0] + " " + g.label.split(" ")[1] ? null : g.label.replace("Pairs", "").trim())}
-            style={{ background: "#fff", borderRadius: 6, padding: "18px 20px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${filterHealth && g.label.includes(filterHealth) ? g.color : "transparent"}`, textAlign: "left" }}>
+        {([
+          { key: "Healthy" as Bucket, label: "Healthy Pairs", val: healthyCnt, color: "#059669", desc: "Session in the last 14 days and no warning signs (includes new pairs)" },
+          { key: "At Risk" as Bucket, label: "At Risk Pairs", val: atRiskCnt, color: "#f59e0b", desc: "14+ days since a session, tasks < 50%, satisfaction < 70% or goals < 30%" },
+          { key: "Stalled" as Bucket, label: "Stalled Pairs", val: stalledCnt, color: "#ef4444", desc: "45+ days with no session, or satisfaction under 3.0 twice in a row" },
+        ]).map(g => (
+          <button key={g.key} onClick={() => setFilterHealth(filterHealth === g.key ? null : g.key)} aria-pressed={filterHealth === g.key}
+            style={{ background: "#fff", borderRadius: 3, padding: "18px 20px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${filterHealth === g.key ? g.color : "transparent"}`, textAlign: "left" }}>
             <p style={{ color: "#888", fontSize: 10, margin: "0 0 6px" }}>{g.label}</p>
             <p style={{ color: g.color, fontSize: 28, fontWeight: 800, margin: "0 0 4px" }}>{g.val}<span style={{ fontSize: 14, fontWeight: 400, color: "#bbb" }}>/{HEALTH.length}</span></p>
-            <div style={{ height: 4, background: "#f0f0f0", borderRadius: 4, marginBottom: 6 }}>
-              <div style={{ height: "100%", width: `${HEALTH.length ? (g.val / HEALTH.length) * 100 : 0}%`, background: g.color, borderRadius: 4 }} />
+            <div style={{ height: 4, background: "#f0f0f0", borderRadius: 3, marginBottom: 6 }}>
+              <div style={{ height: "100%", width: `${HEALTH.length ? (g.val / HEALTH.length) * 100 : 0}%`, background: g.color, borderRadius: 3 }} />
             </div>
             <p style={{ color: "#aaa", fontSize: 9, margin: 0 }}>{g.desc}</p>
           </button>
         ))}
       </div>
 
+      {filterHealth && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "#666" }}>
+          <span>Showing {filtered.length} {filterHealth.toLowerCase()} pair{filtered.length === 1 ? "" : "s"}</span>
+          <button onClick={() => setFilterHealth(null)} style={{ background: "#f8f9fb", border: "1px solid #e0e0e0", borderRadius: 3, padding: "4px 10px", fontSize: 10, color: "#666", cursor: "pointer", fontWeight: 700 }}>Clear filter</button>
+        </div>
+      )}
+
       {/* Alert Banner for at-risk pairs */}
       {HEALTH.some(p => p.flagged) && (
-        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start" }}>
-          <AlertCircle size={16} color="#f59e0b" style={{ flexShrink: 0, marginTop: 1 }} />
+        <div style={{ background: "#ffffff", border: "1px solid #fde68a", borderRadius: 3, padding: "12px 16px", display: "flex", gap: 10, alignItems: "center" }}>
+          <AlertCircle size={16} color="#f59e0b" style={{ flexShrink: 0 }} />
           <div>
             <p style={{ color: "#92600a", fontSize: 12, fontWeight: 700, margin: "0 0 2px" }}>Alert: Engagement below threshold</p>
             <p style={{ color: "#a16207", fontSize: 11, margin: 0 }}>{HEALTH.filter(p => p.flagged).map(p => `${p.mentee} & ${p.mentor} (${p.reasons[0] ?? "engagement below threshold"})`).join("; ")}. Programme staff review recommended.</p>
           </div>
-          <button style={{ marginLeft: "auto", background: "#f59e0b", border: "none", borderRadius: 6, padding: "6px 12px", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 700, whiteSpace: "nowrap" }}
+          <button style={{ marginLeft: "auto", flexShrink: 0, background: "#f59e0b", border: "none", borderRadius: 3, padding: "6px 12px", color: "#fff", fontSize: 10, cursor: "pointer", fontWeight: 700, whiteSpace: "nowrap" }}
             onClick={() => { const f = HEALTH.filter(p => p.flagged); f.forEach(p => P.sendNudge(p.pairId)); toast.success(`Nudged ${f.length} pair${f.length === 1 ? "" : "s"} (mentor and mentee notified)`); }}>Send Nudge</button>
         </div>
       )}
 
       {HEALTH.length === 0 && <ProjectEmptyNotice scope={scope} what="mentor–mentee pairs" />}
+      {HEALTH.length > 0 && filtered.length === 0 && (
+        <p style={{ color: "#888", fontSize: 12, margin: 0 }}>No {filterHealth?.toLowerCase()} pairs right now.</p>
+      )}
       {/* Pair Cards */}
       <div style={{ display: "grid", gap: 12 }}>
-        {filtered.map(p => (
-          <div key={p.pairId} style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderLeft: `4px solid ${HEALTH_COLOR[p.health]}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-                  <span style={{ background: HEALTH_BG[p.health], color: HEALTH_COLOR[p.health], fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{p.health}</span>
-                  {p.flagged && <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>⚠ FLAGGED</span>}
+        {filtered.map(p => {
+          const open = openPairId === p.pairId;
+          return (
+            <div key={p.pairId} style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                    <span style={{ background: HEALTH_BG[p.health], color: HEALTH_COLOR[p.health], fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 700 }}>{p.health}</span>
+                    {p.flagged && <span style={{ background: "#fef2f2", color: "#ef4444", fontSize: 9, padding: "2px 8px", borderRadius: 3, fontWeight: 700 }}>⚠ FLAGGED</span>}
+                  </div>
+                  <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: "0 0 2px" }}>{p.mentee} <span style={{ color: "#aaa", fontWeight: 400 }}>with</span> {p.mentor}</p>
                 </div>
-                <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: "0 0 2px" }}>{p.mentee} <span style={{ color: "#aaa", fontWeight: 400 }}>with</span> {p.mentor}</p>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button style={{ background: "#f8f9fb", border: "1px solid #e0e0e0", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#666", cursor: "pointer" }}>View Pair</button>
-                {p.flagged && (p.intervention
-                  ? <button onClick={() => { P.resolveIntervention(p.pairId); toast.success("Intervention resolved"); }} style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#059669", cursor: "pointer", fontWeight: 700 }}>Resolve</button>
-                  : <button onClick={() => { P.openIntervention(p.pairId); toast("Intervention opened"); }} style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: "5px 10px", fontSize: 9, color: "#ef4444", cursor: "pointer", fontWeight: 700 }}>Intervene</button>)}
-              </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 12 }}>
-              {[
-                { label: "Sessions (7 days)", val: p.sessions7d, unit: "", good: p.sessions7d >= 1 },
-                { label: "Satisfaction Score", val: p.satisfaction ?? "\u2014", unit: p.satisfaction == null ? "" : "%", good: (p.satisfaction ?? 100) >= 80 },
-                { label: "Goal Progress", val: p.goalPct, unit: "%", good: p.goalPct >= 50 },
-                { label: "Trend", val: p.trend === "up" ? "↑ Improving" : p.trend === "down" ? "↓ Declining" : "→ Stable", unit: "", good: p.trend !== "down" },
-              ].map(m => (
-                <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 6, padding: "10px 12px" }}>
-                  <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{m.label}</p>
-                  <p style={{ color: m.good ? "#059669" : "#ef4444", fontSize: typeof m.val === "number" ? 18 : 13, fontWeight: 700, margin: 0 }}>{m.val}{m.unit}</p>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setOpenPairId(open ? null : p.pairId)} aria-expanded={open}
+                    style={{ background: "#ffffff", border: "1px solid #4c808a", borderRadius: 3, padding: "5px 10px", fontSize: 9, color: "#4c808a", cursor: "pointer", fontWeight: 700 }}>{open ? "Hide Pair" : "View Pair"}</button>
+                  {p.flagged && (p.intervention
+                    ? <button onClick={() => { P.resolveIntervention(p.pairId); toast.success("Intervention resolved"); }} style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 3, padding: "5px 10px", fontSize: 9, color: "#059669", cursor: "pointer", fontWeight: 700 }}>Resolve Intervention</button>
+                    : <button onClick={() => { P.openIntervention(p.pairId); toast("Intervention opened"); }} style={{ background: "#ffffff", border: "1px solid #4c808a", borderRadius: 3, padding: "5px 10px", fontSize: 9, color: "#4c808a", cursor: "pointer", fontWeight: 700 }}>Open Intervention</button>)}
                 </div>
-              ))}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 12 }}>
+                {[
+                  { label: "Last Session", val: lastSessionText(p.daysSince), unit: "", good: p.daysSince != null ? p.daysSince <= 14 : p.health === "New" },
+                  { label: "Satisfaction Score", val: p.satisfaction ?? "\u2014", unit: p.satisfaction == null ? "" : "%", good: (p.satisfaction ?? 100) >= 70 },
+                  { label: "Goal Progress", val: p.goalPct, unit: "%", good: p.goalPct >= 30 },
+                  { label: "Trend", val: p.trend === "up" ? "↑ Improving" : p.trend === "down" ? "↓ Declining" : "→ Stable", unit: "", good: p.trend !== "down" },
+                ].map(m => (
+                  <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 3, padding: "10px 12px" }}>
+                    <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{m.label}</p>
+                    <p style={{ color: m.good ? "#059669" : "#ef4444", fontSize: typeof m.val === "number" ? 18 : 13, fontWeight: 700, margin: 0 }}>{m.val}{m.unit}</p>
+                  </div>
+                ))}
+              </div>
+              {open && (
+                <div style={{ marginTop: 12, background: "#f8f9fb", borderRadius: 3, padding: "12px 14px" }}>
+                  <p style={{ color: TEAL, fontSize: 10, fontWeight: 700, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: 0.5 }}>Why this rating</p>
+                  {p.reasons.length > 0
+                    ? <ul style={{ margin: "0 0 10px", paddingLeft: 16, color: "#555", fontSize: 11 }}>{p.reasons.map(r => <li key={r}>{r}</li>)}</ul>
+                    : <p style={{ color: "#555", fontSize: 11, margin: "0 0 10px" }}>{p.health === "New" ? "This pair has only just started, so no sessions are expected yet." : "No warning signs. This pair is meeting, completing tasks and making progress."}</p>}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 18, color: "#666", fontSize: 11 }}>
+                    <span>Sessions in last 7 days: <strong style={{ color: NAVY }}>{p.sessions7d}</strong></span>
+                    <span>Total sessions: <strong style={{ color: NAVY }}>{p.sessionsTotal ?? 0}</strong></span>
+                    <span>Task completion: <strong style={{ color: NAVY }}>{p.taskPct == null ? "\u2014" : `${p.taskPct}%`}</strong></span>
+                    <span>Open intervention: <strong style={{ color: NAVY }}>{p.intervention ? "Yes" : "No"}</strong></span>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -5271,114 +5785,193 @@ function AdminRelHealthView() {
 
 function AdminCohortView() {
   const { scope, entApps, mntApps } = useContext(AppDataCtx);
-  const cohorts: CohortRow[] = useMemo(() => {
-    const tagged = COHORTS_DATA.filter(c => inScope(scope, c));
-    if (!scope.project || tagged.length) return tagged;
-    // A project without a stored cohort gets one built from its own setup and applicants
+  const P = useProgramme();
+
+  type CohortViewRow = {
+    id: number; name: string; status: string; startDate: string; endDate: string; sector: string;
+    enrolled: number; paired: number; mentors: number; avgProgress: number; live: boolean; derived: boolean;
+    buckets: [string, number, string][]; pairs: { id: string; mentee: string; mentor: string }[]; rubric: { label: string; weight: number }[];
+  };
+  // One row per cohort in the programme store: the same data the dashboards and Program Setup use.
+  const rows = useMemo<CohortViewRow[]>(() => {
+    const mine = P.cohorts.filter(c => inScope(scope, c));
+    if (mine.length) {
+      return mine.map(c => {
+        const ps = P.pairs.filter(p => p.cohortId === c.id);
+        const live = ps.length > 0;
+        const hs = (h: string) => ps.filter(p => P.stats[p.id]?.health === h).length;
+        const enrolled = cohortEnrolled(c, P.pairs, P.waiting);
+        const buckets: [string, number, string][] = live
+          ? [["Active (healthy / new)", hs("Healthy") + hs("New"), "#059669"], ["At Risk", hs("At Risk"), "#f59e0b"], ["Stalled", hs("Stalled"), "#ef4444"], ["Awaiting match", Math.max(0, enrolled - ps.length), "#6b7280"]]
+          : c.status === "Completed" ? [["Graduated", enrolled, "#059669"]] : [["Awaiting match", enrolled, "#6b7280"]];
+        return {
+          id: c.id, name: c.name, status: c.status as string, startDate: c.startDate, endDate: c.endDate, sector: c.sector,
+          enrolled, paired: live ? ps.length : enrolled,
+          mentors: live ? new Set(ps.map(mentorKey)).size : c.snapshot?.mentors ?? 0,
+          avgProgress: live ? Math.round(ps.reduce((a, p) => a + (P.stats[p.id]?.goalPct ?? 0), 0) / ps.length) : c.snapshot?.avgProgress ?? 0,
+          live, derived: false, buckets, pairs: ps, rubric: c.rubric,
+        };
+      });
+    }
+    if (!scope.project) return [];
+    // A project with no cohort yet is shown from its own setup and applicants until one is created
     const proj = scope.project;
     const inProgramme = (a: { status: string }) => ["Selected", "Approved", "Matching"].includes(a.status);
     const done = isCompletedProject(proj);
+    const mentees = entApps.filter(inProgramme).length;
     return [{
-      id: -1, programId: proj.id, name: `${proj.name} — Cohort 1`, status: done ? "Completed" : "Active",
+      id: -1, name: `${proj.name} — Cohort 1`, status: done ? "Completed" : "Active",
       startDate: proj.startDate?.trim() || proj.timelineEntries.find(e => /commence|start|begin/i.test(e.title))?.date || "—",
       endDate: proj.timelineEntries[proj.timelineEntries.length - 1]?.date ?? "—",
-      mentees: entApps.filter(inProgramme).length,
+      sector: proj.sector || "Mixed", enrolled: mentees, paired: 0,
       mentors: mntApps.filter(a => a.programId === proj.id && inProgramme(a)).length,
-      avgProgress: done ? 100 : 0, sector: proj.sector || "Mixed",
+      avgProgress: done ? 100 : 0, live: false, derived: true,
+      buckets: [["Awaiting match", mentees, "#6b7280"]] as [string, number, string][], pairs: [], rubric: [] as { label: string; weight: number }[],
     }];
-  }, [scope, entApps, mntApps]);
+  }, [scope, P.cohorts, P.pairs, P.waiting, P.stats, entApps, mntApps]);
+
   const [selectedCohortId, setSelectedCohortId] = useState<number | null>(null);
-  const selectedCohort = cohorts.find(c => c.id === selectedCohortId) ?? cohorts[0];
-  if (!selectedCohort) return <div className="im-fade"><ProjectEmptyNotice scope={scope} what="cohorts" /></div>;
+  const [form, setForm] = useState<null | { name: string; startDate: string; endDate: string; sector: string; enrolled: number }>(null);
+  const selected = rows.find(r => r.id === selectedCohortId) ?? rows[0];
+
+  const createCohort = () => {
+    if (!form) return;
+    if (!form.name.trim()) return toast.error("Give the cohort a name");
+    // A cohort belongs to one project. A manager must pick (or only have) one; an admin on "All Projects" can leave it unattached.
+    const programId = scope.project?.id ?? (scope.allowed?.length === 1 ? scope.allowed[0] : undefined);
+    if (scope.allowed && !programId) return toast.error("Choose a project in the top bar first, so the cohort is attached to it");
+    P.addCohort({ ...form, name: form.name.trim(), programId });
+    setForm(null);
+    setSelectedCohortId(null);
+    toast.success("Cohort created");
+  };
+
+  const rubricTotal = selected ? selected.rubric.reduce((a, r) => a + r.weight, 0) : 0;
+  const field: React.CSSProperties = { width: "100%", boxSizing: "border-box", border: "1px solid #e0e0e0", borderRadius: 3, padding: "7px 9px", fontSize: 11, marginTop: 3 };
 
   return (
     <div className="im-fade" style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: "0 0 4px" }}>Cohort & Programme Management</h2>
-          <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Manage cohort intake, enrollment, mentor assignments and custom scoring rubrics</p>
+          <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Cohorts group mentoring pairs. Enrollment, mentors and progress are counted from the pairs inside each cohort.</p>
         </div>
-        <button style={{ background: TEAL, border: "none", borderRadius: 6, padding: "9px 18px", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+        <button onClick={() => setForm(form ? null : { name: "", startDate: "", endDate: "", sector: "Mixed", enrolled: 0 })}
+          style={{ background: TEAL, border: "none", borderRadius: 3, padding: "9px 18px", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
           <PlusCircle size={14} /> New Cohort
         </button>
       </div>
 
-      {/* Cohort cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
-        {cohorts.map(c => (
-          <button key={c.id} onClick={() => setSelectedCohortId(c.id)}
-            style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${selectedCohort.id === c.id ? TEAL : "transparent"}`, textAlign: "left" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-              <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: 0 }}>{c.name}</p>
-              <span style={{ background: c.status === "Active" ? "#f0fdf4" : "#f8f9fb", color: c.status === "Active" ? "#059669" : "#888", fontSize: 9, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{c.status}</span>
-            </div>
-            <p style={{ color: "#aaa", fontSize: 10, margin: "0 0 10px" }}>{c.startDate} — {c.endDate} · {c.sector}</p>
-            <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
-              <div>
-                <p style={{ color: TEAL, fontSize: 18, fontWeight: 800, margin: 0 }}>{c.mentees}</p>
-                <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Mentees</p>
-              </div>
-              <div>
-                <p style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: 0 }}>{c.mentors}</p>
-                <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Mentors</p>
-              </div>
-            </div>
-            <div style={{ height: 4, background: "#f0f0f0", borderRadius: 4 }}>
-              <div style={{ height: "100%", width: `${c.avgProgress}%`, background: c.status === "Active" ? TEAL : "#059669", borderRadius: 4 }} />
-            </div>
-            <p style={{ color: "#aaa", fontSize: 9, margin: "4px 0 0" }}>{c.avgProgress}% avg progress</p>
-          </button>
-        ))}
-      </div>
-
-      {/* Selected Cohort Detail */}
-      <div style={{ background: "#fff", borderRadius: 6, padding: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
-        <p style={{ color: NAVY, fontWeight: 700, fontSize: 14, margin: "0 0 14px" }}>{selectedCohort.name} — Details</p>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          {/* Enrollment Table */}
-          <div>
-            <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>Enrollment Breakdown</p>
-            <div style={{ background: "#f8f9fb", borderRadius: 6, overflow: "hidden" }}>
-              {[
-                { label: "Total Enrolled", val: selectedCohort.mentees, color: NAVY },
-                { label: "Active", val: Math.round(selectedCohort.mentees * 0.85), color: "#059669" },
-                { label: "At Risk", val: Math.round(selectedCohort.mentees * 0.1), color: "#f59e0b" },
-                { label: "Dropped", val: Math.round(selectedCohort.mentees * 0.05), color: "#ef4444" },
-                { label: "Mentors Assigned", val: selectedCohort.mentors, color: TEAL },
-              ].map(r => (
-                <div key={r.label} style={{ display: "flex", justifyContent: "space-between", padding: "9px 14px", borderBottom: "1px solid #f0f0f0" }}>
-                  <p style={{ color: "#666", fontSize: 11, margin: 0 }}>{r.label}</p>
-                  <p style={{ color: r.color, fontSize: 11, fontWeight: 700, margin: 0 }}>{r.val}</p>
-                </div>
-              ))}
-            </div>
+      {form && (
+        <div style={{ background: "#fff", borderRadius: 3, padding: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+          {(["name", "startDate", "endDate", "sector"] as const).map(k => (
+            <label key={k} style={{ fontSize: 10, color: "#888" }}>{k === "name" ? "Name" : k === "startDate" ? "Start" : k === "endDate" ? "End" : "Sector"}
+              <input value={form[k]} onChange={e => setForm({ ...form, [k]: e.target.value })} placeholder={k === "name" ? "Cohort 6 — 2026" : k === "sector" ? "Mixed" : "Jan 2026"} style={field} />
+            </label>
+          ))}
+          <label style={{ fontSize: 10, color: "#888" }}>Target mentees
+            <input type="number" min={0} value={form.enrolled} onChange={e => setForm({ ...form, enrolled: Math.max(0, +e.target.value || 0) })} style={field} />
+          </label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={createCohort} style={{ background: TEAL, border: "none", borderRadius: 3, padding: "8px 14px", color: "#fff", fontSize: 11, cursor: "pointer", fontWeight: 700 }}>Create</button>
+            <button onClick={() => setForm(null)} aria-label="Cancel" style={{ background: "#f5f5f5", border: "none", borderRadius: 3, padding: "8px 10px", color: "#666", fontSize: 11, cursor: "pointer" }}>✕</button>
           </div>
-          {/* Scoring Rubric */}
-          <div>
-            <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>Custom Scoring Rubric</p>
-            <div style={{ background: "#f8f9fb", borderRadius: 6, overflow: "hidden" }}>
-              {[
-                { label: "Business Registration", weight: 15 },
-                { label: "Market Validation (≥50 interviews)", weight: 20 },
-                { label: "Revenue Milestone", weight: 25 },
-                { label: "Session Attendance", weight: 15 },
-                { label: "Goal Completion Rate", weight: 15 },
-                { label: "Mentor Satisfaction", weight: 10 },
-              ].map(r => (
-                <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", borderBottom: "1px solid #f0f0f0" }}>
-                  <p style={{ color: "#666", fontSize: 11, margin: 0 }}>{r.label}</p>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <div style={{ width: 50, height: 4, background: "#e0e0e0", borderRadius: 4 }}>
-                      <div style={{ height: "100%", width: `${r.weight * 4}%`, background: TEAL, borderRadius: 4 }} />
-                    </div>
-                    <p style={{ color: TEAL, fontSize: 10, fontWeight: 700, margin: 0, minWidth: 28 }}>{r.weight}%</p>
-                  </div>
+        </div>
+      )}
+
+      {!selected ? (
+        <ProjectEmptyNotice scope={scope} what="cohorts" />
+      ) : (<>
+        {/* Cohort cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+          {rows.map(c => (
+            <button key={c.id} onClick={() => setSelectedCohortId(c.id)}
+              style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)", cursor: "pointer", border: `2px solid ${selected.id === c.id ? TEAL : "transparent"}`, textAlign: "left" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                <p style={{ color: NAVY, fontSize: 13, fontWeight: 700, margin: 0 }}>{c.name}</p>
+                <span style={{ color: c.status === "Active" ? "#059669" : "#888", fontSize: 9, fontWeight: 700 }}>{c.status}</span>
+              </div>
+              <p style={{ color: "#aaa", fontSize: 10, margin: "0 0 10px" }}>{c.startDate} — {c.endDate} &nbsp; {c.sector}</p>
+              <div style={{ display: "flex", gap: 16, marginBottom: 10 }}>
+                <div>
+                  <p style={{ color: TEAL, fontSize: 18, fontWeight: 800, margin: 0 }}>{c.enrolled}</p>
+                  <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Mentees</p>
                 </div>
-              ))}
+                <div>
+                  <p style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: 0 }}>{c.mentors}</p>
+                  <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Mentors</p>
+                </div>
+              </div>
+              <div style={{ height: 4, background: "#f0f0f0", borderRadius: 3 }}>
+                <div style={{ height: "100%", width: `${c.avgProgress}%`, background: c.status === "Active" ? TEAL : "#059669", borderRadius: 3 }} />
+              </div>
+              <p style={{ color: "#aaa", fontSize: 9, margin: "4px 0 0" }}>{c.avgProgress}% avg goal progress</p>
+            </button>
+          ))}
+        </div>
+
+        {/* Selected cohort detail */}
+        <div style={{ background: "#fff", borderRadius: 3, padding: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+          <p style={{ color: NAVY, fontWeight: 700, fontSize: 14, margin: "0 0 14px" }}>{selected.name} — Details</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 18 }}>
+            {([["Enrolled", selected.enrolled], ["Paired", selected.paired], ["Mentors", selected.mentors], ["Avg Goal Progress", `${selected.avgProgress}%`]] as [string, string | number][]).map(([l, v]) => (
+              <div key={l} style={{ background: "#f8f9fb", borderRadius: 3, padding: "10px 12px" }}>
+                <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{l}</p>
+                <p style={{ color: NAVY, fontSize: 16, fontWeight: 800, margin: 0 }}>{v}</p>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+            <div>
+              <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>Enrollment Status{selected.live ? " (from Relationship Health)" : ""}</p>
+              <div style={{ display: "grid", gap: 8, marginBottom: 14 }}>
+                {selected.buckets.map(([l, n, color]) => (
+                  <div key={l} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11 }}>
+                    <span style={{ width: 130, color: "#555" }}>{l}</span>
+                    <div style={{ flex: 1, height: 6, background: "#f0f0f0", borderRadius: 3 }}>
+                      <div style={{ height: "100%", width: `${selected.enrolled ? Math.min(100, (n / selected.enrolled) * 100) : 0}%`, background: color, borderRadius: 3 }} />
+                    </div>
+                    <span style={{ width: 24, textAlign: "right", color: NAVY, fontWeight: 700 }}>{n}</span>
+                  </div>
+                ))}
+              </div>
+              {selected.live && (<>
+                <p style={{ color: "#888", fontSize: 10, fontWeight: 700, margin: "0 0 6px" }}>PAIRS IN THIS COHORT</p>
+                {selected.pairs.map(p => (
+                  <p key={p.id} style={{ fontSize: 11, color: "#555", margin: "0 0 4px" }}>
+                    <span style={{ color: HEALTH_COLOR[P.stats[p.id]?.health ?? "Healthy"], fontWeight: 700 }}>●</span> {p.mentee} → {p.mentor}
+                  </p>
+                ))}
+              </>)}
+            </div>
+
+            <div>
+              <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Scoring Rubric{!selected.derived && <> — total <span style={{ color: rubricTotal === 100 ? "#059669" : "#ef4444" }}>{rubricTotal}%</span></>}
+              </p>
+              {selected.derived ? (
+                <p style={{ color: "#888", fontSize: 11, margin: 0 }}>This project has no cohort yet. Use <strong>New Cohort</strong> to create one, then set its scoring rubric here.</p>
+              ) : (<>
+                <div style={{ background: "#f8f9fb", borderRadius: 3, overflow: "hidden" }}>
+                  {selected.rubric.map((r, i) => (
+                    <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #f0f0f0" }}>
+                      <p style={{ color: "#666", fontSize: 11, margin: 0 }}>{r.label}</p>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input type="number" min={0} max={100} value={r.weight} aria-label={`${r.label} weight`}
+                          onChange={e => P.setRubric(selected.id, selected.rubric.map((x, j) => (j === i ? { ...x, weight: Math.min(100, Math.max(0, +e.target.value || 0)) } : x)))}
+                          style={{ width: 52, border: "1px solid #e0e0e0", borderRadius: 3, padding: "4px 6px", fontSize: 11, textAlign: "right" }} />
+                        <span style={{ color: TEAL, fontSize: 10, fontWeight: 700 }}>%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {rubricTotal !== 100 && <p style={{ color: "#ef4444", fontSize: 10, margin: "6px 0 0" }}>Weights should add up to 100% (currently {rubricTotal}%).</p>}
+              </>)}
             </div>
           </div>
         </div>
-      </div>
+      </>)}
     </div>
   );
 }
@@ -5411,7 +6004,7 @@ function AdminReportingView() {
           <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Programme-level metrics, engagement rates, goal completion and impact reporting</p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ display: "flex", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 6, overflow: "hidden" }}>
+          <div style={{ display: "flex", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 3, overflow: "hidden" }}>
             {(["month", "quarter", "year"] as const).map(p => (
               <button key={p} onClick={() => setPeriod(p)}
                 style={{ padding: "7px 14px", border: "none", background: period === p ? TEAL : "transparent", color: period === p ? "#fff" : "#666", fontSize: 11, cursor: "pointer", fontWeight: period === p ? 700 : 400, transition: "all 0.2s" }}>
@@ -5419,7 +6012,7 @@ function AdminReportingView() {
               </button>
             ))}
           </div>
-          <button style={{ background: "#fff", border: "1px solid #e0e0e0", borderRadius: 6, padding: "7px 14px", fontSize: 11, color: "#666", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+          <button style={{ background: "#fff", border: "1px solid #e0e0e0", borderRadius: 3, padding: "7px 14px", fontSize: 11, color: "#666", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
             <Download size={12} /> Export
           </button>
         </div>
@@ -5433,10 +6026,10 @@ function AdminReportingView() {
           { label: "Avg Satisfaction Score", val: "84%", sub: "Post-session ratings", color: NAVY, trend: "stable" },
           { label: "Programme Impact Score", val: "847", sub: "Composite metric", color: "#f59e0b", trend: "up" },
         ].map(k => (
-          <div key={k.label} style={{ background: "#fff", borderRadius: 6, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderTop: `3px solid ${k.color}` }}>
-            <p style={{ color: "#888", fontSize: 10, margin: "0 0 4px" }}>{k.label}</p>
-            <p style={{ color: NAVY, fontSize: 22, fontWeight: 800, margin: "0 0 2px" }}>{k.val}</p>
-            <p style={{ color: k.trend === "up" ? "#059669" : "#aaa", fontSize: 9, margin: 0 }}>{k.trend === "up" ? "↑ " : "→ "}{k.sub}</p>
+          <div key={k.label} style={{ background: "#4c808a", borderRadius: 3, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+            <p style={{ color: "#ffffff", fontSize: 10, margin: "0 0 4px" }}>{k.label}</p>
+            <p style={{ color: "#ffffff", fontSize: 22, fontWeight: 800, margin: "0 0 2px" }}>{k.val}</p>
+            <p style={{ color: "#ffffff", fontSize: 9, margin: 0 }}>{k.trend === "up" ? "↑ " : "→ "}{k.sub}</p>
           </div>
         ))}
       </div>
@@ -5444,7 +6037,7 @@ function AdminReportingView() {
       {/* Charts Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         {/* Sessions per mentor */}
-        <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <div style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
           <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Sessions per Mentor ({periodLabel})</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {[
@@ -5458,8 +6051,8 @@ function AdminReportingView() {
                   <p style={{ color: "#555", fontSize: 10, margin: 0 }}>{m.mentor}</p>
                   <p style={{ color: TEAL, fontSize: 10, fontWeight: 700, margin: 0 }}>{m.sessions}</p>
                 </div>
-                <div style={{ height: 6, background: "#f0f0f0", borderRadius: 4 }}>
-                  <div style={{ height: "100%", width: `${(m.sessions / m.max) * 100}%`, background: m.sessions < 6 ? "#ef4444" : TEAL, borderRadius: 4, transition: "width 0.8s" }} />
+                <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}>
+                  <div style={{ height: "100%", width: `${(m.sessions / m.max) * 100}%`, background: m.sessions < 6 ? "#ef4444" : TEAL, borderRadius: 3, transition: "width 0.8s" }} />
                 </div>
               </div>
             ))}
@@ -5467,7 +6060,7 @@ function AdminReportingView() {
         </div>
 
         {/* Engagement Metrics */}
-        <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+        <div style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
           <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Engagement Metrics</p>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {[
@@ -5476,7 +6069,7 @@ function AdminReportingView() {
               { label: "Response Rate", val: "91%", target: "≥85%", ok: true },
               { label: "On-Track Pairs", val: "75%", target: "≥70%", ok: true },
             ].map(m => (
-              <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 6, padding: "10px 12px" }}>
+              <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 3, padding: "10px 12px" }}>
                 <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 4px" }}>{m.label}</p>
                 <p style={{ color: m.ok ? "#059669" : "#f59e0b", fontSize: 18, fontWeight: 800, margin: "0 0 2px" }}>{m.val}</p>
                 <p style={{ color: "#bbb", fontSize: 9, margin: 0 }}>Target: {m.target}</p>
@@ -5487,7 +6080,7 @@ function AdminReportingView() {
       </div>
 
       {/* Monthly sessions chart */}
-      <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+      <div style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
         <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Monthly Session Frequency — {projectLabel}</p>
         <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 100 }}>
           {[
@@ -5509,7 +6102,7 @@ function AdminReportingView() {
       </div>
 
       {/* Outcome Metrics */}
-      <div style={{ background: "#fff", borderRadius: 6, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+      <div style={{ background: "#fff", borderRadius: 3, padding: 18, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
         <p style={{ color: NAVY, fontWeight: 700, fontSize: 13, margin: "0 0 14px" }}>Business Outcome Metrics — {projectLabel}</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
           {[
@@ -5519,11 +6112,11 @@ function AdminReportingView() {
             { label: "Grant Applications", val: `${sc(8)}/${sc(18)}`, pct: 44, color: "#f59e0b" },
             { label: "Programme Graduation", val: `${sc(0)}/${sc(18)}`, pct: 0, color: "#bbb" },
           ].map(m => (
-            <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 6, padding: "12px 14px", textAlign: "center" }}>
+            <div key={m.label} style={{ background: "#f8f9fb", borderRadius: 3, padding: "12px 14px", textAlign: "center" }}>
               <p style={{ color: m.color, fontSize: 18, fontWeight: 800, margin: "0 0 2px" }}>{m.val}</p>
               <p style={{ color: "#aaa", fontSize: 9, margin: "0 0 8px", lineHeight: 1.4 }}>{m.label}</p>
-              <div style={{ height: 4, background: "#e0e0e0", borderRadius: 4 }}>
-                <div style={{ height: "100%", width: `${m.pct}%`, background: m.color, borderRadius: 4 }} />
+              <div style={{ height: 4, background: "#e0e0e0", borderRadius: 3 }}>
+                <div style={{ height: "100%", width: `${m.pct}%`, background: m.color, borderRadius: 3 }} />
               </div>
               <p style={{ color: "#bbb", fontSize: 8, margin: "3px 0 0" }}>{m.pct}%</p>
             </div>
@@ -5557,20 +6150,20 @@ function AdminIntegrationView() {
           <h2 style={{ color: NAVY, fontSize: 18, fontWeight: 800, margin: "0 0 4px" }}>Integration Hub</h2>
           <p style={{ color: "#888", fontSize: 12, margin: 0 }}>Manage platform connections — CRM, calendar, video, LMS and intake systems</p>
         </div>
-        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "8px 14px", display: "flex", gap: 6, alignItems: "center" }}>
+        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 3, padding: "8px 14px", display: "flex", gap: 6, alignItems: "center" }}>
           <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#059669" }} />
           <p style={{ color: "#059669", fontSize: 11, fontWeight: 700, margin: 0 }}>{connected} of {integrations.length} connected</p>
         </div>
       </div>
 
       {/* Health bar */}
-      <div style={{ background: "#fff", borderRadius: 6, padding: "12px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+      <div style={{ background: "#fff", borderRadius: 3, padding: "12px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
           <p style={{ color: NAVY, fontSize: 11, fontWeight: 700, margin: 0 }}>Integration Coverage</p>
           <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: 0 }}>{Math.round((connected / integrations.length) * 100)}%</p>
         </div>
-        <div style={{ height: 6, background: "#f0f0f0", borderRadius: 4 }}>
-          <div style={{ height: "100%", width: `${(connected / integrations.length) * 100}%`, background: TEAL, borderRadius: 4, transition: "width 0.8s" }} />
+        <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}>
+          <div style={{ height: "100%", width: `${(connected / integrations.length) * 100}%`, background: TEAL, borderRadius: 3, transition: "width 0.8s" }} />
         </div>
       </div>
 
@@ -5580,10 +6173,10 @@ function AdminIntegrationView() {
           <p style={{ color: TEAL, fontSize: 11, fontWeight: 700, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>{cat}</p>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
             {integrations.filter(i => i.category === cat).map(intg => (
-              <div key={intg.name} style={{ background: "#fff", borderRadius: 6, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderTop: `3px solid ${intg.status === "Connected" ? "#059669" : intg.status === "Configurable" ? "#f59e0b" : "#e0e0e0"}` }}>
+              <div key={intg.name} style={{ background: "#fff", borderRadius: 3, padding: "14px 16px", boxShadow: "0 2px 8px rgba(0,0,0,0.06)", borderTop: `3px solid ${intg.status === "Connected" ? "#059669" : intg.status === "Configurable" ? "#f59e0b" : "#e0e0e0"}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <div style={{ width: 28, height: 28, borderRadius: 6, background: `${TEAL}15`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 3, background: `${TEAL}15`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <intg.icon size={14} color={TEAL} />
                     </div>
                     <p style={{ color: NAVY, fontSize: 12, fontWeight: 700, margin: 0 }}>{intg.name}</p>
@@ -5591,14 +6184,14 @@ function AdminIntegrationView() {
                   <span style={{
                     background: intg.status === "Connected" ? "#f0fdf4" : intg.status === "Configurable" ? "#fffbeb" : "#f8f9fb",
                     color: intg.status === "Connected" ? "#059669" : intg.status === "Configurable" ? "#f59e0b" : "#bbb",
-                    fontSize: 8, padding: "2px 7px", borderRadius: 6, fontWeight: 700
+                    fontSize: 8, padding: "2px 7px", borderRadius: 3, fontWeight: 700
                   }}>{intg.status === "Connected" ? "● Connected" : intg.status === "Configurable" ? "◑ Setup" : "○ Not Connected"}</span>
                 </div>
                 <p style={{ color: "#888", fontSize: 10, margin: "0 0 10px", lineHeight: 1.5 }}>{intg.desc}</p>
                 {intg.status === "Connected" && (
                   <p style={{ color: "#bbb", fontSize: 9, margin: "0 0 8px" }}>Last sync: {intg.lastSync}</p>
                 )}
-                <button style={{ width: "100%", background: intg.status === "Connected" ? "#f8f9fb" : `${TEAL}15`, border: `1px solid ${intg.status === "Connected" ? "#e0e0e0" : `${TEAL}30`}`, borderRadius: 6, padding: "7px", fontSize: 10, color: intg.status === "Connected" ? "#666" : TEAL, cursor: "pointer", fontWeight: intg.status !== "Connected" ? 700 : 400 }}>
+                <button style={{ width: "100%", background: intg.status === "Connected" ? "#f8f9fb" : `${TEAL}15`, border: `1px solid ${intg.status === "Connected" ? "#e0e0e0" : `${TEAL}30`}`, borderRadius: 3, padding: "7px", fontSize: 10, color: intg.status === "Connected" ? "#666" : TEAL, cursor: "pointer", fontWeight: intg.status !== "Connected" ? 700 : 400 }}>
                   {intg.status === "Connected" ? "Configure" : "Connect"}
                 </button>
               </div>
@@ -5633,7 +6226,22 @@ export function IncubationManagementPage({
   liveApplications?: EntrepreneurApplication[];
   liveMentorApplications?: MentorApplication[];
 }) {
-  const [active, setActive] = useState<NavKey>("Applications");
+  // A notification opened from the Program Managers page asks for a section; it is used once.
+  const [active, setActive] = useState<NavKey>(() => {
+    try {
+      const want = sessionStorage.getItem(INCUBATION_NAV_KEY) as NavKey | null;
+      sessionStorage.removeItem(INCUBATION_NAV_KEY);
+      return want && NAV_KEYS.includes(want) ? want : "Applications";
+    } catch { return "Applications"; }
+  });
+  // Entrepreneurs / Mentors. One choice for every section, so the sidebar can show the right counts and notification badges.
+  const [appTab, setAppTab] = useState<AppTab>(() => {
+    try {
+      const want = sessionStorage.getItem(INCUBATION_TAB_KEY);
+      sessionStorage.removeItem(INCUBATION_TAB_KEY);
+      return want === "mentors" ? "mentors" : "entrepreneurs";
+    } catch { return "entrepreneurs"; }
+  });
   const [mgmtOpen, setMgmtOpen] = useState(true);
   const [adminOpen, setAdminOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -5671,6 +6279,7 @@ export function IncubationManagementPage({
   ) => {
     const newNotif: IncubationNotification = {
       ...notif,
+      audience: notif.audience ?? notifAudience(notif),
       programId: notif.programId ?? [...liveApplications, ...liveMentorApplications, ...MOCK_ENT_APPS, ...MOCK_MNT_APPS].find(a => a.id === notif.candidateId)?.programId,
       id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       createdAt: Date.now(),
@@ -5702,9 +6311,9 @@ export function IncubationManagementPage({
   const prevLiveCount = useRef(liveApplications.length);
   useEffect(() => {
     if (liveApplications.length > prevLiveCount.current) {
-      const latest = liveApplications[liveApplications.length - 1];
-      if (latest) {
+      for (const latest of liveApplications.slice(prevLiveCount.current)) {
         addNotification({
+          audience: "entrepreneur",
           section: "Applications",
           title: "New Application Received",
           message: `${latest.name} submitted an Incubation application for ${latest.businessName || latest.sector || "Venture"}.`,
@@ -5718,6 +6327,26 @@ export function IncubationManagementPage({
     prevLiveCount.current = liveApplications.length;
   }, [liveApplications]);
 
+  // A mentor registering while the page is open raises the same kind of notification
+  const prevLiveMentors = useRef(liveMentorApplications.length);
+  useEffect(() => {
+    if (liveMentorApplications.length > prevLiveMentors.current) {
+      for (const m of liveMentorApplications.slice(prevLiveMentors.current)) {
+        addNotification({
+          audience: "mentor",
+          section: "Applications",
+          title: "New Mentor Application",
+          message: `${m.name} applied to mentor on the Incubation programme${m.expertise ? ` (${m.expertise})` : ""}.`,
+          candidateName: m.name,
+          candidateId: m.id,
+          type: "info",
+          actionTarget: "Applications",
+        });
+      }
+    }
+    prevLiveMentors.current = liveMentorApplications.length;
+  }, [liveMentorApplications]);
+
   const setStatusOverride = (id: string, status: string, reason?: string) => {
     const today = new Date().toISOString().split("T")[0];
     setStatusOverrides(prev => ({ ...prev, [id]: { status, reason, date: today } }));
@@ -5726,6 +6355,7 @@ export function IncubationManagementPage({
     const candidateName = app?.name || id;
 
     // Keep the programme store (what mentors and entrepreneurs see) in step with the decision
+    let mentorFreed: { id: string }[] = [];
     const entApp = [...liveApplications, ...MOCK_ENT_APPS].find(a => a.id === id);
     if (entApp) {
       const me = { menteeId: id, mentee: entApp.name };
@@ -5739,16 +6369,23 @@ export function IncubationManagementPage({
       if ((status === "Dropouts" || status === "Rejected") && pair) {
         P.endPair(pair.id, reason || (status === "Dropouts" ? "Mentee dropped out of the programme" : "Mentee disqualified"), { requeue: false });
       }
-    } else if (app && status === "Dropouts") {
-      // A mentor leaving ends their pairs and puts those mentees back in the queue
-      P.pairs.filter(x => isMentorOf(x, { id, name: app.name })).forEach(x => P.endPair(x.id, reason || "Mentor withdrew from the programme", { requeue: true }));
+    } else if (app && (status === "Dropouts" || status === "Rejected")) {
+      // A mentor leaving (or disqualified) ends their pairs and puts those mentees back in the queue
+      mentorFreed = P.pairs.filter(x => isMentorOf(x, { id, name: app.name }));
+      mentorFreed.forEach(x => P.endPair(x.id, reason || (status === "Dropouts" ? "Mentor withdrew from the programme" : "Mentor was disqualified"), { requeue: true }));
     }
+    const isMentorApp = !entApp && !!app;
+    const aud: NotifAudience = isMentorApp ? "mentor" : "entrepreneur";
+    const freedNote = mentorFreed.length ? ` ${mentorFreed.length} mentee${mentorFreed.length === 1 ? " was" : "s were"} returned to the matching queue.` : "";
 
     if (status === "Selected") {
       addNotification({
+        audience: aud,
         section: "Selection",
-        title: "Candidate Selected",
-        message: `${candidateName} (${id}) has been selected and approved for Incubation shortlisting.${reason ? ` Notes: ${reason}` : ""}`,
+        title: isMentorApp ? "Mentor Selected" : "Candidate Selected",
+        message: isMentorApp
+          ? `${candidateName} (${id}) has been selected as an Incubation mentor and is ready for mentee matching.${reason ? ` Notes: ${reason}` : ""}`
+          : `${candidateName} (${id}) has been selected and approved for Incubation shortlisting.${reason ? ` Notes: ${reason}` : ""}`,
         candidateName,
         candidateId: id,
         type: "success",
@@ -5756,9 +6393,12 @@ export function IncubationManagementPage({
       });
     } else if (status === "Rejected") {
       addNotification({
+        audience: aud,
         section: "Rejected",
-        title: "Application Disqualified",
-        message: `${candidateName} (${id}) was disqualified by the evaluation committee.${reason ? ` Reason: ${reason}` : ""}`,
+        title: isMentorApp ? "Mentor Application Declined" : "Application Disqualified",
+        message: isMentorApp
+          ? `${candidateName} (${id}) was not accepted as a mentor.${reason ? ` Reason: ${reason}` : ""}${freedNote}`
+          : `${candidateName} (${id}) was disqualified by the evaluation committee.${reason ? ` Reason: ${reason}` : ""}`,
         candidateName,
         candidateId: id,
         type: "danger",
@@ -5776,9 +6416,12 @@ export function IncubationManagementPage({
         },
       }));
       addNotification({
+        audience: aud,
         section: "Matching",
-        title: "Candidate Moved to Matching",
-        message: `${candidateName} (${id}) moved to Mentor Matching section. Ready for pairing assignment.`,
+        title: isMentorApp ? "Mentor Moved to Matching" : "Candidate Moved to Matching",
+        message: isMentorApp
+          ? `${candidateName} (${id}) joined the mentor matching pool. Ready for mentee pairing.`
+          : `${candidateName} (${id}) moved to Mentor Matching section. Ready for pairing assignment.`,
         candidateName,
         candidateId: id,
         type: "info",
@@ -5786,9 +6429,10 @@ export function IncubationManagementPage({
       });
     } else if (status === "Dropouts") {
       addNotification({
+        audience: aud,
         section: "Dropouts",
-        title: "Candidate Dropout Recorded",
-        message: `${candidateName} (${id}) recorded as Dropout.${reason ? ` Reason: ${reason}` : ""}`,
+        title: isMentorApp ? "Mentor Dropout Recorded" : "Candidate Dropout Recorded",
+        message: `${candidateName} (${id}) recorded as Dropout.${reason ? ` Reason: ${reason}` : ""}${freedNote}`,
         candidateName,
         candidateId: id,
         type: "warning",
@@ -5796,9 +6440,10 @@ export function IncubationManagementPage({
       });
     } else if (status === "Applications" || status === "Pending") {
       addNotification({
+        audience: aud,
         section: "Applications",
-        title: "Candidate Reinstated",
-        message: `${candidateName} (${id}) was reinstated to the active Applications queue.`,
+        title: isMentorApp ? "Mentor Reinstated" : "Candidate Reinstated",
+        message: `${candidateName} (${id}) was reinstated to the active ${isMentorApp ? "Mentor " : ""}Applications queue.`,
         candidateName,
         candidateId: id,
         type: "info",
@@ -5859,11 +6504,22 @@ export function IncubationManagementPage({
     }));
 
     addNotification({
+      audience: "entrepreneur",
       section: "Matching",
       title: "Mentor Match Confirmed",
       message: `Pair match confirmed: ${entName} paired with ${mentorName} (${mentorExpertise}) with ${matchScore}% compatibility score.`,
       candidateName: entName,
       candidateId: resolvedEntId,
+      type: "success",
+      actionTarget: "Matching",
+    });
+    addNotification({
+      audience: "mentor",
+      section: "Matching",
+      title: "Mentee Match Confirmed",
+      message: `${mentorName} has been paired with mentee ${entName} (${entSector}) with ${matchScore}% compatibility score.`,
+      candidateName: mentorName,
+      candidateId: resolvedMentorId,
       type: "success",
       actionTarget: "Matching",
     });
@@ -5934,6 +6590,7 @@ export function IncubationManagementPage({
     if (pair) P.requestRematch(pair.id, "Partner re-assigned by the programme team", "admin");
 
     addNotification({
+      audience: isEnt ? "entrepreneur" : "mentor",
       section: "Matching",
       title: "Partner Re-assignment Requested",
       message: `${appName} partner re-assigned: Status changed to Pending Approval. Re-match request created in Pairing and Matching.`,
@@ -5942,6 +6599,21 @@ export function IncubationManagementPage({
       type: "warning",
       actionTarget: "Pairing & Matching",
     });
+    const counterpart = isEnt
+      ? mntApps.find(m => String((app as any).matchedMentor ?? "").includes(m.name))
+      : entApps.find(e => String((app as any).matchedMentee ?? "").includes(e.name));
+    if (counterpart) {
+      addNotification({
+        audience: isEnt ? "mentor" : "entrepreneur",
+        section: "Matching",
+        title: "Partner Re-assignment Requested",
+        message: `${counterpart.name}'s partner ${appName} was re-assigned. A re-match request was created in Pairing and Matching.`,
+        candidateName: counterpart.name,
+        candidateId: counterpart.id,
+        type: "warning",
+        actionTarget: "Pairing & Matching",
+      });
+    }
 
     toast.info(`${appName} partner re-assigned: Status changed to Pending Approval. Re-match request created in Pairing and Matching.`);
   };
@@ -6069,6 +6741,7 @@ export function IncubationManagementPage({
       pairId: mp.id as string, programId: mp.programId, mentee: mp.mentee, mentor: mp.mentor, health: st.health,
       sessions7d: st.sessions7d, satisfaction: st.satisfaction, goalPct: st.goalPct, flagged: st.health === "At Risk" || st.health === "Stalled",
       trend: st.trend, reasons: st.reasons, intervention: P.interventions.some(i => i.pairId === mp.id && !i.resolved),
+      daysSince: st.daysSince, sessionsTotal: st.sessionsTotal, taskPct: st.taskPct,
     };
   }), [allPairs, P.stats, P.interventions, scope]);
 
@@ -6083,19 +6756,24 @@ export function IncubationManagementPage({
     return out;
   }, [allEntApps]);
 
-  const entStatusCounts = useMemo(() =>
-    entApps.reduce((acc, a) => { acc[a.status] = (acc[a.status] || 0) + 1; return acc; }, {} as Record<string, number>),
-    [entApps]
+  // Counts and notification badges in the sidebar describe whichever tab (Entrepreneurs or Mentors) is open
+  const tabPool = appTab === "mentors" ? mntApps : entApps;
+  const tabStatusCounts = useMemo(() =>
+    tabPool.reduce((acc, a) => { acc[a.status] = (acc[a.status] || 0) + 1; return acc; }, {} as Record<string, number>),
+    [tabPool]
   );
-
-  const matchingEntCount = entApps.filter(a => a.status === "Matching").length;
+  const unreadBySection = useMemo(() => {
+    const out: Record<string, number> = {};
+    scopedNotifications.forEach(n => { if (!n.read && notifAudience(n) === tabAudience(appTab)) out[n.section] = (out[n.section] ?? 0) + 1; });
+    return out;
+  }, [scopedNotifications, appTab]);
 
   const mgmtItems: { key: NavKey; icon: React.ElementType; count?: number }[] = [
-    { key: "Applications", icon: FileText,    count: entApps.length },
-    { key: "Selection",    icon: CheckCircle, count: entStatusCounts["Selected"]  || 0 },
-    { key: "Rejected",     icon: XCircle,     count: entStatusCounts["Rejected"]  || 0 },
-    { key: "Matching",     icon: GitMerge,    count: matchingEntCount },
-    { key: "Dropouts",     icon: Trash2,      count: entStatusCounts["Dropouts"]  || 0 },
+    { key: "Applications", icon: FileText,    count: tabPool.length },
+    { key: "Selection",    icon: Check, count: tabStatusCounts["Selected"]  || 0 },
+    { key: "Rejected",     icon: XCircle,     count: tabStatusCounts["Rejected"]  || 0 },
+    { key: "Matching",     icon: GitMerge,    count: tabStatusCounts["Matching"] || 0 },
+    { key: "Dropouts",     icon: Trash2,      count: tabStatusCounts["Dropouts"]  || 0 },
   ];
 
   const adminItems: { key: NavKey; icon: React.ElementType; label?: string }[] = [
@@ -6103,7 +6781,7 @@ export function IncubationManagementPage({
     { key: "Relationship Health", icon: Activity },
     { key: "Cohort Management",   icon: Users },
     { key: "Reports & Analytics", icon: TrendingUp },
-    { key: "Integration Hub",     icon: Sliders },
+    // { key: "Integration Hub",     icon: Sliders },  // hidden for now
   ];
 
   const statusForView: Partial<Record<NavKey, string>> = {
@@ -6126,7 +6804,7 @@ export function IncubationManagementPage({
     if (active === "Relationship Health") return <AdminRelHealthView />;
     if (active === "Cohort Management")  return <AdminCohortView />;
     if (active === "Reports & Analytics") return <AdminReportingView />;
-    if (active === "Integration Hub")    return <AdminIntegrationView />;
+    // if (active === "Integration Hub")    return <AdminIntegrationView />;  // hidden for now
     if (active === "Settings")           return <SettingsView />;
     return null;
   }
@@ -6153,7 +6831,7 @@ export function IncubationManagementPage({
             onClick={() => setMgmtOpen(o => !o)}
             className="flex items-center gap-2 w-full px-3 py-2 rounded-md transition-all"
             style={{ color: "rgba(255,255,255,0.9)", fontWeight: 700, fontSize: 12 }}
-            onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.07)")}
+            onMouseEnter={e => (e.currentTarget.style.background = "#4c808a")}
             onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
           >
             <LayoutGrid size={14} color="rgba(255,255,255,0.7)" />
@@ -6163,7 +6841,7 @@ export function IncubationManagementPage({
           {mgmtOpen && (
             <div className="mt-1 space-y-0.5">
               {mgmtItems.map(({ key, icon: Icon, count }) => (
-                <NavItem key={key} icon={Icon} label={key} active={active === key} count={count}
+                <NavItem key={key} icon={Icon} label={key} active={active === key} count={count} unread={unreadBySection[key] ?? 0}
                   indent onClick={() => { setActive(key); onSelect(); }} />
               ))}
             </div>
@@ -6176,7 +6854,7 @@ export function IncubationManagementPage({
             onClick={() => setAdminOpen(o => !o)}
             className="flex items-center gap-2 w-full px-3 py-2 rounded-md transition-all"
             style={{ color: "rgba(255,255,255,0.9)", fontWeight: 700, fontSize: 12 }}
-            onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.07)")}
+            onMouseEnter={e => (e.currentTarget.style.background = "#4c808a")}
             onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
           >
             <Award size={14} color="rgba(255,255,255,0.7)" />
@@ -6229,6 +6907,8 @@ export function IncubationManagementPage({
       clearNotifications,
       removeNotification,
       scope,
+      appTab,
+      setAppTab,
     }}>
     <div className="min-h-screen flex" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif", background: "#f5f5f5" }}>
       <style>{css}</style>
@@ -6287,7 +6967,8 @@ export function IncubationManagementPage({
               onMarkAllRead={markAllNotificationsAsRead}
               onClearAll={clearNotifications}
               onRemove={removeNotification}
-              onNavigate={(target) => {
+              onNavigate={(target, n) => {
+                setAppTab(notifAudience(n) === "mentor" ? "mentors" : "entrepreneurs");
                 setActive(target);
               }}
             />
@@ -6307,7 +6988,8 @@ export function IncubationManagementPage({
                 <ChevronRight size={10} />
                 <span style={{ color: TEAL }}>{active}</span>
               </div>
-              {active !== "Matching" && (
+              {/* "Reports & Analytics" page title commented out: the Reporting & Analytics view renders its own heading */}
+              {active !== "Matching" && active !== "Reports & Analytics" && (
                 <h1 className="font-black text-xl flex items-center gap-2" style={{ color: NAVY }}>
                   {active}
                 </h1>

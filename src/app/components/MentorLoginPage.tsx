@@ -2,41 +2,16 @@ import { useState, useEffect, useCallback } from "react";
 import type { AuthResult } from "../data/auth";
 import type { Person } from "../data/directory";
 import { DEMO_MODE, DEMO_PASSWORD } from "../data/auth";
-import { Eye, EyeOff, Lightbulb, TrendingUp, Target, Rocket, BookOpen, Award, ChevronRight, Users } from "lucide-react";
+import { ArrowLeft, Award, Users } from "lucide-react";
+import {
+  AuthCard, AuthNote, AuthError, AuthLabel, AuthInput, AuthButton, AuthRememberRow, AuthFooter, AuthBack,
+  AUTH_BRAND, AUTH_BRAND_DARK, AUTH_PAGE_BG, AUTH_FONT, authMuted,
+} from "./AuthCard";
 
 const PHOTO_URL =
-  "https://images.unsplash.com/photo-1551836022-4c4c79ecde51?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwzfHxtZW50b3IlMjBlbnRyZXByZW5ldXIlMjBjb2FjaGluZyUyMHByb2Zlc3Npb25hbHxlbnwxfHx8fDE3ODM1MTI4NjR8MA&ixlib=rb-4.1.0&q=80&w=1080";
+  "/images/mentor-login.jpg";
 
 const styles = `
-@keyframes floatY {
-  0%, 100% { transform: translateY(0px) rotate(0deg); }
-  50% { transform: translateY(-18px) rotate(5deg); }
-}
-@keyframes floatX {
-  0%, 100% { transform: translateX(0px) rotate(0deg); }
-  50% { transform: translateX(14px) rotate(-4deg); }
-}
-@keyframes floatDiag {
-  0%, 100% { transform: translate(0,0) rotate(0deg); opacity: 0.18; }
-  33% { transform: translate(10px,-12px) rotate(8deg); opacity: 0.28; }
-  66% { transform: translate(-8px,8px) rotate(-5deg); opacity: 0.14; }
-}
-@keyframes pulse3d {
-  0%, 100% { transform: scale(1); opacity: 0.15; }
-  50% { transform: scale(1.12); opacity: 0.28; }
-}
-@keyframes orbitRing {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-@keyframes orbitRingRev {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(-360deg); }
-}
-@keyframes ripple {
-  0% { transform: scale(0.8); opacity: 0.5; }
-  100% { transform: scale(2.4); opacity: 0; }
-}
 @keyframes fadeSlideUp {
   from { opacity: 0; transform: translateY(22px); }
   to { opacity: 1; transform: translateY(0); }
@@ -45,37 +20,12 @@ const styles = `
   from { opacity: 0; transform: translateX(30px); }
   to { opacity: 1; transform: translateX(0); }
 }
-@keyframes shimmerLine {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
-}
-@keyframes inputFocus {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(76,128,138,0); }
-  50% { box-shadow: 0 0 0 3px rgba(76,128,138,0.25); }
-}
-@keyframes nodePulse {
-  0%, 100% { r: 4; opacity: 0.3; }
-  50% { r: 7; opacity: 0.7; }
-}
-@keyframes drawLine {
-  from { stroke-dashoffset: 200; opacity: 0; }
-  to { stroke-dashoffset: 0; opacity: 0.25; }
-}
-@keyframes barGrow {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
-}
-@keyframes lockShake {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-6px) rotate(-3deg); }
-  40% { transform: translateX(6px) rotate(3deg); }
-  60% { transform: translateX(-4px); }
-  80% { transform: translateX(4px); }
-}
 .mentor-login-animate { animation: fadeSlideUp 0.55s ease both; }
 .mentor-login-animate-delay { animation: fadeSlideUp 0.55s ease 0.12s both; }
 .mentor-img-animate { animation: slideRight 0.7s ease 0.1s both; }
-.lock-shake { animation: lockShake 0.5s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .mentor-login-animate, .mentor-login-animate-delay, .mentor-img-animate { animation: none; }
+}
 `;
 
 interface Props {
@@ -153,132 +103,73 @@ export function MentorLoginPage({ onBack, onApplyMentor, onAuthenticate, onSignI
   };
 
   return (
-    <div className="min-h-screen relative overflow-hidden flex" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif", background: "linear-gradient(135deg, #2a3054 0%, #3B4167 40%, #456f78 75%, #4C808A 100%)" }}>
+    <div className="min-h-screen relative overflow-hidden flex" style={{ fontFamily: AUTH_FONT, background: AUTH_PAGE_BG }}>
       <style>{styles}</style>
 
-
-      {/* LEFT PANEL — Login form */}
-      <div className="relative flex flex-col justify-center w-full lg:w-[52%] px-6 py-10 lg:px-16 xl:px-20" style={{ zIndex: 10 }}>
-        {/* Back button */}
+      {/* LEFT PANEL: sign-in card */}
+      <div className="relative flex flex-col items-center justify-center w-full lg:w-[52%] px-5 py-10 lg:px-12" style={{ zIndex: 10 }}>
         <button
           onClick={onBack}
-          className="mentor-login-animate absolute top-6 left-6 flex items-center gap-2 text-white/60 hover:text-white text-xs font-semibold transition-colors"
+          className="mentor-login-animate absolute top-6 left-6 flex items-center gap-2 text-xs font-semibold text-white"
         >
-          Back to Mentor Portal
+          <ArrowLeft size={14} /> Back to Mentor Portal
         </button>
 
-        {/* Logo */}
-        <div className="mentor-login-animate mb-8 mt-8">
-          <img
-            src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
-            alt="Emerge Livelihoods"
-            className="h-10 brightness-0 invert opacity-90"
-            style={{ objectFit: "contain" }}
-          />
+        <div className="mentor-login-animate-delay w-full flex justify-center mt-8">
+          <AuthCard
+            title={view === "login" ? "Welcome Back, Mentor!" : view === "forgot" ? "Reset Password" : view === "mfa" ? "Two-Factor Authentication" : "Welcome Back!"}
+            subtitle={view === "login" ? "Sign in to manage your startups, schedule sessions and track entrepreneurial impact." : undefined}
+          >
+            {view === "login" && (
+              <LoginView
+                email={email} setEmail={setEmail}
+                password={password} setPassword={setPassword}
+                rememberMe={rememberMe} setRememberMe={setRememberMe}
+                error={error} setError={setError}
+                locked={locked} lockCountdown={lockCountdown}
+                lockShake={lockShake} checking={checking}
+                onSubmit={handleSignIn}
+                onForgot={() => { setError(""); setView("forgot"); }}
+                onApplyMentor={onApplyMentor}
+              />
+            )}
+            {view === "forgot" && (
+              <ForgotView
+                forgotEmail={forgotEmail} setForgotEmail={setForgotEmail}
+                forgotSent={forgotSent} setForgotSent={setForgotSent}
+                onBack={() => setView("login")}
+              />
+            )}
+            {view === "mfa" && (
+              <MFAView
+                mfaCode={mfaCode}
+                onChange={handleMfaChange}
+                onVerify={() => setView("success")}
+                onBack={() => setView("login")}
+              />
+            )}
+            {view === "success" && <SuccessView onDashboard={finishSignIn} />}
+          </AuthCard>
         </div>
-
-        {/* Card */}
-        <div
-          className="mentor-login-animate-delay w-full max-w-md"
-          style={{
-            background: "rgba(255,255,255,0.07)",
-            backdropFilter: "blur(20px)",
-            border: "1px solid rgba(255,255,255,0.14)",
-            borderRadius: 3,
-            padding: "36px 36px 32px",
-          }}
-        >
-          {view === "login" && (
-            <LoginView
-              email={email} setEmail={setEmail}
-              password={password} setPassword={setPassword}
-              showPwd={showPwd} setShowPwd={setShowPwd}
-              rememberMe={rememberMe} setRememberMe={setRememberMe}
-              error={error} setError={setError}
-              locked={locked} lockCountdown={lockCountdown}
-              lockShake={lockShake}
-              onSubmit={handleSignIn}
-              onForgot={() => { setError(""); setView("forgot"); }}
-              onApplyMentor={onApplyMentor}
-            />
-          )}
-          {view === "forgot" && (
-            <ForgotView
-              forgotEmail={forgotEmail} setForgotEmail={setForgotEmail}
-              forgotSent={forgotSent} setForgotSent={setForgotSent}
-              onBack={() => setView("login")}
-            />
-          )}
-          {view === "mfa" && (
-            <MFAView
-              mfaCode={mfaCode}
-              onChange={handleMfaChange}
-              onVerify={() => setView("success")}
-              onBack={() => setView("login")}
-            />
-          )}
-          {view === "success" && <SuccessView onDashboard={finishSignIn} />}
-        </div>
-
-        {/* Social providers */}
-        {view === "login" && (
-          <div className="mentor-login-animate-delay mt-5 w-full max-w-md">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
-              <span className="text-white/40 text-xs">or continue with</span>
-              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.15)" }} />
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { label: "Google", icon: "G", color: "#EA4335" },
-                { label: "Microsoft", icon: "M", color: "#00A4EF" },
-                { label: "LinkedIn", icon: "in", color: "#0A66C2" },
-              ].map(({ label, icon, color }) => (
-                <button
-                  key={label}
-                  className="flex items-center justify-center gap-2 py-2.5 rounded-md text-xs font-semibold text-white/80 hover:text-white transition-all"
-                  style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" }}
-                >
-                  <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white" style={{ background: color, fontSize: 10 }}>{icon}</span>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* RIGHT PANEL — Photo background only, no quote/stats */}
+      {/* RIGHT PANEL: photo */}
       <div
         className="mentor-img-animate hidden lg:flex flex-col justify-end relative overflow-hidden"
-        style={{
-          width: "48%",
-          clipPath: "polygon(6% 0%, 100% 0%, 100% 100%, 0% 100%)",
-          zIndex: 5,
-        }}
+        style={{ width: "48%", clipPath: "polygon(6% 0%, 100% 0%, 100% 100%, 0% 100%)", zIndex: 5 }}
       >
-        {/* Photo */}
-        <img
-          src={PHOTO_URL}
-          alt="Mentor and entrepreneur"
-          className="absolute inset-0 w-full h-full object-cover"
-          style={{ objectPosition: "center top" }}
-        />
-        {/* Gradient overlays */}
+        <img src={PHOTO_URL} alt="Mentor and entrepreneur" className="absolute inset-0 w-full h-full object-cover" style={{ objectPosition: "center top" }} />
         <div className="absolute inset-0" style={{ background: "linear-gradient(135deg, rgba(59,65,103,0.75) 0%, rgba(76,128,138,0.45) 60%, rgba(0,0,0,0.15) 100%)" }} />
         <div className="absolute inset-0" style={{ background: "linear-gradient(to top, rgba(30,36,66,0.9) 0%, transparent 55%)" }} />
-
-
-        {/* Decorative corner hex badge */}
+        <img
+          src="https://www.emergelivelihoods.org/wp-content/uploads/2024/11/cropped-livelihoods-Logo.png"
+          alt="Emerge Livelihoods"
+          className="absolute top-10 left-16 h-10 brightness-0 invert opacity-90"
+          style={{ objectFit: "contain" }}
+        />
         <div
           className="absolute top-10 right-10 flex items-center justify-center"
-          style={{
-            width: 80, height: 92,
-            background: "rgba(76,128,138,0.35)",
-            clipPath: "polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)",
-            backdropFilter: "blur(8px)",
-            border: "1px solid rgba(255,255,255,0.15)",
-          }}
+          style={{ width: 80, height: 92, background: "rgba(76,128,138,0.35)", clipPath: "polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.15)" }}
         >
           <Users size={28} color="rgba(255,255,255,0.85)" />
         </div>
@@ -290,142 +181,60 @@ export function MentorLoginPage({ onBack, onApplyMentor, onAuthenticate, onSignI
 /* ---- Sub-views ---- */
 
 function LoginView({
-  email, setEmail, password, setPassword, showPwd, setShowPwd,
+  email, setEmail, password, setPassword,
   rememberMe, setRememberMe, error, setError, locked, lockCountdown,
-  lockShake, onSubmit, onForgot, onApplyMentor,
+  lockShake, checking, onSubmit, onForgot, onApplyMentor,
 }: {
   email: string; setEmail: (v: string) => void;
   password: string; setPassword: (v: string) => void;
-  showPwd: boolean; setShowPwd: (v: boolean) => void;
   rememberMe: boolean; setRememberMe: (v: boolean) => void;
   error: string; setError: (v: string) => void;
-  locked: boolean; lockCountdown: number; lockShake: boolean;
+  locked: boolean; lockCountdown: number; lockShake: boolean; checking: boolean;
   onSubmit: (e: React.FormEvent) => void;
   onForgot: () => void;
   onApplyMentor?: () => void;
 }) {
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    background: "#fff",
-    border: "1.5px solid rgba(76,128,138,0.35)",
-    borderRadius: 3,
-    padding: "12px 14px",
-    fontSize: 13,
-    color: "#2a3054",
-    outline: "none",
-    fontFamily: "Verdana, Geneva, Tahoma, sans-serif",
-    transition: "border-color 0.2s, box-shadow 0.2s",
-  };
-
   return (
-    <form onSubmit={onSubmit}>
-      {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-white font-bold text-2xl leading-tight mb-2">Welcome Back, Mentor!</h1>
-        <p className="text-white/55 text-xs leading-relaxed">
-          Sign in to manage your startups, schedule sessions and track entrepreneurial impact.
-        </p>
-      </div>
-
+    <form onSubmit={onSubmit} noValidate>
+      {/* Demo build note (temporarily disabled)
       {DEMO_MODE && (
-        <p className="mb-4 text-[11px] leading-relaxed" style={{ color: "rgba(255,255,255,0.45)" }}>
-          Demo build: sample mentors use the password <span className="font-mono text-white/70">{DEMO_PASSWORD}</span>, e.g. tiwonge.banda@example.com. Mentors who registered here sign in with the password they chose.
-        </p>
+        <AuthNote>
+          Demo build: sample mentors use the password <code style={{ background: "#eef0f6", borderRadius: 4, padding: "1px 6px", color: "#1b2036" }}>{DEMO_PASSWORD}</code>, e.g. tiwonge.banda@example.com. Mentors who registered here sign in with the password they chose.
+        </AuthNote>
       )}
+      */}
 
-      {/* Error */}
       {error && (
-        <div className={`mb-4 p-3 rounded-md text-xs font-semibold ${lockShake ? "lock-shake" : ""}`}
-          style={{ background: "rgba(232,84,84,0.15)", border: "1px solid rgba(232,84,84,0.35)", color: "#fca5a5" }}>
-          {locked && <span className="font-bold">🔒 </span>}
+        <AuthError shake={lockShake} extra={locked ? <span className="shrink-0">Unlocks in {lockCountdown}s</span> : undefined}>
           {error}
-          {locked && <span className="ml-2 text-white/50">Unlocks in {lockCountdown}s</span>}
-        </div>
+        </AuthError>
       )}
 
-      {/* Email */}
-      <div className="mb-4">
-        <label className="block text-white text-xs font-semibold mb-1.5">Email Address or Username *</label>
-        <input
-          type="text"
-          value={email}
-          onChange={(e) => { setEmail(e.target.value); setError(""); }}
-          placeholder="Enter your email address or username"
-          style={inputStyle}
-          disabled={locked}
-          onFocus={(e) => { e.target.style.borderColor = "#4C808A"; e.target.style.boxShadow = "0 0 0 3px rgba(76,128,138,0.18)"; }}
-          onBlur={(e) => { e.target.style.borderColor = "rgba(76,128,138,0.35)"; e.target.style.boxShadow = "none"; }}
+      <div style={{ marginBottom: 18 }}>
+        <AuthLabel htmlFor="mentor-email" required>Email Address or Username</AuthLabel>
+        <AuthInput
+          id="mentor-email" icon="mail" type="text" autoComplete="username"
+          value={email} onChange={(e) => { setEmail(e.target.value); setError(""); }}
+          placeholder="Enter your email address or username" disabled={locked}
         />
       </div>
 
-      {/* Password */}
-      <div className="mb-4">
-        <label className="block text-white/70 text-xs font-semibold mb-1.5">Password *</label>
-        <div className="relative">
-          <input
-            type={showPwd ? "text" : "password"}
-            value={password}
-            onChange={(e) => { setPassword(e.target.value); setError(""); }}
-            placeholder="Enter your password"
-            style={{ ...inputStyle, paddingRight: 44 }}
-            disabled={locked}
-            onFocus={(e) => { e.target.style.borderColor = "#4C808A"; e.target.style.boxShadow = "0 0 0 3px rgba(76,128,138,0.18)"; }}
-            onBlur={(e) => { e.target.style.borderColor = "rgba(76,128,138,0.35)"; e.target.style.boxShadow = "none"; }}
-          />
-          <button
-            type="button"
-            onClick={() => setShowPwd(!showPwd)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#4C808A] hover:text-[#3B4167] transition-colors"
-          >
-            {showPwd ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-        </div>
+      <div>
+        <AuthLabel htmlFor="mentor-password" required>Password</AuthLabel>
+        <AuthInput
+          id="mentor-password" icon="lock" reveal autoComplete="current-password"
+          value={password} onChange={(e) => { setPassword(e.target.value); setError(""); }}
+          placeholder="Enter your password" disabled={locked}
+        />
       </div>
 
-      {/* Remember + Forgot */}
-      <div className="flex items-center justify-between mb-5">
-        <label className="flex items-center gap-2 cursor-pointer group">
-          <input
-            type="checkbox"
-            checked={rememberMe}
-            onChange={(e) => setRememberMe(e.target.checked)}
-            className="w-4 h-4 rounded-md accent-[#4C808A]"
-          />
-          <span className="text-white/60 text-xs group-hover:text-white/80 transition-colors">Keep me signed in</span>
-        </label>
-        <button type="button" onClick={onForgot} className="text-xs font-semibold transition-colors" style={{ color: "#a8d5db" }}>
-          Forgot password?
-        </button>
-      </div>
+      <AuthRememberRow checked={rememberMe} onChange={setRememberMe} onForgot={onForgot} />
 
-      {/* Sign In */}
-      <button
-        type="submit"
-        disabled={locked}
-        className="w-full font-bold text-sm py-3.5 rounded-md transition-all hover:opacity-90 active:scale-[0.98] flex items-center justify-center gap-2"
-        style={{
-          background: locked ? "rgba(255,255,255,0.12)" : "linear-gradient(135deg, #3B4167, #4C808A)",
-          color: locked ? "rgba(255,255,255,0.35)" : "#fff",
-          border: "none",
-          cursor: locked ? "not-allowed" : "pointer",
-          letterSpacing: "0.03em",
-        }}
-      >
-        {locked ? `🔒 Account Locked (${lockCountdown}s)` : <>Sign In <ChevronRight size={15} /></>}
-      </button>
+      <AuthButton type="submit" disabled={locked || checking} loading={checking} arrow={!locked}>
+        {locked ? `Account locked (${lockCountdown}s)` : "Sign In"}
+      </AuthButton>
 
-      {/* Apply link */}
-      <div className="mt-5 pt-4 text-center" style={{ borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-        <p className="text-white/45 text-xs mb-2">New to Mentoring?</p>
-        <button
-          type="button"
-          onClick={onApplyMentor}
-          className="text-xs font-bold transition-colors hover:opacity-90"
-          style={{ color: "#a8d5db" }}
-        >
-          Apply to Become a Mentor
-        </button>
-      </div>
+      <AuthFooter prompt="New to Mentoring?" actionLabel="Apply to Become a Mentor" onAction={onApplyMentor} />
     </form>
   );
 }
@@ -437,55 +246,24 @@ function ForgotView({
   forgotSent: boolean; setForgotSent: (v: boolean) => void;
   onBack: () => void;
 }) {
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    background: "#fff",
-    border: "1.5px solid rgba(76,128,138,0.35)",
-    borderRadius: 3,
-    padding: "12px 14px",
-    fontSize: 13,
-    color: "#2a3054",
-    outline: "none",
-    fontFamily: "Verdana, Geneva, Tahoma, sans-serif",
-  };
-
   return (
     <div>
-      <button onClick={onBack} className="flex items-center gap-1.5 text-white/50 hover:text-white text-xs mb-5 transition-colors">
-        Back to Sign In
-      </button>
-      <h2 className="text-white font-bold text-xl mb-2">Reset Password</h2>
-      <p className="text-white/50 text-xs mb-5 leading-relaxed">
-        Enter the email address associated with your mentor account. We'll send you a link to reset your password.
-      </p>
+      <AuthBack onClick={onBack}>Back to Sign In</AuthBack>
       {forgotSent ? (
-        <div className="p-4 rounded-md text-center" style={{ background: "rgba(76,128,138,0.2)", border: "1px solid rgba(76,128,138,0.4)" }}>
-          <div className="text-3xl mb-2">📬</div>
-          <p className="text-white font-semibold text-sm">Reset link sent!</p>
-          <p className="text-white/55 text-xs mt-1">Check your inbox at <span className="text-[#a8d5db]">{forgotEmail}</span></p>
-          <button onClick={onBack} className="mt-4 text-xs font-bold text-[#a8d5db] hover:opacity-80 transition-opacity">
-            Back to Sign In
-          </button>
+        <div className="text-center">
+          <p style={{ fontWeight: 700, fontSize: 18, color: "#1b2036" }}>Reset link sent</p>
+          <p style={{ color: authMuted, fontSize: 14, marginTop: 8, lineHeight: 1.5 }}>
+            Check your inbox at <span style={{ color: AUTH_BRAND_DARK, fontWeight: 700 }}>{forgotEmail}</span>
+          </p>
         </div>
       ) : (
         <>
-          <div className="mb-4">
-            <label className="block text-white/70 text-xs font-semibold mb-1.5">Email Address</label>
-            <input
-              type="email"
-              value={forgotEmail}
-              onChange={(e) => setForgotEmail(e.target.value)}
-              placeholder="Enter your registered email"
-              style={inputStyle}
-            />
+          <AuthNote>Enter the email address associated with your mentor account. We'll send you a link to reset your password.</AuthNote>
+          <div style={{ marginBottom: 18 }}>
+            <AuthLabel htmlFor="mentor-forgot-email">Email Address</AuthLabel>
+            <AuthInput id="mentor-forgot-email" icon="mail" type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} placeholder="Enter your registered email" />
           </div>
-          <button
-            onClick={() => forgotEmail && setForgotSent(true)}
-            className="w-full font-bold text-sm py-3.5 rounded-md text-white transition-all hover:opacity-90"
-            style={{ background: "linear-gradient(135deg, #3B4167, #4C808A)" }}
-          >
-            Send Reset Link
-          </button>
+          <AuthButton type="button" arrow={false} onClick={() => forgotEmail && setForgotSent(true)}>Send Reset Link</AuthButton>
         </>
       )}
     </div>
@@ -502,32 +280,25 @@ function MFAView({
 }) {
   return (
     <div>
-      <button onClick={onBack} className="flex items-center gap-1.5 text-white/50 hover:text-white text-xs mb-5 transition-colors">
-        Back
-      </button>
-      <h2 className="text-white font-bold text-xl mb-2">Two-Factor Authentication</h2>
-      <p className="text-white/50 text-xs mb-6 leading-relaxed">Enter the 6-digit code from your authenticator app or SMS.</p>
-      <div className="flex gap-2 justify-center mb-6">
+      <AuthBack onClick={onBack}>Back</AuthBack>
+      <AuthNote>Enter the 6-digit code from your authenticator app or SMS.</AuthNote>
+      <div className="flex gap-2 justify-center" style={{ marginBottom: 22 }}>
         {mfaCode.map((digit, idx) => (
           <input
             key={idx}
             id={`mfa-${idx}`}
             type="text"
+            inputMode="numeric"
             maxLength={1}
+            aria-label={`Digit ${idx + 1}`}
             value={digit}
             onChange={(e) => onChange(idx, e.target.value)}
-            className="w-10 h-12 text-center rounded-md font-bold text-lg"
-            style={{ background: "#fff", border: "2px solid rgba(76,128,138,0.5)", color: "#2a3054", outline: "none", fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}
+            className="ac-input text-center"
+            style={{ width: 44, height: 52, borderRadius: 3, fontSize: 20, fontWeight: 700, fontFamily: AUTH_FONT }}
           />
         ))}
       </div>
-      <button
-        onClick={onVerify}
-        className="w-full font-bold text-sm py-3.5 rounded-md text-white hover:opacity-90 transition-all"
-        style={{ background: "linear-gradient(135deg, #3B4167, #4C808A)" }}
-      >
-        Verify & Sign In
-      </button>
+      <AuthButton type="button" onClick={onVerify}>Verify & Sign In</AuthButton>
     </div>
   );
 }
@@ -538,19 +309,16 @@ function SuccessView({ onDashboard }: { onDashboard?: () => void }) {
     return () => clearTimeout(t);
   }, [onDashboard]);
   return (
-    <div className="text-center py-4">
-      <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
-        style={{ background: "linear-gradient(135deg, #3B4167, #4C808A)" }}>
+    <div className="text-center py-2">
+      <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: AUTH_BRAND }}>
         <Award size={32} color="#fff" />
       </div>
-      <h2 className="text-white font-bold text-xl mb-2">Welcome Back!</h2>
-      <p className="text-white/55 text-xs leading-relaxed mb-5">
+      <p style={{ color: authMuted, fontSize: 14, lineHeight: 1.5, marginBottom: 18 }}>
         You've successfully signed in. Loading your Mentor Dashboard...
       </p>
-      <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.12)" }}>
-        <div className="h-full rounded-md" style={{ background: "linear-gradient(90deg, #3B4167, #4C808A)", width: "100%", transition: "width 2s ease" }} />
+      <div className="w-full overflow-hidden" style={{ height: 6, borderRadius: 6, background: "#e3e7f0" }}>
+        <div style={{ height: "100%", background: AUTH_BRAND, width: "100%", transition: "width 2s ease" }} />
       </div>
-      <p className="text-white/30 text-xs mt-3">Redirecting to your dashboard...</p>
     </div>
   );
 }

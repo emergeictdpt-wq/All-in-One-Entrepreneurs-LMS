@@ -1,16 +1,17 @@
 import { useState } from "react";
 import { ArrowLeft, Search, Check } from "lucide-react";
-import { findApplication, stagesFor, isMentorApp, type TrackerResult } from "../data/applicationTracker";
+import { findApplication, stagesFor, isMentorApp, type AnyApplication, type TrackerResult } from "../data/applicationTracker";
 
 const TEAL = "#4C808A";
 const tones = { neutral: "#3B4167", good: "#2f7d4f", bad: "#b3403a", warn: "#a06a14" } as const;
 
-export function ApplicationTrackerPage({ onBack, initialRef = "" }: { onBack: () => void; initialRef?: string }) {
+export function ApplicationTrackerPage({ onBack, initialRef = "", seedApps = [] }: { onBack: () => void; initialRef?: string; seedApps?: AnyApplication[] }) {
   const [q, setQ] = useState(initialRef);
-  const [result, setResult] = useState<TrackerResult | null>(null);
-  const [searched, setSearched] = useState(false);
+  // Arriving with a reference (from the "Track this application" button) shows the status straight away
+  const [result, setResult] = useState<TrackerResult | null>(() => (initialRef ? findApplication(initialRef, seedApps) : null));
+  const [searched, setSearched] = useState(!!initialRef);
 
-  const run = () => { setResult(findApplication(q)); setSearched(true); };
+  const run = () => { setResult(findApplication(q, seedApps)); setSearched(true); };
   const stages = result ? stagesFor(result.app) : [];
   const mentor = result ? isMentorApp(result.app) : false;
 
@@ -54,7 +55,7 @@ export function ApplicationTrackerPage({ onBack, initialRef = "" }: { onBack: ()
 
             <ol className="mt-5 space-y-3">
               {stages.map((s, i) => {
-                const done = i < result.stageIndex, current = i === result.stageIndex;
+                const done = i < result.stageIndex || (!!result.complete && i === result.stageIndex), current = i === result.stageIndex && !result.complete;
                 return (
                   <li key={s.id} className="flex items-start gap-3">
                     <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5"
@@ -62,8 +63,8 @@ export function ApplicationTrackerPage({ onBack, initialRef = "" }: { onBack: ()
                       {done ? <Check size={12} /> : i + 1}
                     </span>
                     <div>
-                      <p className={`text-xs font-semibold ${current ? "text-[#3B4167]" : done ? "text-[#4b5563]" : "text-[#9ca3af]"}`}>{s.label}</p>
-                      {current && <p className="text-[11px] text-[#6b7280]">{s.desc}</p>}
+                      <p className={`text-xs font-semibold ${current || (result.complete && i === result.stageIndex) ? "text-[#3B4167]" : done ? "text-[#4b5563]" : "text-[#9ca3af]"}`}>{s.label}</p>
+                      {(current || (result.complete && i === result.stageIndex)) && <p className="text-[11px] text-[#6b7280]">{s.desc}</p>}
                     </div>
                   </li>
                 );

@@ -1,11 +1,14 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { filled } from "../data/submission";
+import { readMentorDraft, writeMentorDraft, clearMentorDraft, type MentorDraft } from "../data/mentorDraft";
 import { scoreMentor } from "../data/applicationScoring";
 import type { MentorApplication } from "../types";
 import { accountProblem } from "./AccountFields";
+import { nationalIdProblem, phoneProblem, type ApplicantIdentity, type DuplicateHit } from "../data/duplicates";
 import {
   ChevronRight, ChevronLeft, Check, Plus, Trash2, Upload, Eye, EyeOff,
   User, Briefcase, BookOpen, Star, Target, Globe, FileText,
-  Zap, Users, ArrowRight, Camera, ClipboardCheck
+  Zap, Users, ArrowRight, Camera, ClipboardCheck, Pencil
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -179,8 +182,9 @@ function StrengthGauge({ pct }: { pct: number }) {
 
 // ─── Main Form ────────────────────────────────────────────────────────────────
 
-export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorApplication }: { onBack: () => void; onNavigateHome?: () => void; onSubmitMentorApplication?: (app: MentorApplication, password: string) => void }) {
+export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorApplication, checkDuplicate, onTrack, projects = [] }: { /** Open incubation projects a mentor can apply to. The choice decides which project (and programme manager) receives the application. */ projects?: { id: string; name: string }[]; onTrack?: (ref: string) => void; onBack: () => void; onNavigateHome?: () => void; onSubmitMentorApplication?: (app: MentorApplication, password: string) => DuplicateHit | null | void; checkDuplicate?: (who: ApplicantIdentity) => DuplicateHit | null }) {
   const [step, setStep] = useState(1);
+  const [returnToReview, setReturnToReview] = useState(false); // set when the applicant jumps from Review to edit one section
   const [submitted, setSubmitted] = useState(false);
   const [refId, setRefId] = useState("");
   const topRef = useRef<HTMLDivElement>(null);
@@ -188,8 +192,18 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
   const docInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   // ── Form state ──
-  const [acct, setAcct] = useState({ firstName: "", middleName: "", lastName: "", preferredName: "", gender: "", dob: "", nationality: "", nationalId: "", email: "", mobile: "", altPhone: "", password: "", confirmPassword: "", program: "" });
-  const acctProblem = accountProblem("mentor", acct.email, acct.password, acct.confirmPassword);
+  const [acct, setAcct] = useState({ firstName: "", middleName: "", lastName: "", preferredName: "", gender: "", ageGroup: "", nationality: "", nationalId: "", email: "", mobile: "", altPhone: "", password: "", confirmPassword: "", program: "", programId: "", pwd: false });
+  // Duplicate check: the same email, mobile number or National ID as a registration already in the system is rejected right away.
+  const [rejectedAtSubmit, setRejectedAtSubmit] = useState<DuplicateHit | null>(null);
+  const duplicate = checkDuplicate?.({ email: acct.email, phone: acct.mobile, nationalId: acct.nationalId }) ?? rejectedAtSubmit;
+  const [showAcctErrors, setShowAcctErrors] = useState(false); // blank-field messages only appear once Continue was tried
+  const idProblem = acct.nationalId || showAcctErrors ? nationalIdProblem(acct.nationalId) : "";
+  const telProblem = acct.mobile || showAcctErrors ? phoneProblem(acct.mobile) : "";
+  // An incubation mentor must say which project they are applying to, so the application reaches that project's programme manager.
+  const chosenProject = acct.program === "Incubation" ? projects.find(p => p.id === acct.programId) : undefined;
+  const projectProblem = acct.program === "Incubation" && projects.length > 0 && !chosenProject ? "Choose the incubation project you are applying to mentor in." : "";
+  const acctProblem = accountProblem("mentor", acct.email, acct.password, acct.confirmPassword)
+    || phoneProblem(acct.mobile) || nationalIdProblem(acct.nationalId) || projectProblem || duplicate?.message || "";
   const [profile, setProfile] = useState({ photo: "", title: "", occupation: "", employer: "", yearsExp: "", country: "", region: "", district: "", address: "" });
   const [bio, setBio] = useState({ biography: "", career: "", interests: "", motivation: "" });
   const [qualifications, setQualifications] = useState<Qualification[]>([{ qualification: "", field: "", institution: "", country: "", year: "" }]);
@@ -219,6 +233,47 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
   const [assessment, setAssessment] = useState({ coaching: "", communication: "", personality: [] as string[], digital: [] as string[], commitment: [] as string[] });
   const [hoursPerMonth, setHoursPerMonth] = useState("");
   const [availability, setAvailability] = useState<string[]>([]);
+
+  // ── Saved progress ("continue later") ──
+  const [pendingDraft, setPendingDraft] = useState<MentorDraft | null>(() => readMentorDraft());
+  const [draftHandled, setDraftHandled] = useState(false); // no autosave until the visitor chooses Continue or Start over
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const draftData = {
+    acct: { ...acct, password: "", confirmPassword: "", nationalId: "" },
+    profile: { ...profile, photo: "" },
+    bio, qualifications, experiences, entExpChecks, entBiz, hasMentored, mentoringExp, progInterest, stageExp, industryExp, funcExp,
+    prefStages, prefIndustries, prefFounderTypes, languages, mentoringMode, ref1, ref2, socials, conflict, conflictExplain, assessment, hoursPerMonth, availability,
+  };
+  const draftJson = JSON.stringify(draftData);
+  const hasContent = !!(acct.firstName || acct.lastName || acct.email || acct.mobile || profile.title || profile.employer || bio.biography || bio.motivation || progInterest.length || industryExp.length);
+
+  useEffect(() => {
+    if (submitted || !hasContent) return;
+    if (pendingDraft && !draftHandled) return; // don't overwrite the stored draft before the visitor decides
+    const t = setTimeout(() => { const at = writeMentorDraft(step, JSON.parse(draftJson)); if (at) setSavedAt(at); }, 600);
+    return () => clearTimeout(t);
+  }, [draftJson, step, submitted, hasContent, pendingDraft, draftHandled]);
+
+  const restoreDraft = () => {
+    if (!pendingDraft) return;
+    const d = pendingDraft.data as any;
+    const obj = <T extends object>(cur: T, saved: unknown): T => (saved && typeof saved === "object" && !Array.isArray(saved) ? { ...cur, ...(saved as T) } : cur);
+    const arr = <T,>(cur: T[], saved: unknown): T[] => (Array.isArray(saved) ? (saved as T[]) : cur);
+    setAcct(a => obj(a, d.acct)); setProfile(p => obj(p, d.profile)); setBio(b => obj(b, d.bio));
+    setQualifications(q => { const v = arr(q, d.qualifications); return v.length ? v : q; });
+    setExperiences(x => { const v = arr(x, d.experiences); return v.length ? v : x; });
+    setEntExpChecks(v => arr(v, d.entExpChecks)); setEntBiz(v => obj(v, d.entBiz));
+    setHasMentored(d.hasMentored === "yes" || d.hasMentored === "no" ? d.hasMentored : ""); setMentoringExp(v => obj(v, d.mentoringExp));
+    setProgInterest(v => arr(v, d.progInterest)); setStageExp(v => arr(v, d.stageExp)); setIndustryExp(v => arr(v, d.industryExp)); setFuncExp(v => arr(v, d.funcExp));
+    setPrefStages(v => arr(v, d.prefStages)); setPrefIndustries(v => arr(v, d.prefIndustries)); setPrefFounderTypes(v => arr(v, d.prefFounderTypes));
+    setLanguages(v => arr(v, d.languages)); setMentoringMode(v => arr(v, d.mentoringMode));
+    setRef1(v => obj(v, d.ref1)); setRef2(v => obj(v, d.ref2)); setSocials(v => obj(v, d.socials));
+    setConflict(d.conflict === "yes" || d.conflict === "no" ? d.conflict : ""); setConflictExplain(typeof d.conflictExplain === "string" ? d.conflictExplain : "");
+    setAssessment(v => obj(v, d.assessment)); setHoursPerMonth(typeof d.hoursPerMonth === "string" ? d.hoursPerMonth : ""); setAvailability(v => arr(v, d.availability));
+    setStep(Math.min(Math.max(pendingDraft.step, 1), STEPS.length));
+    setDraftHandled(true); setPendingDraft(null); scrollTop();
+  };
+  const discardDraft = () => { clearMentorDraft(); setDraftHandled(true); setPendingDraft(null); setSavedAt(null); };
 
   const toggle = (arr: string[], val: string) => arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
 
@@ -267,8 +322,13 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
   ));
 
   const scrollTop = () => topRef.current?.scrollIntoView({ behavior: "smooth" });
-  const next = () => { setStep(s => Math.min(s + 1, 13)); scrollTop(); };
-  const prev = () => { setStep(s => Math.max(s - 1, 1)); scrollTop(); };
+  const next = () => {
+    if (step === 1 && (duplicate || telProblem || idProblem || projectProblem || phoneProblem(acct.mobile) || nationalIdProblem(acct.nationalId))) { setShowAcctErrors(true); scrollTop(); return; } // a duplicate is rejected before the applicant fills in 12 more steps
+    if (returnToReview) { setReturnToReview(false); setStep(13); scrollTop(); return; }
+    setStep(s => Math.min(s + 1, 13)); scrollTop();
+  };
+  const prev = () => { setReturnToReview(false); setStep(s => Math.max(s - 1, 1)); scrollTop(); };
+  const editSection = (id: number) => { setReturnToReview(true); setStep(id); scrollTop(); };
 
   const completedSteps = new Set<number>();
   if (acct.firstName && acct.email) completedSteps.add(1);
@@ -299,9 +359,16 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
             <div className="font-bold text-sm mb-3" style={{ color: "#FFFFFF" }}>Your Profile Strength</div>
             <StrengthGauge pct={strength} />
           </div>
-          <button onClick={onBack} className="inline-flex items-center gap-2 px-8 py-3 rounded-md font-bold text-sm hover:opacity-90 transition-all" style={{ background: "#3B4167", color: "#FFFFFF" }}>
-            Back to Mentor Portal
-          </button>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+            {refId && onTrack && (
+              <button onClick={() => onTrack(refId)} className="inline-flex items-center gap-2 px-8 py-3 rounded-md font-bold text-sm hover:opacity-90 transition-all border border-white" style={{ background: "#FFFFFF", color: "#3B4167" }}>
+                Track this application
+              </button>
+            )}
+            <button onClick={onBack} className="inline-flex items-center gap-2 px-8 py-3 rounded-md font-bold text-sm hover:opacity-90 transition-all" style={{ background: "#3B4167", color: "#FFFFFF" }}>
+              Back to Mentor Portal
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -363,7 +430,7 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                 const done = completedSteps.has(id);
                 const active = step === id;
                 return (
-                  <button key={id} onClick={() => { setStep(id); scrollTop(); }}
+                  <button key={id} onClick={() => { setReturnToReview(false); setStep(id); scrollTop(); }}
                     title={label}
                     className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold transition-all"
                     style={{
@@ -398,6 +465,26 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
           <div className="p-4 lg:p-10">
           <div className="max-w-3xl mx-auto">
 
+            {/* ── Saved application banner ── */}
+            {pendingDraft && !draftHandled && (
+              <div role="status" className="mb-6 rounded-md p-4 border border-white/20 flex flex-col sm:flex-row sm:items-center gap-3" style={{ background: "#4C808A" }}>
+                <div className="flex-1">
+                  <div className="text-white font-bold text-sm">You have an unfinished application</div>
+                  <div className="text-white text-xs mt-0.5">
+                    Saved {new Date(pendingDraft.savedAt).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}, at step {pendingDraft.step} of {STEPS.length} ({STEPS[Math.min(Math.max(pendingDraft.step, 1), STEPS.length) - 1].label}).
+                    For security, your password, National ID number, photo and uploaded files are not saved, so you will need to add them again.
+                  </div>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button onClick={restoreDraft} className="px-4 py-2 rounded-md text-xs font-bold" style={{ background: "#FFFFFF", color: "#3B4167" }}>Continue</button>
+                  <button onClick={discardDraft} className="px-4 py-2 rounded-md text-xs font-bold text-white border border-white">Start over</button>
+                </div>
+              </div>
+            )}
+            {savedAt && !submitted && (
+              <div className="mb-3 text-right text-[11px] text-[#3B4167]">Progress saved on this device at {new Date(savedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</div>
+            )}
+
             {/* ── STEP 1: Account ── */}
             {step === 1 && (
               <>
@@ -412,24 +499,57 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                     <div><Label text="Gender" /><Select value={acct.gender} onChange={v => setAcct({ ...acct, gender: v })} options={["Male", "Female", "Non-binary", "Prefer not to say"]} placeholder="Select gender" /></div>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                    <div><Label text="Date of Birth" /><Input type="date" value={acct.dob} onChange={v => setAcct({ ...acct, dob: v })} /></div>
+                    <div><Label text="Age Group" /><Select value={acct.ageGroup} onChange={v => setAcct({ ...acct, ageGroup: v })} options={["18-35", "35+"]} placeholder="Select age group" /></div>
                     <div><Label text="Nationality" /><Input value={acct.nationality} onChange={v => setAcct({ ...acct, nationality: v })} placeholder="Malawian" /></div>
                   </div>
-                  <div className="mb-4"><Label text="National ID / Passport Number" /><Input value={acct.nationalId} onChange={v => setAcct({ ...acct, nationalId: v })} placeholder="Optional" /></div>
+                  <div className="mb-4">
+                    <label className="flex items-center gap-3 cursor-pointer p-3 rounded-md border border-gray-200 hover:border-[#4C808A]/40 transition-all">
+                      <input type="checkbox" checked={acct.pwd} onChange={e => setAcct({ ...acct, pwd: e.target.checked })} className="w-4 h-4 accent-[#4C808A]" />
+                      <span className="text-xs text-gray-700">I am a person with a disability <span className="text-gray-400">(optional, used for donor reporting only and does not affect your application)</span></span>
+                    </label>
+                  </div>
+                  <div className="mb-4"><Label text="National ID Number" required /><Input value={acct.nationalId} onChange={v => { setRejectedAtSubmit(null); setAcct({ ...acct, nationalId: v }); }} placeholder="e.g. V32N6SM4" /></div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                     <div><Label text="Email Address" required /><Input type="email" value={acct.email} onChange={v => setAcct({ ...acct, email: v })} placeholder="your@email.com" /></div>
                     <div><Label text="Mobile Number" required /><Input type="tel" value={acct.mobile} onChange={v => setAcct({ ...acct, mobile: v })} placeholder="+265 88 000 0000" /></div>
                   </div>
                   <div className="mb-4"><Label text="Alternative Phone" /><Input type="tel" value={acct.altPhone} onChange={v => setAcct({ ...acct, altPhone: v })} placeholder="Optional" /></div>
+                  {(duplicate || telProblem || idProblem) && (
+                    <p role="alert" className="mb-4 text-xs rounded-md px-3 py-2.5 border" style={{ color: "#b91c1c", background: "#fef2f2", borderColor: "#fecaca" }}>
+                      {duplicate?.message || telProblem || idProblem}
+                    </p>
+                  )}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                     <div><Label text="Password" required /><PasswordInput value={acct.password} onChange={v => setAcct({ ...acct, password: v })} placeholder="Create a strong password" /></div>
                     <div><Label text="Confirm Password" required /><PasswordInput value={acct.confirmPassword} onChange={v => setAcct({ ...acct, confirmPassword: v })} placeholder="Repeat your password" /></div>
                   </div>
                   <div>
                     <Label text="Programme" required />
-                    <Select value={acct.program} onChange={v => setAcct({ ...acct, program: v })} options={["Incubation", "Acceleration"]} placeholder="Select programme" />
+                    <Select value={acct.program} onChange={v => setAcct({ ...acct, program: v, programId: v === "Incubation" ? acct.programId : "" })} options={["Incubation", "Acceleration"]} placeholder="Select programme" />
                     <p className="text-[10px] mt-1" style={{ color: "#6b7280" }}>Choose the Emerge Livelihoods programme you wish to mentor in.</p>
                   </div>
+                  {acct.program === "Incubation" && (
+                    <div className="mt-4">
+                      <Label text="Incubation Project" required />
+                      {projects.length > 0 ? (
+                        <>
+                          <select
+                            aria-label="Incubation project"
+                            value={chosenProject ? acct.programId : ""}
+                            onChange={(e) => setAcct({ ...acct, programId: e.target.value })}
+                            className="w-full bg-white border border-[#b3b3b3] rounded-md px-4 py-2.5 text-black text-xs focus:outline-none focus:border-[#4C808A] transition-all appearance-none"
+                          >
+                            <option value="" className="bg-white text-gray-600">Select project</option>
+                            {projects.map(p => <option key={p.id} value={p.id} className="bg-white text-black">{p.name}</option>)}
+                          </select>
+                          <p className="text-[10px] mt-1" style={{ color: "#6b7280" }}>Your application goes to the programme manager running this project.</p>
+                          {showAcctErrors && projectProblem && <p role="alert" className="text-[10px] mt-1" style={{ color: "#b91c1c" }}>{projectProblem}</p>}
+                        </>
+                      ) : (
+                        <p className="text-[10px] mt-1" style={{ color: "#6b7280" }}>No incubation projects are open right now. Your application will join the general mentor pool and be assigned by the programme team.</p>
+                      )}
+                    </div>
+                  )}
                 </SectionCard>
               </>
             )}
@@ -962,27 +1082,49 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                   {strength < 70 && <p className="text-xs mt-1" style={{ color: "#FFFFFF" }}>Complete more sections to strengthen your profile and improve matching results.</p>}
                 </div>
 
-                {/* Summary cards */}
-                {[
-                  { label: "Account", icon: User, items: [acct.firstName + " " + acct.lastName, acct.email, acct.mobile].filter(Boolean) },
-                  { label: "Professional Profile", icon: Briefcase, items: [profile.title, profile.employer, profile.yearsExp + " experience"].filter(Boolean) },
-                  { label: "Programme Interest", icon: Target, items: progInterest.length ? progInterest : ["Not selected"] },
-                  { label: "Business Stage Expertise", icon: Zap, items: stageExp.length ? stageExp : ["Not selected"] },
-                  { label: "Industry Expertise", icon: Globe, items: industryExp.length ? [industryExp.slice(0, 3).join(", ") + (industryExp.length > 3 ? ` +${industryExp.length - 3} more` : "")] : ["Not selected"] },
-                  { label: "Functional Expertise", icon: Star, items: funcExp.length ? [funcExp.slice(0, 4).join(", ") + (funcExp.length > 4 ? ` +${funcExp.length - 4} more` : "")] : ["Not selected"] },
-                  { label: "Availability", icon: Users, items: [hoursPerMonth || "Not specified", ...(availability.length ? [availability.join(", ")] : [])] },
-                  { label: "Documents", icon: FileText, items: [docs.cv ? "CV uploaded" : "CV not uploaded (required)", ...Object.entries(docs).filter(([k, v]) => k !== "cv" && v).map(([k]) => k)] },
-                ].map(({ label, icon: Icon, items }) => (
-                  <div key={label} className="bg-white rounded-md border border-gray-200 p-4 mb-3 flex gap-4 shadow-sm">
-                    <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: "#4C808A" }}>
-                      <Icon className="w-4 h-4 text-white" />
+                {/* Summary cards: one per section, each with an Edit button that jumps to that step */}
+                {(() => {
+                  const brief = (arr: string[], n = 3) => arr.length ? arr.slice(0, n).join(", ") + (arr.length > n ? ` +${arr.length - n} more` : "") : "";
+                  const sections: { step: number; label: string; icon: typeof User; items: string[] }[] = [
+                    { step: 1, label: "Account", icon: User, items: [acct.firstName + " " + acct.lastName, acct.email, acct.mobile, chosenProject && "Project: " + chosenProject.name].filter(Boolean) as string[] },
+                    { step: 2, label: "Professional Profile", icon: Briefcase, items: [profile.title, profile.employer, profile.yearsExp && profile.yearsExp + " experience"].filter(Boolean) as string[] },
+                    { step: 3, label: "Biography", icon: FileText, items: [bio.biography || bio.career || bio.motivation ? "Biography added" : "Not provided"] },
+                    { step: 4, label: "Education", icon: BookOpen, items: qualifications.filter(q => q.qualification || q.institution).map(q => [q.qualification, q.institution].filter(Boolean).join(", ")).concat([]).slice(0, 3).length ? qualifications.filter(q => q.qualification || q.institution).map(q => [q.qualification, q.institution].filter(Boolean).join(", ")).slice(0, 3) : ["Not provided"] },
+                    { step: 5, label: "Work Experience", icon: Briefcase, items: experiences.filter(e => e.org || e.position).map(e => [e.position, e.org].filter(Boolean).join(", ")).slice(0, 3).length ? experiences.filter(e => e.org || e.position).map(e => [e.position, e.org].filter(Boolean).join(", ")).slice(0, 3) : ["Not provided"] },
+                    { step: 6, label: "Entrepreneurship", icon: Zap, items: [brief(entExpChecks), entBiz.name].filter(Boolean).length ? [brief(entExpChecks), entBiz.name].filter(Boolean) : ["Not provided"] },
+                    { step: 7, label: "Mentoring History", icon: Users, items: hasMentored === "yes" ? ["Has mentored before", mentoringExp.org].filter(Boolean) : hasMentored === "no" ? ["No previous mentoring experience"] : ["Not specified"] },
+                    { step: 8, label: "Programme Fit", icon: Target, items: [
+                      "Programme: " + (progInterest.length ? progInterest.join(", ") : "Not selected"),
+                      "Stages: " + (stageExp.length ? stageExp.join(", ") : "Not selected"),
+                      hoursPerMonth || "Hours not specified",
+                      ...(availability.length ? [availability.join(", ")] : []),
+                    ] },
+                    { step: 9, label: "Expertise", icon: Star, items: [
+                      "Industry: " + (brief(industryExp) || "Not selected"),
+                      "Functional: " + (brief(funcExp, 4) || "Not selected"),
+                    ] },
+                    { step: 10, label: "Preferences", icon: Globe, items: [brief(prefStages), brief(prefIndustries), brief(prefFounderTypes), brief(languages), brief(mentoringMode)].filter(Boolean).length ? [brief(prefStages), brief(prefIndustries), brief(prefFounderTypes), brief(languages), brief(mentoringMode)].filter(Boolean) : ["Not specified"] },
+                    { step: 11, label: "Documents and Links", icon: Upload, items: [docs.cv ? "CV uploaded" : "CV not uploaded (required)", ...Object.entries(docs).filter(([k, v]) => k !== "cv" && v).map(([k]) => k)] },
+                    { step: 12, label: "Suitability Assessment", icon: ClipboardCheck, items: assessment.coaching || assessment.communication ? [assessment.coaching, assessment.communication].filter(Boolean) : ["Not completed"] },
+                  ];
+                  return sections.map(({ step: stepId, label, icon: Icon, items }) => (
+                    <div key={label} className="bg-white rounded-md border border-gray-200 p-4 mb-3 flex gap-4 shadow-sm">
+                      <div className="w-8 h-8 rounded-md flex items-center justify-center shrink-0" style={{ background: "#4C808A" }}>
+                        <Icon className="w-4 h-4 text-white" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-gray-900 font-bold text-xs mb-1">{label}</div>
+                        {items.map((item, i) => <div key={i} className="text-gray-500 text-[10px]">{item}</div>)}
+                      </div>
+                      <button type="button" onClick={() => editSection(stepId)}
+                        aria-label={`Edit ${label}`}
+                        className="self-start shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-md border text-[10px] font-bold transition-all hover:opacity-80"
+                        style={{ borderColor: "#3B4167", color: "#3B4167", background: "#FFFFFF" }}>
+                        <Pencil className="w-3 h-3" aria-hidden="true" /> Edit
+                      </button>
                     </div>
-                    <div className="flex-1">
-                      <div className="text-gray-900 font-bold text-xs mb-1">{label}</div>
-                      {items.map((item, i) => <div key={i} className="text-gray-500 text-[10px]">{item}</div>)}
-                    </div>
-                  </div>
-                ))}
+                  ));
+                })()}
 
                 {!docs.cv && (
                   <div className="mb-4 p-3.5 rounded-md border border-red-700 shadow-sm" style={{ background: "#dc2626" }}>
@@ -1010,7 +1152,6 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                   onClick={() => {
                     if (acctProblem) return;
                     const newId = `MNT-${Date.now()}`;
-                    setRefId(newId);
                     const app: MentorApplication = {
                       id: newId,
                       name: `${acct.firstName} ${acct.lastName}`,
@@ -1024,16 +1165,46 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                         hoursPerMonth, availability, mentoringMode, languages, ref1, ref2, socials, hasCv: !!docFiles.cv,
                       }),
                       program: (acct.program as "Incubation" | "Acceleration") || "Incubation",
+                      programId: chosenProject?.id,
+                      programName: chosenProject?.name,
                       isMockup: false,
                       email: acct.email,
+                      nationalId: acct.nationalId,
                       title: profile.title,
                       employer: profile.employer,
                       bio: bio.career || bio.biography || undefined,
                       expertiseAreas: [...industryExp, ...funcExp].slice(0, 6),
                       location: [profile.district, profile.country || "Malawi"].filter(Boolean).join(", "),
                       preferredStages: stageExp, industries: industryExp, hoursPerMonth: hoursPerMonth || undefined,
+                      // Everything else the applicant filled in. Blank answers are left out so the table fallbacks still apply to them.
+                      gender: acct.gender || undefined,
+                      pwd: acct.pwd,
+                      ...filled({
+                        ageGroup: acct.ageGroup,
+                        nationality: acct.nationality,
+                        address: profile.address,
+                        region: profile.region,
+                        languages: languages.join(", "),
+                        yearsExp: profile.yearsExp,
+                        availability: availability.join(", "),
+                        qualification: qualifications[0]?.qualification,
+                        institution: profile.employer,
+                      }),
+                      submission: {
+                        submittedAt: new Date().toISOString(),
+                        account: (({ password: _p, confirmPassword: _c, ...rest }) => rest)(acct),
+                        // The photo and uploaded documents cannot be kept in the browser; only their names are recorded.
+                        profile: { ...profile, photo: profile.photo ? "(photo provided)" : "" },
+                        documents: Object.fromEntries(Object.entries(docFiles).map(([k, f]) => [k, f ? f.name : ""])),
+                        bio, qualifications, experiences, entExpChecks, entBiz, hasMentored, mentoringExp,
+                        progInterest, stageExp, industryExp, funcExp, prefStages, prefIndustries, prefFounderTypes,
+                        languages, mentoringMode, ref1, ref2, socials, conflict, conflictExplain, assessment, hoursPerMonth, availability,
+                      },
                     };
-                    onSubmitMentorApplication?.(app, acct.password);
+                    const rejected = onSubmitMentorApplication?.(app, acct.password);
+                    if (rejected) { setRejectedAtSubmit(rejected); setStep(1); scrollTop(); return; } // duplicate: nothing was saved
+                    setRefId(newId);
+                    clearMentorDraft();
                     setSubmitted(true);
                   }}
                   className="w-full py-4 rounded-md font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1056,7 +1227,7 @@ export function MentorRegistrationForm({ onBack, onNavigateHome, onSubmitMentorA
                 <button onClick={next}
                   className="flex items-center gap-2 px-6 py-2.5 rounded-md text-white text-xs font-bold transition-all hover:opacity-90"
                   style={{ background: "#3B4167" }}>
-                  Continue <ChevronRight className="w-4 h-4" />
+                  {returnToReview ? "Save and return to review" : "Continue"} <ChevronRight className="w-4 h-4" />
                 </button>
               ) : null}
             </div>

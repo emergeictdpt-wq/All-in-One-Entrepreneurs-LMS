@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { EntrepreneurApplication } from "../types";
 import { AccountFields, accountProblem } from "./AccountFields";
+import { nationalIdProblem, phoneProblem, type ApplicantIdentity, type DuplicateHit } from "../data/duplicates";
 import {
-  ArrowRight, CheckCircle, Rocket, Building, TrendingUp,
+  ArrowRight, Check, Rocket, Building, TrendingUp,
   DollarSign, Users, BarChart2, Globe, Zap, Target, ChevronDown
 } from "lucide-react";
 
@@ -68,7 +69,7 @@ function YesNo({ label, value, onChange }: { label: string; value: string; onCha
   );
 }
 
-export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication, password: string) => void }) {
+export function AccelerationApplicationForm({ onBack, onSubmitApplication, checkDuplicate }: { onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication, password: string) => DuplicateHit | null | void; checkDuplicate?: (who: ApplicantIdentity) => DuplicateHit | null }) {
   const [activeSection, setActiveSection] = useState("stage");
   const [submitted, setSubmitted] = useState(false);
   const [refId, setRefId] = useState("");
@@ -78,7 +79,7 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
   const [stage, setStage] = useState<GrowthStage | null>(null);
   const [company, setCompany] = useState({ name: "", regNumber: "", taxId: "", dateEstablished: "", country: "Malawi", industry: "", sector: "", businessModel: "", website: "", uniqueValue: "", ip: "", technology: "" });
   const [account, setAccount] = useState({ password: "", confirm: "" });
-  const [founder, setFounder] = useState({ name: "", email: "", position: "", education: "", entrepreneurialExp: "", industryYears: "" });
+  const [founder, setFounder] = useState({ name: "", email: "", phone: "", nationalId: "", position: "", education: "", entrepreneurialExp: "", industryYears: "" });
   const [executives, setExecutives] = useState([{ name: "", position: "", department: "", yearsExp: "", responsibilities: "" }]);
   const [traction, setTraction] = useState({ totalCustomers: "", payingCustomers: "", enterpriseCustomers: "", retentionRate: "", markets: "Local", segment: "B2C", competitors: "", competitiveAdvantage: "", marketShare: "" });
   const [financials, setFinancials] = useState({ monthlyRevenue: "", annualRevenue: "", revenueGrowth: "", revenueSources: "", avgMonthlySales: "", grossProfit: "", netProfit: "", cashflow: "" });
@@ -103,7 +104,13 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
 
   const setSD = (k: string, v: string | boolean) => setStageDetails(prev => ({ ...prev, [k]: v }));
 
-  const submitProblem = !founder.name.trim() ? "Add the founder's full name in Leadership Team." : accountProblem("mentee", founder.email, account.password, account.confirm);
+  // Duplicate check: the same email, phone number or National ID as an application already in the system is rejected right away.
+  const [rejectedAtSubmit, setRejectedAtSubmit] = useState<DuplicateHit | null>(null);
+  const duplicate = checkDuplicate?.({ email: founder.email, phone: founder.phone, nationalId: founder.nationalId }) ?? rejectedAtSubmit;
+  const submitProblem = !founder.name.trim() ? "Add the founder's full name in Leadership Team."
+    : accountProblem("mentee", founder.email, account.password, account.confirm)
+    || ((phoneProblem(founder.phone) || nationalIdProblem(founder.nationalId)) && `Leadership Team: ${phoneProblem(founder.phone) || nationalIdProblem(founder.nationalId)}`)
+    || duplicate?.message || "";
   const markDone = (id: string) => setCompletedSections(prev => new Set([...prev, id]));
   const readiness = Math.round((completedSections.size / sections.length) * 100);
 
@@ -118,7 +125,7 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
       <div className="min-h-screen bg-[#1e2340] flex items-center justify-center px-4" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
         <div className="max-w-lg w-full text-center">
           <div className="w-20 h-20 rounded-full bg-[#4C808A]/20 border-2 border-[#4C808A] flex items-center justify-center mx-auto mb-6">
-            <CheckCircle className="w-10 h-10 text-[#4C808A]" />
+            <Check className="w-10 h-10 text-[#4C808A]" />
           </div>
           <h2 className="text-white font-bold mb-3" style={{ fontSize: "1.5rem" }}>Application Submitted!</h2>
           <p className="text-white/60 text-sm mb-2">
@@ -189,7 +196,7 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                 }`}>
                 <s.icon className="w-3.5 h-3.5 shrink-0" />
                 <span className="text-[10px] font-semibold">{s.label}</span>
-                {completedSections.has(s.id) && <CheckCircle className="w-3 h-3 ml-auto text-green-400 shrink-0" />}
+                {completedSections.has(s.id) && <Check className="w-3 h-3 ml-auto text-green-400 shrink-0" />}
               </button>
             ))}
           </div>
@@ -229,7 +236,7 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                     <div className="mb-3"><s.icon size={28} color="#4C808A" /></div>
                     <div className="flex items-center gap-2 mb-1.5">
                       <h3 className="text-white font-bold text-sm">{s.label}</h3>
-                      {stage === s.id && <CheckCircle className="w-4 h-4 text-[#4C808A]" />}
+                      {stage === s.id && <Check className="w-4 h-4 text-[#4C808A]" />}
                     </div>
                     <p className="text-white/40 text-[10px] leading-relaxed">{s.desc}</p>
                   </button>
@@ -444,6 +451,9 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                 <Grid>
                   <div><Label required>Full Name</Label><input className={inputCls} value={founder.name} onChange={e => setFounder(f => ({ ...f, name: e.target.value }))} placeholder="Your full name" /></div>
                   <div><Label required>Email</Label><input type="email" className={inputCls} value={founder.email} onChange={e => setFounder(f => ({ ...f, email: e.target.value }))} placeholder="you@company.com" /></div>
+                  <div><Label required>Phone Number</Label><input type="tel" className={inputCls} value={founder.phone} onChange={e => setFounder(f => ({ ...f, phone: e.target.value }))} placeholder="+265 88 000 0000" /></div>
+                  <div><Label required>National ID Number</Label><input className={inputCls} value={founder.nationalId} onChange={e => { setRejectedAtSubmit(null); setFounder(f => ({ ...f, nationalId: e.target.value })); }} placeholder="e.g. V32N6SM4" /></div>
+                  {duplicate && <p role="alert" className="md:col-span-2 text-xs rounded-md px-3 py-2.5 border border-red-400/40 bg-red-500/10 text-red-300">{duplicate.message}</p>}
                   <AccountFields role="mentee" variant="dark" email={founder.email} password={account.password} confirm={account.confirm} onChange={setAccount} />
                   <div><Label>Position</Label><input className={inputCls} value={founder.position} onChange={e => setFounder(f => ({ ...f, position: e.target.value }))} placeholder="CEO and Co-founder" /></div>
                   <div><Label>Highest Education</Label><input className={inputCls} value={founder.education} onChange={e => setFounder(f => ({ ...f, education: e.target.value }))} placeholder="MBA, Finance" /></div>
@@ -774,14 +784,12 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                 disabled={!!submitProblem}
                 onClick={() => {
                   if (submitProblem) return;
-                  markDone("goals");
                   const newId = `ACC-${Date.now()}`;
-                  setRefId(newId);
-                  onSubmitApplication?.({
+                  const rejected = onSubmitApplication?.({
                     id: newId,
                     name: founder.name,
                     district: "",
-                    phone: "",
+                    phone: founder.phone,
                     sector: company.sector || company.industry || "Other",
                     date: new Date().toISOString().split("T")[0],
                     status: "Pending",
@@ -789,9 +797,13 @@ export function AccelerationApplicationForm({ onBack, onSubmitApplication }: { o
                     program: "Acceleration",
                     isMockup: false,
                     email: founder.email,
+                    nationalId: founder.nationalId,
                     businessName: company.name,
                     stage: stage ?? undefined,
                   }, account.password);
+                  if (rejected) { setRejectedAtSubmit(rejected); setActiveSection("team"); return; } // duplicate: nothing was saved
+                  markDone("goals");
+                  setRefId(newId);
                   setSubmitted(true);
                 }}
                 className="w-full inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-md text-sm font-bold bg-[#4C808A] text-white hover:bg-[#3d6b74] transition-all disabled:opacity-50 disabled:cursor-not-allowed">

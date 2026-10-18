@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { addDays, addMonths, daysBetween, fmtDate, fmtDateY, isIso, monthKey, monthShort, nowDate, nowHHMM, todayISO } from "./clock";
 import { DECISIONS_KEY } from "./applicationTracker";
 import { SAMPLE_CORE, SAMPLE_SHE } from "./directory";
+import { deleteEvidenceFile, evidenceProblem, saveEvidenceFile } from "./evidenceFiles";
 
 // The platform runs on the real clock (see clock.ts). Re-exported so dashboards have one import.
 export { daysBetween, fmtDate, fmtDateY, fmtDue, todayISO } from "./clock";
@@ -67,7 +68,15 @@ export interface Goal {
   log?: { at: string; from: number; to: number; note: string; adjusted?: boolean }[];
 }
 /** `due` is an ISO date (YYYY-MM-DD) or free text such as "Next session". */
-export interface Task { id: string; pairId: string; title: string; due: string; status: "pending" | "in-progress" | "done"; from: string }
+/** Proof of work attached to a task. Only the details live in the store; the bytes are in evidenceFiles.ts. */
+export interface Evidence { id: string; name: string; size: number; /** ISO day uploaded */ at: string; note?: string }
+export interface Task { id: string; pairId: string; title: string; due: string; status: "pending" | "in-progress" | "done"; from: string; evidence?: Evidence[] }
+/** A post on a cohort's discussion board (founders in the same cohort see each other's posts). */
+export interface PostReply { id: string; authorId: string; author: string; text: string; at: string }
+export interface Post { id: string; cohortId: number; authorId: string; author: string; venture: string; text: string; at: string; ts: number; replies: PostReply[] }
+export interface Download { id: string; resourceId: string; pairId: string; at: string }
+/** A founder saying they want to apply for a funding opportunity (the mentor is told). */
+export interface FundingInterest { id: string; oppId: string; pairId: string; at: string }
 export interface RubricRow { label: string; weight: number }
 export interface Cohort {
   id: number; /** the project (admin programme) this cohort belongs to */ programId?: string; name: string; status: "Active" | "Completed"; startDate: string; endDate: string; sector: string;
@@ -89,11 +98,11 @@ export interface Booking {
   status: "proposed" | "confirmed" | "declined" | "cancelled" | "completed";
   sessionId?: string;
 }
-export interface Message { id: string; pairId: string; from: Role; text: string; time: string; ts: number; read: boolean }
+export interface Message { id: string; pairId: string; from: Role; text: string; time: string; /** ISO day sent; older saved messages have none */ date?: string; ts: number; read: boolean }
 export interface AppEvent { id: string; to: Role; pairId: string; text: string; time: string; ts: number; tone: "info" | "warn" | "good" }
 export interface Rematch { id: string; pairId: string; mentee: string; reason: string; at: string; status: "open" | "handled" }
 export interface PrivateNote { id: string; pairId: string; text: string; at: string }
-export interface Course { id: string; pairId: string; title: string; done: number; total: number; goalId?: string }
+export interface Course { id: string; pairId: string; title: string; done: number; total: number; goalId?: string; /** ISO day the last module was completed (older records have none) */ completedAt?: string }
 export interface Resource { id: string; title: string; type: string; tag: string }
 export interface Share { id: string; resourceId: string; pairId: string; by: string; at: string }
 export interface Nudge { id: string; pairId: string; at: string; text: string; channel: string }
@@ -242,6 +251,10 @@ export const RESOURCES: Resource[] = [
   { id: "r6", title: "Co-founder Alignment Checklist", type: "Checklist", tag: "Team" },
   { id: "r7", title: "Malawi Business Registration Checklist", type: "Checklist", tag: "Legal" },
   { id: "r8", title: "SMART Goal Workbook v2", type: "Workbook", tag: "Planning" },
+  // Stage recommendations on the entrepreneur dashboard point at these
+  { id: "r9", title: "Business Model Canvas", type: "Template", tag: "Strategy" },
+  { id: "r10", title: "Customer Discovery Toolkit", type: "Toolkit", tag: "Research" },
+  { id: "r11", title: "MVP Guide", type: "Guide", tag: "Product" },
 ];
 export const downloadResource = (r: Resource) => {
   const url = URL.createObjectURL(new Blob([`${r.title}\n${r.type} · ${r.tag}\n\n(Sample content. Replace with the real file when the backend is connected.)\n`], { type: "text/plain" }));
@@ -312,7 +325,9 @@ export function computePairStats(pair: Pair, sessions: Session[], goals: Goal[],
 
 export function effectiveMilestones(p: Pair, goals: Goal[]): Milestones {
   const done = (cat: string) => goals.some(g => g.pairId === p.id && g.category === cat && g.status === "complete");
-  return { ...p.milestones, registered: p.milestones.registered || done("Legal"), firstRevenue: p.milestones.firstRevenue || done("Revenue") };
+  // Saved or synced records can predate milestones; treat a missing set as "none reached"
+  const base: Milestones = { registered: false, mvp: false, firstRevenue: false, grant: false, graduated: false, ...p.milestones };
+  return { ...base, registered: base.registered || done("Legal"), firstRevenue: base.firstRevenue || done("Revenue") };
 }
 
 export const PERIODS = { month: { days: 30, label: "Last 30 days" }, quarter: { days: 90, label: "Last 90 days" }, year: { days: 365, label: "Last 12 months" } } as const;
@@ -338,6 +353,16 @@ export interface Ctx {
   /** Ends a live pair (archives it, cancels open bookings/rematches, notifies both sides) and puts the mentee back in the waiting list. */
   endPair: (pairId: string, reason: string, opts?: { requeue?: boolean }) => void;
   completeModule: (courseId: string) => void;
+  /** Mentee attaches a file to one of their tasks as proof. The mentor is told. Resolves with the reason when it is refused. */
+  attachEvidence: (taskId: string, file: File, note?: string) => Promise<BookingResult>;
+  removeEvidence: (taskId: string, evidenceId: string) => void;
+  downloads: Download[];
+  recordDownload: (resourceId: string, pairId: string) => void;
+  posts: Post[];
+  addPost: (pairId: string, text: string) => BookingResult;
+  addReply: (postId: string, pairId: string, text: string) => BookingResult;
+  fundingInterests: FundingInterest[];
+  toggleFundingInterest: (oppId: string, oppTitle: string, pairId: string) => BookingResult;
   shareResource: (resourceId: string, pairIds: string[]) => void;
   resetDemo: () => void;
   bookings: Booking[]; messages: Message[]; events: AppEvent[]; rematches: Rematch[]; privateNotes: PrivateNote[];
@@ -391,7 +416,7 @@ export interface Ctx {
 const KEY = "emerge.programme.v4";
 const OLD_KEY = "emerge.programme.v3"; // saved while the clock was frozen at 28 Jul 2025
 const USER_KEY = "emerge.user.v3";
-type Saved = Partial<{ pairs: Pair[]; sessions: Session[]; goals: Goal[]; tasks: Task[]; cohorts: Cohort[]; integrations: Integration[]; nudges: Nudge[]; interventions: Intervention[]; bookings: Booking[]; messages: Message[]; events: AppEvent[]; rematches: Rematch[]; privateNotes: PrivateNote[]; courses: Course[]; shares: Share[]; pastPairs: Pair[]; waiting: Waiting[]; mentorCapacity: Record<string, number>; ts: number }>;
+type Saved = Partial<{ pairs: Pair[]; sessions: Session[]; goals: Goal[]; tasks: Task[]; cohorts: Cohort[]; integrations: Integration[]; nudges: Nudge[]; interventions: Intervention[]; bookings: Booking[]; messages: Message[]; events: AppEvent[]; rematches: Rematch[]; privateNotes: PrivateNote[]; courses: Course[]; shares: Share[]; pastPairs: Pair[]; waiting: Waiting[]; mentorCapacity: Record<string, number>; downloads: Download[]; posts: Post[]; fundingInterests: FundingInterest[]; ts: number }>;
 
 /** Data saved by the old build was dated against the frozen 28 Jul 2025 clock. Shift it so it sits at today and keeps ageing from here. */
 function migrateV3(o: Saved): Saved {
@@ -462,6 +487,9 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
   const [courses, setCourses] = useState<Course[]>(saved.courses ?? COURSES);
   const [shares, setShares] = useState<Share[]>(saved.shares ?? []);
   const [pastPairs, setPastPairs] = useState<Pair[]>(saved.pastPairs ?? []);
+  const [downloads, setDownloads] = useState<Download[]>(saved.downloads ?? []);
+  const [posts, setPosts] = useState<Post[]>(saved.posts ?? []);
+  const [fundingInterests, setFundingInterests] = useState<FundingInterest[]>(saved.fundingInterests ?? []);
   const [waiting, setWaiting] = useState<Waiting[]>(saved.waiting ?? WAITING);
   // The signed-in user is per browser TAB (sessionStorage) so two tabs can be two different people.
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
@@ -472,8 +500,8 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
 
   // Persist shared data on every change
   useEffect(() => {
-    try { localStorage.setItem(KEY, JSON.stringify({ pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting, mentorCapacity, ts: TS })); } catch { /* storage full or blocked */ }
-  }, [pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting, mentorCapacity]);
+    try { localStorage.setItem(KEY, JSON.stringify({ pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting, mentorCapacity, downloads, posts, fundingInterests, ts: TS })); } catch { /* storage full or blocked */ }
+  }, [pairs, sessions, goals, tasks, cohorts, integrations, nudges, interventions, bookings, messages, events, rematches, privateNotes, courses, shares, pastPairs, waiting, mentorCapacity, downloads, posts, fundingInterests]);
 
   // Live sync: another tab wrote new data → adopt it (this is the "two-person" test path)
   const live = useRef({ events, pairs, pastPairs, currentUser });
@@ -495,6 +523,7 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
       s.events && setEvents(s.events); s.rematches && setRematches(s.rematches); s.privateNotes && setPrivateNotes(s.privateNotes);
       s.courses && setCourses(s.courses); s.shares && setShares(s.shares);
       s.pastPairs && setPastPairs(s.pastPairs); s.waiting && setWaiting(s.waiting); s.mentorCapacity && setMentorCapacityMap(s.mentorCapacity);
+      s.downloads && setDownloads(s.downloads); s.posts && setPosts(s.posts); s.fundingInterests && setFundingInterests(s.fundingInterests);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -693,9 +722,55 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
     completeModule: id => {
       const c = courses.find(x => x.id === id); if (!c || c.done >= c.total) return;
       const done = c.done + 1;
-      setCourses(p => p.map(x => (x.id === id ? { ...x, done } : x)));
+      setCourses(p => p.map(x => (x.id === id ? { ...x, done, ...(done >= x.total ? { completedAt: todayISO() } : {}) } : x)));
       if (c.goalId) setGoals(p => p.map(g => (g.id === c.goalId && g.status !== "complete" ? { ...g, pct: Math.min(99, Math.round((done / c.total) * 100)) } : g)));
       emit("mentor", c.pairId, `${who(c.pairId)?.mentee} completed module ${done}/${c.total} of ${c.title}`, "good");
+    },
+    attachEvidence: async (taskId, file, note) => {
+      const t = tasks.find(x => x.id === taskId); if (!t) return { ok: false, reason: "That task could not be found." };
+      if (!mayAct(t.pairId, "mentee")) return { ok: false, reason: "Only the founder this task belongs to can attach evidence." };
+      const bad = evidenceProblem(file, t.evidence?.length ?? 0); if (bad) return { ok: false, reason: bad };
+      const id = `ev${uid()}${uid()}`;
+      if (!(await saveEvidenceFile(id, file))) return { ok: false, reason: "The file could not be saved in this browser." };
+      const ev: Evidence = { id, name: file.name, size: file.size, at: todayISO(), ...(note?.trim() ? { note: note.trim() } : {}) };
+      setTasks(p => p.map(x => (x.id === taskId ? { ...x, evidence: [...(x.evidence ?? []), ev] } : x)));
+      emit("mentor", t.pairId, `${who(t.pairId)?.mentee} attached evidence to: ${t.title} (${file.name})`, "good");
+      return { ok: true };
+    },
+    removeEvidence: (taskId, evidenceId) => {
+      const t = tasks.find(x => x.id === taskId); if (!t || !mayAct(t.pairId, "mentee")) return;
+      setTasks(p => p.map(x => (x.id === taskId ? { ...x, evidence: (x.evidence ?? []).filter(e => e.id !== evidenceId) } : x)));
+      void deleteEvidenceFile(evidenceId);
+    },
+    downloads,
+    recordDownload: (resourceId, pairId) => { if (mayAct(pairId, "mentee")) setDownloads(p => [{ id: `d${uid()}`, resourceId, pairId, at: todayISO() }, ...p]); },
+    posts,
+    addPost: (pairId, text) => {
+      const p = who(pairId); if (!p) return { ok: false, reason: "This pairing no longer exists." };
+      if (!mayAct(pairId, "mentee")) return NOT_YOURS;
+      const t = text.trim(); if (!t) return { ok: false, reason: "Write something first." };
+      if (t.length > 1000) return { ok: false, reason: "Keep a post under 1000 characters." };
+      setPosts(l => [{ id: `po${uid()}`, cohortId: p.cohortId, authorId: p.menteeId ?? p.id, author: p.mentee, venture: p.venture, text: t, at: todayISO(), ts: ++TS, replies: [] }, ...l]);
+      return { ok: true };
+    },
+    addReply: (postId, pairId, text) => {
+      const p = who(pairId), post = posts.find(x => x.id === postId);
+      if (!p || !post) return { ok: false, reason: "That post could not be found." };
+      if (!mayAct(pairId, "mentee")) return NOT_YOURS;
+      if (post.cohortId !== p.cohortId) return { ok: false, reason: "That post is in another cohort." };
+      const t = text.trim(); if (!t) return { ok: false, reason: "Write something first." };
+      if (t.length > 1000) return { ok: false, reason: "Keep a reply under 1000 characters." };
+      setPosts(l => l.map(x => (x.id === postId ? { ...x, replies: [...x.replies, { id: `rp${uid()}`, authorId: p.menteeId ?? p.id, author: p.mentee, text: t, at: todayISO() }] } : x)));
+      return { ok: true };
+    },
+    fundingInterests,
+    toggleFundingInterest: (oppId, oppTitle, pairId) => {
+      if (!who(pairId)) return { ok: false, reason: "This pairing no longer exists." };
+      if (!mayAct(pairId, "mentee")) return NOT_YOURS;
+      const had = fundingInterests.some(x => x.oppId === oppId && x.pairId === pairId);
+      setFundingInterests(l => (had ? l.filter(x => !(x.oppId === oppId && x.pairId === pairId)) : [{ id: `fi${uid()}`, oppId, pairId, at: todayISO() }, ...l]));
+      if (!had) emit("mentor", pairId, `${who(pairId)?.mentee} wants to apply for: ${oppTitle}. Offer to review the application.`, "info");
+      return { ok: true };
     },
     shareResource: (resourceId, pairIds) => {
       const r = RESOURCES.find(x => x.id === resourceId); if (!r) return;
@@ -704,7 +779,7 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
       setShares(p => [...fresh.map(pid => ({ id: `sh${++TS}`, resourceId, pairId: pid, by: who(pid)?.mentor ?? "Mentor", at: todayISO() })), ...p]);
       fresh.forEach(pid => emit("mentee", pid, `${who(pid)?.mentor} shared a resource: ${r.title}`, "info"));
     },
-    resetDemo: () => { try { localStorage.removeItem(KEY); localStorage.removeItem(OLD_KEY); localStorage.removeItem("emerge.admin.v2"); localStorage.removeItem(DECISIONS_KEY); sessionStorage.removeItem(USER_KEY); sessionStorage.removeItem("emerge.page"); } catch { /* ignore */ } window.location.reload(); },
+    resetDemo: () => { try { indexedDB.deleteDatabase("emerge.evidence"); } catch { /* none */ } try { localStorage.removeItem(KEY); localStorage.removeItem(OLD_KEY); localStorage.removeItem("emerge.admin.v2"); localStorage.removeItem(DECISIONS_KEY); sessionStorage.removeItem(USER_KEY); sessionStorage.removeItem("emerge.page"); } catch { /* ignore */ } window.location.reload(); },
     nextBooking: pairId => bookings.filter(b => b.pairId === pairId && isUpcoming(b)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0],
     proposeBooking: ({ pairId, by, ...rest }) => {
       if (!mayAct(pairId, by)) return NOT_YOURS;
@@ -737,7 +812,7 @@ export function ProgrammeDataProvider({ children }: { children: ReactNode }) {
       setBookings(p => p.map(x => (x.id === id ? { ...x, status: "cancelled" } : x)));
       if (b) { emit("mentor", b.pairId, `Session on ${fmtDate(b.date)} was cancelled`, "warn"); emit("mentee", b.pairId, `Session on ${fmtDate(b.date)} was cancelled`, "warn"); }
     },
-    sendMessage: (pairId, from, text) => !mayAct(pairId, from) ? undefined : setMessages(p => [...p, { id: `m${++TS}`, pairId, from, text, time: nowLabel(), ts: TS, read: false }]),
+    sendMessage: (pairId, from, text) => !mayAct(pairId, from) ? undefined : setMessages(p => [...p, { id: `m${++TS}`, pairId, from, text, time: nowLabel(), date: todayISO(), ts: TS, read: false }]),
     markRead: (pairId, reader) => !mayAct(pairId, reader) ? undefined : setMessages(p => (p.some(m => m.pairId === pairId && m.from !== reader && !m.read) ? p.map(m => (m.pairId === pairId && m.from !== reader ? { ...m, read: true } : m)) : p)),
     unread: (pairId, reader) => messages.filter(m => m.pairId === pairId && m.from !== reader && !m.read).length,
     proposeGoal: ({ pairId, by, ...rest }) => {
@@ -841,7 +916,7 @@ export function buildReport(c: Ctx, period: Period, cohortId?: number) {
     taskPct: ts.length ? Math.round((tasksDone / ts.length) * 100) : 0,
     activePairRate: Math.round((withRecent / n) * 100),
     coursePct: (() => { const cs = c.courses.filter(x => ids.has(x.pairId)); const tot = cs.reduce((a, x) => a + x.total, 0); return tot ? Math.round((cs.reduce((a, x) => a + x.done, 0) / tot) * 100) : 0; })(),
-    onTrackPct: Math.round((ps.filter(p => c.stats[p.id]?.health === "Healthy").length / n) * 100),
+    onTrackPct: Math.round((ps.filter(p => { const h = c.stats[p.id]?.health; return h === "Healthy" || h === "New"; }).length / n) * 100),
     perMentor, monthly,
     outcomes: [
       { label: "Businesses Registered", val: ms.filter(m => m.registered).length },

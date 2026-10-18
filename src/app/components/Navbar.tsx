@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { Menu, X, ChevronDown, LogIn, User, Users, ClipboardList } from "lucide-react";
 
-const navItems = [
-  { label: "Home", href: "#" },
+type NavPage = "home" | "incubation" | "acceleration" | "about";
+
+const navItems: { label: string; href: string; children?: string[]; page?: NavPage }[] = [
+  { label: "Home", href: "#", page: "home" },
   {
     label: "Programs",
     href: "#programs",
@@ -23,10 +25,10 @@ const navItems = [
   { label: "Community", href: "#community" },
   { label: "Resources", href: "#resources" },
   { label: "Success Stories", href: "#stories" },
-  { label: "About Us", href: "#about" },
+  { label: "About Us", href: "#about", page: "about" },
 ];
 
-export function Navbar({ onNavigate, onLogin, onMentorLogin, onTrack }: { onNavigate?: (page: "home" | "incubation" | "acceleration") => void; onLogin?: () => void; onMentorLogin?: () => void; onTrack?: () => void }) {
+export function Navbar({ onNavigate, onLogin, onMentorLogin, onTrack }: { onNavigate?: (page: NavPage) => void; onLogin?: () => void; onMentorLogin?: () => void; onTrack?: () => void }) {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
@@ -76,6 +78,7 @@ export function Navbar({ onNavigate, onLogin, onMentorLogin, onTrack }: { onNavi
               >
                 <a
                   href={item.href}
+                  onClick={(e) => { if (item.page && onNavigate) { e.preventDefault(); onNavigate(item.page); } }}
                   className={`flex items-center gap-1 px-2.5 py-2 rounded-md text-xs transition-colors whitespace-nowrap ${
                     scrolled
                       ? "text-[#3B4167] hover:text-[#4C808A] hover:bg-[#4C808A]/10"
@@ -223,7 +226,7 @@ export function Navbar({ onNavigate, onLogin, onMentorLogin, onTrack }: { onNavi
               key={item.label}
               href={item.href}
               className="block px-6 py-3 text-sm text-[#3B4167] hover:bg-[#4C808A]/10 hover:text-[#4C808A] border-b border-gray-50 transition-colors"
-              onClick={() => setMobileOpen(false)}
+              onClick={(e) => { setMobileOpen(false); if (item.page && onNavigate) { e.preventDefault(); onNavigate(item.page); } }}
             >
               {item.label}
             </a>

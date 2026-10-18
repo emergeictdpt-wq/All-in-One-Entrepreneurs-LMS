@@ -11,7 +11,7 @@ const programs = [
     duration: "6 Months",
     cohort: "Rolling Intake",
     accent: "#4C808A",
-    img: "https://images.unsplash.com/photo-1551357275-bbcd128e1515?w=600&h=400&fit=crop&auto=format",
+    img: "/images/program-emerge4biz.jpg",
   },
   {
     icon: BookOpen,
@@ -21,7 +21,7 @@ const programs = [
     duration: "Self-Paced",
     cohort: "Always Open",
     accent: "#3B4167",
-    img: "https://images.unsplash.com/photo-1515378960530-7c0da6231fb1?w=600&h=400&fit=crop&auto=format",
+    img: "/images/program-emerge-learn.jpg",
   },
   /* She Emerge — commented out
   {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import {
-  Calendar, Clock, Users, CheckCircle, ArrowRight, ChevronDown, ChevronLeft, ChevronRight as ChevronRightIcon,
+  Calendar, Clock, Users, Check, ArrowRight, ChevronDown, ChevronLeft, ChevronRight as ChevronRightIcon,
   Target, BookOpen, UserCheck, TrendingUp, Award, Globe, Star, Plus, Minus
 } from "lucide-react";
 import type { AdminProgram } from "../types";
@@ -170,7 +170,7 @@ function ProgramCard({ program, onApply }: { program: ProgramCardData; onApply: 
               <ul className="space-y-2">
                 {program.benefits.map((b, i) => (
                   <li key={i} className="flex items-start gap-2">
-                    <CheckCircle className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
+                    <Check className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
                     <span className="text-[#3B4167] text-xs">{b}</span>
                   </li>
                 ))}
@@ -181,7 +181,7 @@ function ProgramCard({ program, onApply }: { program: ProgramCardData; onApply: 
               <ul className="space-y-2">
                 {program.eligibility.map((e, i) => (
                   <li key={i} className="flex items-start gap-2">
-                    <CheckCircle className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
+                    <Check className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
                     <span className="text-[#3B4167] text-xs">{e}</span>
                   </li>
                 ))}

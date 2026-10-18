@@ -53,6 +53,7 @@ export function WaitingForMatch({ me, onSignOut }: { me: Person; onSignOut: () =
 
   return (
     <div style={{ minHeight: "100vh", background: "#f4f5f9", fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
+      <style>{`@media (max-width: 640px) { .wf-steps { grid-template-columns: 1fr 1fr !important; } .wf-cols { grid-template-columns: 1fr !important; } }`}</style>
       <header style={{ background: NAVY, padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ color: "#fff", fontWeight: 800, fontSize: 15, letterSpacing: 0.5 }}>Emerge Livelihoods</span>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -78,7 +79,7 @@ export function WaitingForMatch({ me, onSignOut }: { me: Person; onSignOut: () =
 
         <section style={{ background: "#fff", borderRadius: 4, padding: "24px 26px", marginTop: 18, border: "1px solid #eceef4" }}>
           <p style={{ margin: "0 0 18px", color: NAVY, fontWeight: 700, fontSize: 13 }}>Where your application is</p>
-          <ol data-testid="waiting-stages" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+          <ol data-testid="waiting-stages" className="wf-steps" style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
             {STAGES.map((s, i) => {
               const done = i < stage, current = i === stage;
               return (
@@ -87,15 +88,15 @@ export function WaitingForMatch({ me, onSignOut }: { me: Person; onSignOut: () =
                     background: done ? TEAL : current ? "#fff" : "#eef0f5", border: current ? `2px solid ${TEAL}` : "2px solid transparent", color: done ? "#fff" : current ? TEAL : "#a0a6b8", fontSize: 12, fontWeight: 700 }}>
                     {done ? <Check size={16} /> : i + 1}
                   </div>
-                  <p style={{ margin: "0 0 2px", fontSize: 11, fontWeight: 700, color: current ? NAVY : done ? TEAL : "#a0a6b8" }}>{s.label}</p>
-                  <p style={{ margin: 0, fontSize: 9, color: "#9aa0b4", lineHeight: 1.4 }}>{s.note}</p>
+                  <p style={{ margin: "0 0 2px", fontSize: 11, fontWeight: 700, color: current ? NAVY : done ? "#2f6169" : "#6b7280" }}>{s.label}</p>
+                  <p style={{ margin: 0, fontSize: 9, color: "#6b7280", lineHeight: 1.4 }}>{s.note}</p>
                 </li>
               );
             })}
           </ol>
         </section>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 18 }}>
+        <div className="wf-cols" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 18 }}>
           <section style={{ background: "#fff", borderRadius: 4, padding: "22px 24px", border: "1px solid #eceef4" }}>
             <p style={{ margin: "0 0 14px", color: NAVY, fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}><Users size={15} color={TEAL} /> What happens next</p>
             <ol style={{ margin: 0, paddingLeft: 18, color: "#555", fontSize: 12, lineHeight: 1.7 }}>
@@ -115,7 +116,7 @@ export function WaitingForMatch({ me, onSignOut }: { me: Person; onSignOut: () =
         </div>
 
         <p style={{ marginTop: 22, textAlign: "center", fontSize: 11, color: "#8a90a6", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-          <Mail size={13} /> Questions? Contact the programme team and quote your application ID, {me.id}.
+          <Mail size={13} /> Questions? Email <a href={`mailto:hello@emergelivelihoods.org?subject=${encodeURIComponent(`Application ${me.id}`)}`} style={{ color: TEAL, fontWeight: 700 }}>hello@emergelivelihoods.org</a> and quote your application ID, {me.id}.
         </p>
       </main>
     </div>

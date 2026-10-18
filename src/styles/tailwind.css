@@ -2,3 +2,8 @@
 @source '../**/*.{js,ts,jsx,tsx}';
 
 @import 'tw-animate-css';
+
+/* Auth/forms: fixed container width */
+.max-w-md {
+  max-width: 28rem;
+}

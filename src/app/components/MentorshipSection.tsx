@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle } from "lucide-react";
+import { ArrowRight, Check } from "lucide-react";
 
 const benefits = [
   "Share your expertise and make a lasting impact on emerging entrepreneurs",
@@ -34,7 +34,7 @@ export function MentorshipSection({ onBecomeMentor }: { onBecomeMentor?: () => v
           {/* Left — single big image */}
           <div className="relative rounded-md overflow-hidden group" style={{ height: "520px" }}>
             <img
-              src="https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=800&h=600&fit=crop&auto=format"
+              src="/images/mentorship-session.jpg"
               alt="Mentorship session in progress"
               className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 bg-gray-200"
             />
@@ -55,7 +55,7 @@ export function MentorshipSection({ onBecomeMentor }: { onBecomeMentor?: () => v
             <ul className="space-y-3 mb-8">
               {benefits.map((b) => (
                 <li key={b} className="flex items-start gap-3">
-                  <CheckCircle className="w-4 h-4 text-[#4C808A] mt-0.5 shrink-0" />
+                  <Check className="w-4 h-4 text-[#4C808A] mt-0.5 shrink-0" />
                   <span className="text-[#3B4167] text-xs leading-relaxed">{b}</span>
                 </li>
               ))}

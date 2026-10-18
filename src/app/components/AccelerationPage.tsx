@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Calendar, Clock, Users, CheckCircle, ArrowRight, ChevronDown,
+  Calendar, Clock, Users, Check, ArrowRight, ChevronDown,
   TrendingUp, DollarSign, Rocket, Target, BarChart2, Globe,
   Award, Zap, Star, Plus, Minus, Play, ShieldCheck
 } from "lucide-react";
@@ -307,7 +307,7 @@ function ProgramCard({ program, onApply }: { program: typeof programs[0]; onAppl
               <ul className="space-y-2">
                 {program.benefits.map((b, i) => (
                   <li key={i} className="flex items-start gap-2">
-                    <CheckCircle className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
+                    <Check className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
                     <span className="text-[#3B4167] text-xs">{b}</span>
                   </li>
                 ))}
@@ -318,7 +318,7 @@ function ProgramCard({ program, onApply }: { program: typeof programs[0]; onAppl
               <ul className="space-y-2">
                 {program.eligibility.map((e, i) => (
                   <li key={i} className="flex items-start gap-2">
-                    <CheckCircle className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
+                    <Check className="w-3.5 h-3.5 text-[#4C808A] mt-0.5 shrink-0" />
                     <span className="text-[#3B4167] text-xs">{e}</span>
                   </li>
                 ))}

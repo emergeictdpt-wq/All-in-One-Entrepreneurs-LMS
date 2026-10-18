@@ -1,8 +1,11 @@
 import { useState, useRef } from "react";
+import { filled } from "../data/submission";
+import { DEFAULT_APPLICATION_SECTORS } from "../data/sectors";
 import { scoreEntrepreneur } from "../data/applicationScoring";
-import { ArrowRight, CheckCircle, Circle, User, Briefcase, Building, Users, Target, ChevronDown, Camera, Lightbulb, Search, Wrench, Rocket } from "lucide-react";
+import { ArrowRight, Check, Circle, User, Briefcase, Building, Users, Target, ChevronDown, Camera, Lightbulb, Search, Wrench, Rocket } from "lucide-react";
 import type { EntrepreneurApplication } from "../types";
 import { AccountFields, accountProblem } from "./AccountFields";
+import { nationalIdProblem, phoneProblem, type ApplicantIdentity, type DuplicateHit } from "../data/duplicates";
 
 type Stage = "idea" | "validation" | "prototype" | "early";
 
@@ -23,7 +26,7 @@ const steps = [
   { id: 3, label: "Founder Profile",icon: Briefcase },
   { id: 4, label: "Business Info",  icon: Building },
   { id: 5, label: "Team & Needs",   icon: Users },
-  { id: 6, label: "Review",         icon: CheckCircle },
+  { id: 6, label: "Review",         icon: Check },
 ];
 
 const MALAWI_LANGUAGES = [
@@ -33,7 +36,6 @@ const MALAWI_LANGUAGES = [
 
 const skillsList  = ["Leadership","Sales","Marketing","Finance","Product Development","Technology","Operations","Legal & Compliance"];
 const needsList   = ["Business Planning","Product Development","Marketing & Branding","Financial Management","Accounting","Legal Compliance","Intellectual Property","Investment Readiness","Digital Marketing","Leadership","Sales","Export Readiness"];
-const sectorList  = ["Agriculture & Agribusiness","Technology & ICT","Health & Wellbeing","Education & Training","Manufacturing","Trade & Commerce","Creative Industries","Tourism & Hospitality","Financial Services","Energy & Environment","Other"];
 
 // ── Dot pattern (matches login form) ─────────────────────────────────────────
 // ── Animated progress bar ─────────────────────────────────────────────────────
@@ -81,7 +83,8 @@ const inputCls    = `w-full bg-[#f8f9fb] border border-[${NAVY}]/15 rounded-md p
 const selectCls   = inputCls + " appearance-none cursor-pointer";
 const textareaCls = inputCls + " resize-none";
 
-export function IncubationApplicationForm({ onBack, onSubmitApplication, programId, programName }: { onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication, password: string) => void; programId?: string; programName?: string }) {
+export function IncubationApplicationForm({ onBack, onSubmitApplication, checkDuplicate, onTrack, programId, programName, sectors }: {  sectors?: string[]; onTrack?: (ref: string) => void; onBack: () => void; onSubmitApplication?: (app: EntrepreneurApplication, password: string) => DuplicateHit | null | void; checkDuplicate?: (who: ApplicantIdentity) => DuplicateHit | null; programId?: string; programName?: string }) {
+  const sectorList = sectors && sectors.length ? sectors : DEFAULT_APPLICATION_SECTORS;
   const [step, setStep]         = useState(1);
   const [submitted, setSubmitted] = useState(false);
   const [refId, setRefId] = useState("");
@@ -96,8 +99,8 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
     setSelectedStages(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
 
   const [personal, setPersonal] = useState({
-    firstName: "", lastName: "", gender: "", dob: "", nationality: "Malawian",
-    email: "", phone: "", address: "", district: "", region: "", country: "Malawi", password: "", confirmPassword: "",
+    firstName: "", lastName: "", gender: "", ageGroup: "", nationality: "Malawian",
+    email: "", phone: "", nationalId: "", address: "", district: "", region: "", country: "Malawi", password: "", confirmPassword: "",
     languages: [] as string[],
     youthOwned: false, womanOwned: false, disability: false,
     ruralUrban: "",
@@ -128,9 +131,16 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
       languages: prev.languages.includes(lang) ? prev.languages.filter(l => l !== lang) : [...prev.languages, lang],
     }));
 
+  // Duplicate check: the same email, phone number or National ID as an application already in the system is rejected right away.
+  const [rejectedAtSubmit, setRejectedAtSubmit] = useState<DuplicateHit | null>(null);
+  const duplicate = checkDuplicate?.({ email: personal.email, phone: personal.phone, nationalId: personal.nationalId }) ?? rejectedAtSubmit;
+  const idProblem = personal.nationalId ? nationalIdProblem(personal.nationalId) : "";
+  const telProblem = personal.phone ? phoneProblem(personal.phone) : "";
+
   const canProceed = () => {
     if (step === 1) return selectedStages.length > 0;
-    if (step === 2) return !!(personal.firstName && personal.lastName && personal.email && personal.phone && personal.gender) && !accountProblem("mentee", personal.email, personal.password, personal.confirmPassword);
+    if (step === 2) return !!(personal.firstName && personal.lastName && personal.email && personal.phone && personal.gender) && !accountProblem("mentee", personal.email, personal.password, personal.confirmPassword)
+      && !phoneProblem(personal.phone) && !nationalIdProblem(personal.nationalId) && !duplicate;
     return true;
   };
 
@@ -143,26 +153,60 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
   };
 
   if (submitted) {
+    const summary: { label: string; value: string }[] = [
+      { label: "Applicant",         value: `${personal.firstName} ${personal.lastName}`.trim() || "—" },
+      { label: "Business Stage(s)", value: selectedStages.map(id => stages.find(s => s.id === id)?.label).join(", ") || "—" },
+      { label: "Business",          value: business.name || "—" },
+      { label: "Sector",            value: business.sector || "—" },
+    ];
+    const INK = "#1f2937";
     return (
-      <div className="min-h-screen bg-[#f8f9fb] flex items-center justify-center px-4" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif" }}>
-        <div className="max-w-lg w-full text-center">
-          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6" style={{ background: `${TEAL}18`, border: `2px solid ${TEAL}` }}>
-            <CheckCircle className="w-10 h-10" style={{ color: TEAL }} />
+      <div className="min-h-screen" style={{ fontFamily: "Verdana, Geneva, Tahoma, sans-serif", background: "#EEF3F4" }}>
+        {/* Colour band behind the top of the card */}
+        <div style={{ background: TEAL, height: 280 }} className="flex flex-col items-center justify-start px-4">
+          <div className="flex items-center justify-center rounded-full mt-14" style={{ width: 70, height: 70, border: "2px solid #fff" }}>
+            <Check className="w-9 h-9" strokeWidth={2} style={{ color: "#fff" }} />
           </div>
-          <h2 className="font-bold mb-3" style={{ fontSize: "1.5rem", color: NAVY }}>Application Submitted!</h2>
-          <p className="text-[#6b7280] text-sm mb-2">Thank you, <strong style={{ color: NAVY }}>{personal.firstName}</strong>. Your application for the Emerge Livelihoods Incubation Program has been received.</p>
-          {refId && <p className="text-[#6b7280] text-xs mb-4">Your reference number: <strong style={{ color: NAVY }}>{refId}</strong>. Keep it to track your application.</p>}
-          <p className="text-[#6b7280] text-sm mb-8">Our team will review your application and contact you at <strong style={{ color: NAVY }}>{personal.email}</strong> within <strong style={{ color: NAVY }}>5–7 business days</strong>.</p>
-          <div className="bg-white rounded-md border border-[#3B4167]/10 p-6 mb-6 text-left space-y-2">
-            <h4 className="font-bold text-sm mb-3" style={{ color: NAVY }}>Application Summary</h4>
-            <div className="flex justify-between text-xs"><span className="text-[#6b7280]">Applicant</span><span className="font-semibold" style={{ color: NAVY }}>{personal.firstName} {personal.lastName}</span></div>
-            <div className="flex justify-between text-xs"><span className="text-[#6b7280]">Business Stage(s)</span><span className="font-semibold" style={{ color: NAVY }}>{selectedStages.map(id => stages.find(s => s.id === id)?.label).join(", ") || "—"}</span></div>
-            <div className="flex justify-between text-xs"><span className="text-[#6b7280]">Business</span><span className="font-semibold" style={{ color: NAVY }}>{business.name || "—"}</span></div>
-            <div className="flex justify-between text-xs"><span className="text-[#6b7280]">Sector</span><span className="font-semibold" style={{ color: NAVY }}>{business.sector || "—"}</span></div>
+          <h2 className="font-bold text-white text-center" style={{ fontSize: "1.75rem", marginTop: 22 }}>Application Submitted!</h2>
+        </div>
+
+        <div className="px-4 pb-12" style={{ marginTop: -56 }}>
+          <div className="mx-auto w-full" style={{ maxWidth: 464, background: "#fff", borderRadius: 3, padding: 24, boxShadow: "0 12px 40px rgba(31,41,55,0.12)" }}>
+            <p className="text-center text-sm leading-relaxed" style={{ color: "#4b5563" }}>
+              Thank you, <strong style={{ color: INK }}>{personal.firstName}</strong>. Your application has been received. Emerge Livelihoods will email{" "}
+              <strong style={{ color: INK }}>{personal.email}</strong> within <strong style={{ color: INK }}>5–7 business days</strong>.
+            </p>
+
+            {refId && (
+              <div className="text-center" style={{ background: "#E1ECEE", borderRadius: 3, padding: "14px 12px", marginTop: 20 }}>
+                <div className="text-xs" style={{ color: TEAL }}>Reference number</div>
+                <div className="font-bold" style={{ color: TEAL, fontSize: "1.3rem", marginTop: 2, wordBreak: "break-all" }}>{refId}</div>
+              </div>
+            )}
+
+            <div style={{ marginTop: 16 }}>
+              {summary.map((row, i) => (
+                <div key={row.label} className="flex justify-between items-baseline gap-4 py-3.5 text-[13px]"
+                  style={{ borderTop: "1px solid #eceff1", borderBottom: i === summary.length - 1 ? "1px solid #eceff1" : undefined }}>
+                  <span className="shrink-0" style={{ color: "#6b7280" }}>{row.label}</span>
+                  <span className="font-bold text-right" style={{ color: INK }}>{row.value}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3" style={{ marginTop: 20 }}>
+              {refId && onTrack && (
+                <button onClick={() => onTrack(refId)} className="flex-1 text-sm font-bold transition-all hover:brightness-95"
+                  style={{ color: TEAL, border: `1px solid ${TEAL}`, background: "#fff", borderRadius: 3, padding: "14px 12px" }}>
+                  Track this application
+                </button>
+              )}
+              <button onClick={onBack} className="flex-1 text-sm font-bold text-white transition-all hover:brightness-95"
+                style={{ background: TEAL, border: `1px solid ${TEAL}`, borderRadius: 3, padding: "14px 12px" }}>
+                Return to Home
+              </button>
+            </div>
           </div>
-          <button onClick={onBack} className="inline-flex items-center gap-2 px-6 py-3 rounded-md text-white text-sm font-bold transition-all" style={{ background: TEAL }}>
-            Return to Home
-          </button>
         </div>
       </div>
     );
@@ -205,7 +249,7 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
               <div key={s.id} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold shrink-0 transition-all ${
                 s.id === step ? "text-white" : s.id < step ? "text-white" : "text-white/40"
               }`} style={{ background: s.id === step ? TEAL : s.id < step ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)" }}>
-                {s.id < step ? <CheckCircle className="w-3 h-3" /> : <Circle className="w-3 h-3" />}
+                {s.id < step ? <Check className="w-3 h-3" /> : <Circle className="w-3 h-3" />}
                 {s.label}
               </div>
             ))}
@@ -276,7 +320,7 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
                     <div className="mb-3"><s.icon size={18} /></div>
                     <div className="flex items-center gap-2 mb-2">
                       <h3 className="font-bold text-sm" style={{ color: NAVY }}>{s.label}</h3>
-                      {isSelected && <CheckCircle className="w-4 h-4" style={{ color: TEAL }} />}
+                      {isSelected && <Check className="w-4 h-4" style={{ color: TEAL }} />}
                     </div>
                     <p className="text-[#6b7280] text-[11px] leading-relaxed">{s.desc}</p>
                   </button>
@@ -303,11 +347,25 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-[#6b7280] pointer-events-none" />
                   </div>
                 </Field>
-                <Field label="Date of Birth"><input type="date" className={inputCls} value={personal.dob} onChange={e => setP("dob", e.target.value)} /></Field>
+                <Field label="Age Group">
+                  <div className="relative">
+                    <select className={selectCls} value={personal.ageGroup} onChange={e => setP("ageGroup", e.target.value)}>
+                      <option value="">Select age group</option>
+                      <option>18-35</option><option>35+</option>
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-[#6b7280] pointer-events-none" />
+                  </div>
+                </Field>
                 <Field label="Nationality"><input className={inputCls} value={personal.nationality} onChange={e => setP("nationality", e.target.value)} /></Field>
                 <Field label="Email Address" required><input type="email" className={inputCls} placeholder="amina@example.com" value={personal.email} onChange={e => setP("email", e.target.value)} /></Field>
                 <AccountFields role="mentee" variant="light" email={personal.email} password={personal.password} confirm={personal.confirmPassword} onChange={v => setPersonal(p => ({ ...p, password: v.password, confirmPassword: v.confirm }))} />
                 <Field label="Phone Number" required><input type="tel" className={inputCls} placeholder="+265 88 000 0000" value={personal.phone} onChange={e => setP("phone", e.target.value)} /></Field>
+                <Field label="National ID Number" required><input className={inputCls} placeholder="e.g. V32N6SM4" value={personal.nationalId} onChange={e => { setRejectedAtSubmit(null); setP("nationalId", e.target.value); }} /></Field>
+                {(duplicate || telProblem || idProblem) && (
+                  <p role="alert" className="sm:col-span-2 text-xs rounded-md px-3 py-2.5 border" style={{ color: "#b91c1c", background: "#fef2f2", borderColor: "#fecaca" }}>
+                    {duplicate?.message || telProblem || idProblem}
+                  </p>
+                )}
                 <Field label="Physical Address"><input className={inputCls} placeholder="Street / Area" value={personal.address} onChange={e => setP("address", e.target.value)} /></Field>
                 <Field label="District / City">
                   <div className="relative">
@@ -718,12 +776,45 @@ export function IncubationApplicationForm({ onBack, onSubmitApplication, program
                 firstName: personal.firstName,
                 lastName: personal.lastName,
                 email: personal.email,
+                nationalId: personal.nationalId,
                 businessName: business.name,
                 stage: selectedStages.join(", "),
                 gender: personal.gender,
                 bio: business.ideaDescription || business.solution || business.problem || undefined,
+                // Everything else the applicant filled in. Blank answers are left out so the table fallbacks still apply to them.
+                ...filled({
+                  ageGroup: personal.ageGroup,
+                  nationality: personal.nationality,
+                  address: personal.address,
+                  region: personal.region,
+                  languages: personal.languages.join(", "),
+                  locationType: personal.ruralUrban,
+                  qualification: founder.qualification,
+                  fieldStudy: founder.fieldOfStudy,
+                  institution: founder.institution,
+                  bizExperience: founder.businessExperience,
+                  whyEntrepreneur: founder.whyEntrepreneur,
+                  yearStarted: business.yearStarted,
+                  bizRegStatus: business.registrationStatus,
+                  targetCustomers: business.idealCustomer,
+                  bizStage: selectedStages.join(", "),
+                  coFounderName: team.coFounderName,
+                  coFounderRole: team.coFounderRole,
+                }),
+                // The Demographics tick-boxes are always recorded: unticked means "no", not "not asked".
+                youthOwned: personal.youthOwned,
+                womanOwned: personal.womanOwned,
+                pwd: personal.disability,
+                submission: {
+                  submittedAt: new Date().toISOString(),
+                  stages: selectedStages,
+                  personal: (({ password: _p, confirmPassword: _c, ...rest }) => rest)(personal),
+                  founder, business, team, needs,
+                  programmeId: programId, programmeName: programName,
+                },
               };
-              onSubmitApplication?.(app, personal.password);
+              const rejected = onSubmitApplication?.(app, personal.password);
+              if (rejected) { setRejectedAtSubmit(rejected); setStep(2); return; } // duplicate: nothing was saved
               setRefId(app.id);
               setSubmitted(true);
             }}
